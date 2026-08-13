@@ -1,0 +1,16 @@
+---
+description: Publish verified application changes to the local network website
+alwaysApply: true
+---
+
+# Local Network Publishing
+
+After completing user-requested application changes:
+
+1. Run the relevant backend and frontend checks.
+2. If checks pass, run `powershell -ExecutionPolicy Bypass -File scripts/publish-kronos-lan.ps1 -SkipChecks`.
+3. Confirm both the frontend and proxied API health endpoint respond.
+4. Include the local-network URL in the final handoff.
+
+Do not publish broken builds. Documentation-only changes do not require republishing.
+The backend stays on loopback; LAN clients access it through the frontend proxy.

@@ -1,0 +1,88 @@
+from contextlib import asynccontextmanager
+import logging
+import re
+from time import perf_counter
+from typing import AsyncIterator
+from uuid import uuid4
+
+from fastapi import Depends, FastAPI, Request
+from fastapi.middleware.cors import CORSMiddleware
+
+from app.api.routes import router
+from app.config import Settings, get_settings
+from app.dependencies import RateLimiter, Services, build_services, require_api_key
+from app.logging import configure_logging
+
+
+logger = logging.getLogger("app.requests")
+_REQUEST_ID = re.compile(r"^[A-Za-z0-9._-]{1,128}$")
+
+
+def create_app(settings: Settings | None = None, services: Services | None = None) -> FastAPI:
+    settings = settings or get_settings()
+    configure_logging()
+
+    @asynccontextmanager
+    async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+        app.state.services = services or build_services(settings)
+        app.state.rate_limiter = RateLimiter()
+        yield
+        finnhub_client = getattr(app.state.services.finnhub, "client", None)
+        if finnhub_client is not None and hasattr(finnhub_client, "aclose"):
+            await finnhub_client.aclose()
+
+    app = FastAPI(
+        title=settings.app_name,
+        version="0.1.0",
+        lifespan=lifespan,
+    )
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=settings.cors_origins,
+        allow_origin_regex=settings.cors_origin_regex,
+        allow_credentials=False,
+        allow_methods=["GET", "POST", "DELETE", "PATCH", "OPTIONS"],
+        allow_headers=["Content-Type", "X-API-Key", "X-Request-ID"],
+    )
+
+    @app.middleware("http")
+    async def request_context(request: Request, call_next):
+        candidate = request.headers.get("x-request-id", "")
+        request_id = candidate if _REQUEST_ID.fullmatch(candidate) else uuid4().hex
+        request.state.request_id = request_id
+        started = perf_counter()
+        try:
+            response = await call_next(request)
+        except Exception as exc:
+            logger.error(
+                "request_failed",
+                extra={
+                    "request_id": request_id,
+                    "method": request.method,
+                    "path": request.url.path,
+                    "error_type": type(exc).__name__,
+                },
+            )
+            raise
+        response.headers["X-Request-ID"] = request_id
+        logger.info(
+            "request_completed",
+            extra={
+                "request_id": request_id,
+                "method": request.method,
+                "path": request.url.path,
+                "status_code": response.status_code,
+                "duration_ms": round((perf_counter() - started) * 1000, 2),
+            },
+        )
+        return response
+
+    app.include_router(
+        router,
+        prefix=settings.api_prefix,
+        dependencies=[Depends(require_api_key)],
+    )
+    return app
+
+
+app = create_app()

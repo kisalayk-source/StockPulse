@@ -5,7 +5,6 @@
 
 <div align="center">
 
-</a> 
 <a href="https://huggingface.co/NeoQuasar"> 
 <img src="https://img.shields.io/badge/🤗-Hugging_Face-yellow" alt="Hugging Face"> 
 </a> 
@@ -46,11 +45,37 @@
 > Kronos is the **first open-source foundation model** for financial candlesticks (K-lines), 
 > trained on data from over **45 global exchanges**.
 
-
 </div>
 
+## Repository guide
+
+- [StockPulse](./TRADING_APP.md) — the FastAPI and React trading/research application
+- [Backend](./backend/README.md) — StockPulse API setup, configuration, and tests
+- [Frontend](./frontend/README.md) — StockPulse dashboard setup and commands
+- [Web UI](./webui/README.md) — legacy Flask forecasting demo
+- [Historical backtesting](./docs/BACKTEST.md) — production-grade walk-forward engine
+- [CSV fine-tuning](./finetune_csv/README.md) — custom dataset training pipeline
+- [Development guide](./docs/DEVELOPMENT.md) — environments, checks, and Docker
+- [Contributing](./CONTRIBUTING.md) · [Security](./SECURITY.md) · [Changelog](./CHANGELOG.md)
+
+### Repository layout
+
+```text
+model/             Core tokenizer, model, and predictor implementation
+kronos_backtest/   Production historical backtester (no look-ahead, next-bar fills)
+configs/           Backtest and experiment configuration
+examples/          Forecasting examples and demo-grade backtests
+tests/             Model regression tests and backtest unit tests
+finetune/          Qlib fine-tuning and demo backtesting pipeline
+finetune_csv/      Fine-tuning pipeline for custom CSV datasets
+backend/           StockPulse FastAPI service
+frontend/          StockPulse React/TypeScript client
+webui/             Legacy Flask forecasting interface
+docs/              Contributor and project documentation
+```
+
 ## 📰 News
-*   🚩 **[2025.11.10]** Kronos has been accpeted by AAAI 2026.
+*   🚩 **[2025.11.10]** Kronos has been accepted by AAAI 2026.
 *   🚩 **[2025.08.17]** We have released the scripts for fine-tuning! Check them out to adapt Kronos to your own tasks.
 *   🚩 **[2025.08.02]** Our paper is now available on [arXiv](https://arxiv.org/abs/2508.02739)!
 
@@ -213,6 +238,18 @@ Running this script will generate a plot comparing the ground truth data against
 
 Additionally, we provide a script that makes predictions without Volume and Amount data, which can be found in [`examples/prediction_wo_vol_example.py`](examples/prediction_wo_vol_example.py).
 
+## 📉 Historical backtesting
+
+The recommended engine is [`kronos_backtest`](./docs/BACKTEST.md). It forbids look-ahead, fills at the next bar's open, and accounts for spread, slippage, fees, position sizing, and risk limits.
+
+```shell
+python -m kronos_backtest --config configs/backtest.yaml --predictor dummy --output backtest_results
+pytest tests/backtest -q
+```
+
+`examples/run_backtest_kronos.py` and `finetune/qlib_test.py` are **demo-grade** scripts kept for education. Do not treat their PnL as a realistic estimate.
+
+
 
 ## 🔧 Finetuning on Your Own Data (A-Share Market Example)
 
@@ -286,7 +323,7 @@ The best predictor checkpoint will be saved to the path configured in `config.py
 
 ### Step 4: Evaluate with Backtesting
 
-Finally, run the backtesting script to evaluate your finetuned model. This script loads the models, performs inference on the test set, generates prediction signals (e.g., forecasted price change), and runs a simple top-K strategy backtest.
+Finally, run the **demo-grade** Qlib backtesting script. For realistic walk-forward evaluation with next-bar execution, costs, and risk limits, use [`kronos_backtest`](../docs/BACKTEST.md) instead.
 
 ```shell
 # Specify the GPU for inference
@@ -324,7 +361,10 @@ If you use Kronos in your research, we would appreciate a citation to our [paper
 ```
 
 ## 📜 License 
-This project is licensed under the [MIT License](./LICENSE).
+The repository's source code is licensed under the [MIT License](./LICENSE).
+Model weights, datasets, market data, and third-party services may have separate
+terms; see [Licensing and third-party assets](./docs/LICENSING.md) before
+redistributing them.
 
 
 
