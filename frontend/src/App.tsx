@@ -6,7 +6,7 @@ import {
 } from 'lucide-react'
 import {
   ApiError,
-  api, type Account, type AppConfig, type ChartResponse, type ForecastResponse, type MarketClock, type NewsItem,
+  api, type Account, type AppConfig, type ChartInterval, type ChartResponse, type ForecastResponse, type MarketClock, type NewsItem,
   type OptionChain, type OptionContract, type OptionPositionIntent, type Order, type OrderSide, type OrderType,
   type Position, type PublicSentiment, type Quote, type SearchResult, type SentimentLabel,
   type TradingMode,
@@ -17,6 +17,7 @@ import {
 } from './format'
 import { MarketChart } from './MarketChart'
 import { MoversPanel } from './MoversPanel'
+import { PortfolioPanel, type HoldSuggestion } from './PortfolioPanel'
 import { OrderReview, type ReviewOrder } from './OrderReview'
 import './App.css'
 
@@ -27,6 +28,9 @@ function unavailableLabel(result: PromiseSettledResult<unknown>, name: string): 
   const reason = result.reason
   if (reason instanceof ApiError && reason.status === 429) {
     return `${name} is throttled; retry in a few seconds`
+  }
+  if (reason instanceof ApiError && reason.message && reason.message !== `Request failed (${reason.status})`) {
+    return `${name}: ${reason.message}`
   }
   return `${name} data is temporarily unavailable`
 }
@@ -86,6 +90,141 @@ function MarketLight({ clock }: { clock: MarketClock }) {
   )
 }
 
+type ForecastPreset = 'short' | 'long'
+type ForecastEngine = 'kronos' | 'ensemble'
+
+const CHART_INTERVALS: ChartInterval[] = ['1Min', '5Min', '15Min', '1Hour', '1Day']
+const DEFAULT_INTERVAL: Record<ForecastPreset, ChartInterval> = { short: '5Min', long: '1Day' }
+const DEFAULT_BARS: Record<ForecastPreset, number> = { short: 12, long: 20 }
+
+const INTERVAL_LABELS: Record<ChartInterval, string> = {
+  '1Min': '1m',
+  '5Min': '5m',
+  '15Min': '15m',
+  '1Hour': '1h',
+  '1Day': '1D',
+}
+
+function barUnitLabel(interval: ChartInterval, bars: number): string {
+  const units: Record<ChartInterval, [string, string]> = {
+    '1Min': ['1-minute bar', '1-minute bars'],
+    '5Min': ['five-minute bar', 'five-minute bars'],
+    '15Min': ['15-minute bar', '15-minute bars'],
+    '1Hour': ['hourly bar', 'hourly bars'],
+    '1Day': ['trading day', 'trading days'],
+  }
+  const [one, many] = units[interval]
+  return bars === 1 ? `1 ${one}` : `${bars} ${many}`
+}
+
+function intervalMetaLabel(interval: ChartInterval): string {
+  return {
+    '1Min': '1-minute bars',
+    '5Min': '5-minute bars',
+    '15Min': '15-minute bars',
+    '1Hour': 'hourly bars',
+    '1Day': 'daily bars',
+  }[interval]
+}
+
+function describePathSegments(segments: NonNullable<ForecastResponse['pathSegments']>): string {
+  if (!segments.length) return 'The selected forecast path is flat within the model’s noise band.'
+  return segments.map((segment) => {
+    const bars = Math.max(1, segment.endIndex - segment.startIndex)
+    const move = formatPercent(segment.change, false)
+    if (segment.direction === 'up') return `rises ${move} over ${bars} bar${bars === 1 ? '' : 's'}`
+    if (segment.direction === 'down') return `falls ${move} over ${bars} bar${bars === 1 ? '' : 's'}`
+    return `holds near flat (${move}) over ${bars} bar${bars === 1 ? '' : 's'}`
+  }).join(', then ')
+}
+
+function DecisionPanel({
+  forecast,
+  news,
+  publicSentiment,
+  interval,
+}: {
+  forecast: ForecastResponse | null
+  news: NewsItem[]
+  publicSentiment: PublicSentiment | null
+  interval: ChartInterval
+}) {
+  if (!forecast) {
+    return (
+      <div className="decision-panel">
+        <EmptyState>Load a forecast to see path turns and decision context.</EmptyState>
+      </div>
+    )
+  }
+  const target = forecast.points.at(-1)
+  const bullishNews = news.filter((item) => item.sentiment === 'positive').slice(0, 3)
+  const bearishNews = news.filter((item) => item.sentiment === 'negative').slice(0, 3)
+  const regime = forecast.regime || ''
+  const regimeUp = regime.includes('_up')
+  const regimeDown = regime.includes('_down') || regime.includes('high_vol')
+  const publicUp = publicSentiment?.label === 'bullish'
+  const publicDown = publicSentiment?.label === 'bearish'
+  const upDrivers = [
+    ...(publicUp ? [`Public news sentiment is ${publicSentiment?.label}`] : []),
+    ...(regimeUp ? [`Price regime looks supportive (${regime.replaceAll('_', ' ')})`] : []),
+    ...bullishNews.map((item) => item.headline),
+  ]
+  const downDrivers = [
+    ...(publicDown ? [`Public news sentiment is ${publicSentiment?.label}`] : []),
+    ...(regimeDown ? [`Regime caution (${regime.replaceAll('_', ' ')})`] : []),
+    ...(forecast.edgeReliable === false ? ['Out-of-sample edge is not reliable in the current regime'] : []),
+    ...bearishNews.map((item) => item.headline),
+  ]
+  const resolvedInterval = forecast.timeframe || interval
+
+  return (
+    <div className="decision-panel">
+      <div className="decision-summary">
+        <div>
+          <span>Selected target</span>
+          <strong>{formatCurrency(target?.value)}</strong>
+        </div>
+        <div>
+          <span>Projected move</span>
+          <strong className={(forecast.netForecastChange ?? forecast.forecastChange ?? 0) >= 0 ? 'positive' : 'negative'}>
+            {formatPercent(forecast.netForecastChange ?? forecast.forecastChange, false)}
+          </strong>
+        </div>
+        <div>
+          <span>Horizon</span>
+          <strong>{barUnitLabel(resolvedInterval, forecast.bars)}</strong>
+        </div>
+        <div>
+          <span>Direction</span>
+          <strong className={forecast.sentiment === 'bullish' ? 'positive' : forecast.sentiment === 'bearish' ? 'negative' : undefined}>
+            {forecast.sentiment ?? '—'}
+          </strong>
+        </div>
+      </div>
+      <p className="decision-path">
+        <strong>Path:</strong> Forecast {describePathSegments(forecast.pathSegments || [])}.
+      </p>
+      <div className="decision-columns">
+        <div>
+          <h3>Why it may go up</h3>
+          {upDrivers.length
+            ? <ul>{upDrivers.map((item) => <li key={item}>{item}</li>)}</ul>
+            : <p>No strong bullish news or regime cue right now — lean on the path alone.</p>}
+        </div>
+        <div>
+          <h3>Why it may go down</h3>
+          {downDrivers.length
+            ? <ul>{downDrivers.map((item) => <li key={item}>{item}</li>)}</ul>
+            : <p>No strong bearish news or regime cue right now — lean on the path alone.</p>}
+        </div>
+      </div>
+      <p className="decision-note">
+        Path turns come from the Kronos close path. News and regime are context for judgment, not a causal model explanation.
+      </p>
+    </div>
+  )
+}
+
 function App() {
   const [mode, setMode] = useState<TradingMode>('paper')
   const [modeConfirm, setModeConfirm] = useState(false)
@@ -100,7 +239,9 @@ function App() {
   const [news, setNews] = useState<NewsItem[]>([])
   const [chart, setChart] = useState<ChartResponse | null>(null)
   const [forecast, setForecast] = useState<ForecastResponse | null>(null)
-  const [horizon, setHorizon] = useState<'short' | 'long'>('short')
+  const [horizon, setHorizon] = useState<ForecastPreset>('short')
+  const [chartInterval, setChartInterval] = useState<ChartInterval>(DEFAULT_INTERVAL.short)
+  const [forecastEngine, setForecastEngine] = useState<ForecastEngine>('kronos')
   const [marketState, setMarketState] = useState<LoadState>('idle')
   const [marketError, setMarketError] = useState('')
   const [marketWarning, setMarketWarning] = useState('')
@@ -109,6 +250,9 @@ function App() {
   const [orders, setOrders] = useState<Order[]>([])
   const [portfolioState, setPortfolioState] = useState<LoadState>('idle')
   const [portfolioError, setPortfolioError] = useState('')
+  const [realizedPl, setRealizedPl] = useState<number | null>(null)
+  const [realizedPlState, setRealizedPlState] = useState<LoadState>('idle')
+  const [holdSuggestions, setHoldSuggestions] = useState<HoldSuggestion[]>([])
   const [activePanel, setActivePanel] = useState<'trade' | 'portfolio'>('trade')
   const [assetType, setAssetType] = useState<'equity' | 'option'>('equity')
   const [side, setSide] = useState<OrderSide>('buy')
@@ -155,8 +299,11 @@ function App() {
         setMarketState('ready')
         return overview
       })
+      const forecastBars = DEFAULT_BARS[horizon]
       const [overviewResult, chartResult, forecastResult] = await Promise.allSettled([
-        overviewPromise, api.chart(symbol), api.forecast(symbol, horizon),
+        overviewPromise,
+        api.chart(symbol, chartInterval),
+        api.forecast(symbol, horizon, forecastBars, forecastEngine, chartInterval),
       ])
       if (requestId !== marketRequest.current) return
       if (overviewResult.status === 'rejected') throw overviewResult.reason
@@ -178,7 +325,7 @@ function App() {
       setMarketError(error instanceof Error ? error.message : 'Unable to load market data')
       setMarketState('error')
     }
-  }, [symbol, horizon])
+  }, [symbol, horizon, chartInterval, forecastEngine])
 
   const loadPortfolio = useCallback(async () => {
     setPortfolioState('loading')
@@ -186,17 +333,33 @@ function App() {
     setAccount(null)
     setPositions([])
     setOrders([])
+    setRealizedPl(null)
+    setRealizedPlState('loading')
     try {
-      const [accountData, positionData, orderData] = await Promise.all([
-        api.account(mode), api.positions(mode), api.orders(mode),
+      const [accountData, positionData, orderData, realizedResult] = await Promise.all([
+        api.account(mode),
+        api.positions(mode),
+        api.orders(mode),
+        api.realizedPl(mode).then(
+          (data) => ({ ok: true as const, data }),
+          (reason) => ({ ok: false as const, reason }),
+        ),
       ])
       setAccount(accountData)
       setPositions(positionData)
       setOrders(orderData)
       setPortfolioState('ready')
+      if (realizedResult.ok) {
+        setRealizedPl(realizedResult.data.realizedPl)
+        setRealizedPlState('ready')
+      } else {
+        setRealizedPl(null)
+        setRealizedPlState('error')
+      }
     } catch (error) {
       setPortfolioError(error instanceof Error ? error.message : 'Unable to load account')
       setPortfolioState('error')
+      setRealizedPlState('error')
     }
   }, [mode])
 
@@ -505,9 +668,58 @@ function App() {
             <section className="card chart-card">
               <div className="card-heading">
                 <div><span className="eyebrow">PRICE & PREDICTION</span><h2>Market trajectory</h2></div>
-                <div className="segmented" aria-label="Forecast horizon">
-                  <button aria-pressed={horizon === 'short'} className={horizon === 'short' ? 'active' : ''} onClick={() => setHorizon('short')}>Short horizon</button>
-                  <button aria-pressed={horizon === 'long'} className={horizon === 'long' ? 'active' : ''} onClick={() => setHorizon('long')}>Long horizon</button>
+                <div className="forecast-controls">
+                  <div className="segmented" aria-label="Forecast engine">
+                    <button
+                      aria-pressed={forecastEngine === 'kronos'}
+                      className={forecastEngine === 'kronos' ? 'active' : ''}
+                      onClick={() => setForecastEngine('kronos')}
+                    >
+                      Kronos
+                    </button>
+                    <button
+                      aria-pressed={forecastEngine === 'ensemble'}
+                      className={forecastEngine === 'ensemble' ? 'active' : ''}
+                      onClick={() => setForecastEngine('ensemble')}
+                    >
+                      Forecast
+                    </button>
+                  </div>
+                  <div className="segmented" aria-label="Forecast preset">
+                    <button
+                      aria-pressed={horizon === 'short'}
+                      className={horizon === 'short' ? 'active' : ''}
+                      onClick={() => {
+                        setHorizon('short')
+                        setChartInterval(DEFAULT_INTERVAL.short)
+                      }}
+                    >
+                      Short horizon
+                    </button>
+                    <button
+                      aria-pressed={horizon === 'long'}
+                      className={horizon === 'long' ? 'active' : ''}
+                      onClick={() => {
+                        setHorizon('long')
+                        setChartInterval(DEFAULT_INTERVAL.long)
+                      }}
+                    >
+                      Long horizon
+                    </button>
+                  </div>
+                  <div className="segmented interval-chips" aria-label="Chart interval">
+                    {CHART_INTERVALS.map((interval) => (
+                      <button
+                        key={interval}
+                        aria-pressed={chartInterval === interval}
+                        className={chartInterval === interval ? 'active' : ''}
+                        onClick={() => setChartInterval(interval)}
+                        title={intervalMetaLabel(interval)}
+                      >
+                        {INTERVAL_LABELS[interval]}
+                      </button>
+                    ))}
+                  </div>
                 </div>
               </div>
               {marketState === 'loading' && !chart ? <div className="chart-loading"><LoaderCircle className="spin" /> Loading candles and forecast…</div>
@@ -515,19 +727,29 @@ function App() {
                   : <EmptyState>No chart data available for {symbol}.</EmptyState>}
               <div className="chart-meta">
                 <span><i className="legend candle" /> Historical OHLC</span>
-                <span><i className="legend forecast" /> Kronos forecast</span>
+                <span>
+                  <i className="legend forecast" />{' '}
+                  {forecastEngine === 'ensemble' || forecast?.engine === 'ensemble'
+                    ? 'Ensemble forecast'
+                    : 'Kronos forecast'}
+                </span>
                 <span className="meta-right">
+                  {intervalMetaLabel(chartInterval)} · {barUnitLabel(chartInterval, DEFAULT_BARS[horizon])} ·{' '}
                   {forecast?.regime ? `${forecast.regime.replaceAll('_', ' ')} · ` : ''}
                   {forecast?.netForecastChange != null
                     ? `net ${formatPercent(forecast.netForecastChange, false)} after ${forecast.roundTripBps?.toFixed(1) ?? '—'} bps cost · `
                     : ''}
                   {forecast?.evaluation?.folds
-                    ? `OOS ${forecast.evaluation.folds} folds hit ${formatPercent(forecast.evaluation.hitRate, false)} · `
+                    ? `OOS ${forecast.evaluation.folds} folds hit ${formatPercent(forecast.evaluation.hitRate, false)}${forecast.evaluation.evalHorizon ? ` @ ${forecast.evaluation.evalHorizon} bars` : ''} · `
                     : ''}
-                  {forecast?.model || 'Kronos'} · prediction {formatDateTime(forecast?.predictionStart)}
+                  {forecast?.modelsUsed?.length
+                    ? `${forecast.modelsUsed.join(' + ')} · `
+                    : ''}
+                  {forecast?.model || (forecastEngine === 'ensemble' ? 'ensemble' : 'Kronos')} · prediction {formatDateTime(forecast?.predictionStart)}
                   {' → '}{formatDateTime(forecast?.predictionEnd)} · data through {formatDateTime(forecast?.generatedAt)}
                 </span>
               </div>
+              <DecisionPanel forecast={forecast} news={news} publicSentiment={publicSentiment} interval={chartInterval} />
               <p className="disclaimer">Forecasts are probabilistic research outputs, not investment advice or trade signals. They never trigger orders.</p>
             </section>
 
@@ -589,7 +811,20 @@ function App() {
           </aside>
         </section>
 
-        <MoversPanel onSelectSymbol={(ticker) => { setSymbol(ticker.toUpperCase()); setSelectedContract(null) }} />
+        <MoversPanel
+          onSelectSymbol={(ticker) => { setSymbol(ticker.toUpperCase()); setSelectedContract(null) }}
+          onHoldSuggestions={setHoldSuggestions}
+        />
+        <PortfolioPanel
+          account={account}
+          positions={positions}
+          state={portfolioState}
+          error={portfolioError}
+          realizedPl={realizedPl}
+          realizedPlState={realizedPlState}
+          holdSuggestions={holdSuggestions}
+          onSelectSymbol={(ticker) => { setSymbol(ticker.toUpperCase()); setSelectedContract(null) }}
+        />
       </main>
 
       {modeConfirm && <div

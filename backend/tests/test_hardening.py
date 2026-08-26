@@ -20,8 +20,8 @@ class StubAlpaca:
 class StubKronos:
     loaded = False
 
-    def forecast(self, symbol, preset, timeframe, context, horizon) -> dict:
-        return {"symbol": symbol.upper()}
+    def forecast(self, symbol, preset, timeframe, context, horizon, bars=None, use_cache=True, evaluate=True, engine="kronos") -> dict:
+        return {"symbol": symbol.upper(), "model": {"engine": engine}}
 
     def scan_movers(self, limit: int = 50, refresh: bool = False) -> dict:
         return {"movers": [], "status": "ready", "scanned": 0}

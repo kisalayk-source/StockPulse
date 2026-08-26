@@ -1,0 +1,8 @@
+# Shared deps for the forecasting research package (no model-specific stacks).
+pandas>=2.0
+numpy>=1.24
+pyyaml>=6.0
+fastapi>=0.110
+uvicorn>=0.27
+# Optional live data:
+# alpaca-py>=0.33

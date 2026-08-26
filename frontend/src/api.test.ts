@@ -160,7 +160,7 @@ describe('FastAPI contract adapters', () => {
   })
 
   it('exposes the Kronos prediction date range', async () => {
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(response({
+    const fetch = vi.fn().mockResolvedValue(response({
       symbol: 'AAPL',
       as_of: '2026-08-12T20:00:00Z',
       model: { id: 'NeoQuasar/Kronos-small' },
@@ -168,13 +168,26 @@ describe('FastAPI contract adapters', () => {
       costs: { round_trip_bps: 8.2 },
       regime: { label: 'high_vol_down', vol: 'high', trend: 'down' },
       evaluation: { folds: 3, hit_rate: 0.33, mean_net_return: -0.01, edge_reliable: false },
+      path_segments: [
+        {
+          direction: 'down',
+          start_index: 0,
+          end_index: 2,
+          start_close: 305,
+          end_close: 303,
+          change: -0.0066,
+          start_timestamp: '2026-08-13T13:30:00Z',
+          end_timestamp: '2026-08-13T13:35:00Z',
+        },
+      ],
       forecast: [
         { timestamp: '2026-08-13T13:30:00Z', close: 302, lower: 298, upper: 306 },
         { timestamp: '2026-08-13T13:35:00Z', close: 303 },
       ],
-    })))
+    }))
+    vi.stubGlobal('fetch', fetch)
 
-    const result = await api.forecast('AAPL', 'short')
+    const result = await api.forecast('AAPL', 'short', 10)
 
     expect(result.generatedAt).toBe('2026-08-12T20:00:00Z')
     expect(result.predictionStart).toBe('2026-08-13T13:30:00Z')
@@ -184,7 +197,74 @@ describe('FastAPI contract adapters', () => {
     expect(result.netForecastChange).toBe(-0.008)
     expect(result.regime).toBe('high_vol_down')
     expect(result.edgeReliable).toBe(false)
+    expect(result.bars).toBe(10)
+    expect(result.pathSegments?.[0]).toMatchObject({ direction: 'down', change: -0.0066 })
     expect(result.points[0]).toMatchObject({ lower: 298, upper: 306 })
+    expect(JSON.parse(String(fetch.mock.calls[0][1]?.body))).toEqual({
+      symbol: 'AAPL',
+      preset: 'short',
+      horizon: 10,
+      engine: 'kronos',
+    })
+  })
+
+  it('requests the ensemble engine when selected', async () => {
+    const fetch = vi.fn().mockResolvedValue(response({
+      symbol: 'AAPL',
+      as_of: '2026-08-12T20:00:00Z',
+      model: {
+        id: 'ensemble',
+        engine: 'ensemble',
+        models_used: ['persistence', 'kronos'],
+      },
+      trend: { direction: 'up', forecast_change: 0.01 },
+      forecast: [{ timestamp: '2026-08-13T13:30:00Z', close: 210 }],
+    }))
+    vi.stubGlobal('fetch', fetch)
+
+    const result = await api.forecast('AAPL', 'short', 10, 'ensemble')
+
+    expect(result.engine).toBe('ensemble')
+    expect(result.model).toBe('ensemble')
+    expect(result.modelsUsed).toEqual(['persistence', 'kronos'])
+    expect(JSON.parse(String(fetch.mock.calls[0][1]?.body))).toEqual({
+      symbol: 'AAPL',
+      preset: 'short',
+      horizon: 10,
+      engine: 'ensemble',
+    })
+  })
+
+  it('requests chart bars and forecasts for a chosen interval', async () => {
+    const fetch = vi.fn()
+      .mockResolvedValueOnce(response({
+        symbol: 'AAPL',
+        timeframe: '15Min',
+        bars: [{ timestamp: '2026-08-12T18:00:00Z', open: 1, high: 2, low: 0.5, close: 1.5, volume: 10 }],
+      }))
+      .mockResolvedValueOnce(response({
+        symbol: 'AAPL',
+        as_of: '2026-08-12T20:00:00Z',
+        timeframe: '15Min',
+        model: { id: 'Kronos', horizon: 12 },
+        trend: { direction: 'up' },
+        forecast: [{ timestamp: '2026-08-12T18:15:00Z', close: 1.6 }],
+      }))
+    vi.stubGlobal('fetch', fetch)
+
+    const chart = await api.chart('AAPL', '15Min')
+    const forecast = await api.forecast('AAPL', 'short', 12, 'kronos', '15Min')
+
+    expect(chart.interval).toBe('15Min')
+    expect(String(fetch.mock.calls[0][0])).toContain('timeframe=15Min')
+    expect(forecast.timeframe).toBe('15Min')
+    expect(JSON.parse(String(fetch.mock.calls[1][1]?.body))).toEqual({
+      symbol: 'AAPL',
+      preset: 'short',
+      horizon: 12,
+      engine: 'kronos',
+      timeframe: '15Min',
+    })
   })
 
   it('uses mode, type, and expiration filters for option data', async () => {
@@ -247,6 +327,8 @@ describe('FastAPI contract adapters', () => {
         direction: 'up',
         day_change: 0.02,
         volume: 80_000_000,
+        prediction_end: '2026-08-12T19:00:00Z',
+        horizon: 8,
       }],
     })))
 
@@ -257,8 +339,24 @@ describe('FastAPI contract adapters', () => {
       lastPrice: 120,
       forecastChange: 0.05,
       dayChange: 0.02,
+      predictionEnd: '2026-08-12T19:00:00Z',
+      horizon: 8,
     })
     expect(result.cached).toBe(false)
+  })
+
+  it('normalizes realized P/L', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(response({
+      realized_pl: 125.5,
+      fill_count: 4,
+      as_of: '2026-08-25T12:00:00Z',
+    })))
+
+    await expect(api.realizedPl('paper')).resolves.toEqual({
+      realizedPl: 125.5,
+      fillCount: 4,
+      asOf: '2026-08-25T12:00:00Z',
+    })
   })
 
   it('retries a throttled forecast and coalesces in-flight requests', async () => {

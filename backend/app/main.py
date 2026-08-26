@@ -27,9 +27,11 @@ def create_app(settings: Settings | None = None, services: Services | None = Non
         app.state.services = services or build_services(settings)
         app.state.rate_limiter = RateLimiter()
         yield
-        finnhub_client = getattr(app.state.services.finnhub, "client", None)
-        if finnhub_client is not None and hasattr(finnhub_client, "aclose"):
-            await finnhub_client.aclose()
+        for service_name in ("finnhub",):
+            service = getattr(app.state.services, service_name, None)
+            client = getattr(service, "client", None) if service is not None else None
+            if client is not None and hasattr(client, "aclose"):
+                await client.aclose()
 
     app = FastAPI(
         title=settings.app_name,

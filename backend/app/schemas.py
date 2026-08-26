@@ -114,6 +114,7 @@ class ForecastRequest(BaseModel):
     timeframe: Literal["1Min", "5Min", "15Min", "1Hour", "1Day"] | None = None
     context: int | None = Field(default=None, ge=32, le=512)
     horizon: int | None = Field(default=None, ge=1, le=120)
+    engine: Literal["kronos", "ensemble"] = "kronos"
 
 
 class MoversScanRequest(BaseModel):

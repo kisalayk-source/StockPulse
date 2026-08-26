@@ -64,6 +64,9 @@ class FakeAlpaca:
     def account(self, mode: str) -> dict:
         return {"id": "account", "mode": mode}
 
+    def realized_pl(self, mode: str) -> dict:
+        return {"realized_pl": 42.5, "fill_count": 3, "as_of": "2026-08-25T12:00:00+00:00"}
+
     def positions(self, mode: str) -> list[dict]:
         return [{"symbol": "AAPL", "qty": "1"}]
 
@@ -157,13 +160,14 @@ class UnavailableFinnhub:
 class FakeKronos:
     loaded = False
 
-    def forecast(self, symbol, preset, timeframe, context, horizon) -> dict:
+    def forecast(self, symbol, preset, timeframe, context, horizon, bars=None, use_cache=True, evaluate=True, engine="kronos") -> dict:
         return {
             "symbol": symbol.upper(),
             "preset": preset,
             "historical": [],
             "forecast": [],
             "trend": {"direction": "flat", "forecast_change": 0},
+            "model": {"id": "ensemble" if engine == "ensemble" else "NeoQuasar/Kronos-small", "engine": engine},
         }
 
     def scan_movers(self, limit: int = 50, refresh: bool = False) -> dict:
@@ -211,6 +215,7 @@ def test_health_and_safe_config_status() -> None:
         response = client.get("/api/v1/config/status")
         assert response.status_code == 200
         assert response.json()["alpaca"]["paper_configured"] is True
+        assert "reddit_configured" not in response.json()
         assert "key" not in response.text
 
 
@@ -467,6 +472,9 @@ def test_market_data_account_options_and_forecast_api() -> None:
         assert overview.json()["public_sentiment"]["label"] == "bullish"
         assert client.get("/api/v1/stocks/AAPL/bars").json()["bars"]
         assert client.get("/api/v1/account", params={"mode": "paper"}).status_code == 200
+        realized = client.get("/api/v1/account/realized-pl", params={"mode": "paper"})
+        assert realized.status_code == 200
+        assert realized.json()["realized_pl"] == 42.5
         clock = client.get("/api/v1/market/clock").json()
         assert clock["is_open"] is True
         assert clock["session"] == "regular"
@@ -482,6 +490,13 @@ def test_market_data_account_options_and_forecast_api() -> None:
         )
         assert forecast.status_code == 200
         assert forecast.json()["symbol"] == "AAPL"
+        assert forecast.json()["model"]["engine"] == "kronos"
+        ensemble = client.post(
+            "/api/v1/forecast",
+            json={"symbol": "AAPL", "preset": "short", "engine": "ensemble"},
+        )
+        assert ensemble.status_code == 200
+        assert ensemble.json()["model"]["engine"] == "ensemble"
         preview = client.post(
             "/api/v1/orders/preview",
             json={"kind": "equity", "mode": "paper", "symbol": "AAPL", "side": "buy", "qty": 1},

@@ -34,5 +34,7 @@ if (Test-ApiListening) {
 Set-Location $backend
 $env:PYTHONUNBUFFERED = "1"
 $bindHost = if ($env:KRONOS_API_HOST) { $env:KRONOS_API_HOST } else { "127.0.0.1" }
+# uvicorn writes INFO to stderr; PowerShell Stop would treat that as a failed task.
+$ErrorActionPreference = "Continue"
 & $python -m uvicorn app.main:app --host $bindHost --port 8000 *>> $logFile
 exit $LASTEXITCODE

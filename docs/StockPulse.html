@@ -1,0 +1,316 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>StockPulse Documentation</title>
+  <style>
+    @page {
+      size: Letter;
+      margin: 0.85in 0.85in 1in;
+      @bottom-center {
+        content: "StockPulse  ·  Confidential personal tooling  ·  " counter(page);
+        font-size: 9px;
+        color: #5b6573;
+      }
+    }
+    * { box-sizing: border-box; }
+    html, body {
+      margin: 0;
+      padding: 0;
+      color: #1b2430;
+      background: #fff;
+      font: 11.5pt/1.45 "Segoe UI", Calibri, system-ui, sans-serif;
+    }
+    h1, h2, h3, h4 { font-family: "Segoe UI Semibold", "Segoe UI", Calibri, sans-serif; page-break-after: avoid; }
+    h1 { font-size: 26pt; letter-spacing: -0.03em; margin: 0 0 8pt; }
+    h2 { font-size: 16pt; color: #2c2154; border-bottom: 1.5px solid #d9d3ea; padding-bottom: 4pt; margin: 22pt 0 10pt; }
+    h3 { font-size: 12.5pt; color: #3d3558; margin: 14pt 0 6pt; }
+    h4 { font-size: 11pt; margin: 10pt 0 4pt; }
+    p, li { orphans: 3; widows: 3; }
+    a { color: #3b4f9a; text-decoration: none; }
+    code, pre, kbd {
+      font-family: Consolas, "Cascadia Mono", "Courier New", monospace;
+      font-size: 9.5pt;
+    }
+    code { background: #f3f1f8; padding: 0 3px; border-radius: 3px; }
+    pre {
+      background: #f3f1f8;
+      color: #1b2430;
+      border: 1px solid #d9d3ea;
+      padding: 10pt 12pt;
+      border-radius: 6px;
+      white-space: pre-wrap;
+      word-break: break-word;
+      page-break-inside: avoid;
+    }
+    table { width: 100%; border-collapse: collapse; margin: 8pt 0 14pt; font-size: 10.5pt; page-break-inside: avoid; }
+    th, td { border: 1px solid #d5dbe3; padding: 6pt 8pt; text-align: left; vertical-align: top; }
+    th { background: #efeaf8; color: #2c2154; }
+    .cover {
+      min-height: 9.2in;
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+      page-break-after: always;
+    }
+    .mark {
+      width: 42px; height: 42px; border-radius: 10px;
+      background: linear-gradient(145deg, #5d43a3, #2c2154);
+      color: #d9ccff; display: grid; place-items: center;
+      font-weight: 700; letter-spacing: .04em; margin-bottom: 18pt;
+    }
+    .eyebrow { color: #6b6288; font-size: 10pt; font-weight: 700; letter-spacing: .16em; text-transform: uppercase; }
+    .lede { font-size: 13.5pt; color: #3a4452; max-width: 36em; }
+    .meta { margin-top: 28pt; color: #5b6573; font-size: 10.5pt; }
+    .callout {
+      border-left: 4px solid #b52d39;
+      background: #fdf4f4;
+      padding: 8pt 12pt;
+      margin: 10pt 0 14pt;
+      page-break-inside: avoid;
+    }
+    .note {
+      border-left: 4px solid #5d43a3;
+      background: #f6f3fb;
+      padding: 8pt 12pt;
+      margin: 10pt 0 14pt;
+      page-break-inside: avoid;
+    }
+    .toc a { color: #1b2430; }
+    .toc li { margin: 4pt 0; }
+    .muted { color: #5b6573; }
+    .section { page-break-inside: avoid; }
+    .keep { page-break-inside: avoid; }
+    footer.doc-end { margin-top: 28pt; color: #5b6573; font-size: 9.5pt; }
+  </style>
+</head>
+<body>
+  <section class="cover">
+    <div class="mark">SP</div>
+    <p class="eyebrow">Product &amp; operations guide</p>
+    <h1>StockPulse</h1>
+    <p class="lede">Paper-first trading dashboard, Kronos forecasts, WallStreetBets research, and a look-ahead-safe historical backtester — built on the Kronos foundation model for financial markets.</p>
+    <p class="meta">
+      Version: unreleased personal build<br />
+      Date: 19 August 2026<br />
+      Local site: http://localhost:5173<br />
+      LAN: http://192.168.86.197:5173
+    </p>
+  </section>
+
+  <h2>Contents</h2>
+  <ol class="toc">
+    <li><a href="#overview">Overview</a></li>
+    <li><a href="#architecture">Architecture</a></li>
+    <li><a href="#hosting">Local hosting</a></li>
+    <li><a href="#dashboard">Dashboard</a></li>
+    <li><a href="#forecasts">Forecasts and movers</a></li>
+    <li><a href="#trading">Trading and safety</a></li>
+    <li><a href="#api">API reference</a></li>
+    <li><a href="#config">Configuration</a></li>
+    <li><a href="#backtest">Historical backtester</a></li>
+    <li><a href="#dev">Development and tests</a></li>
+    <li><a href="#security">Security and licensing</a></li>
+  </ol>
+
+  <h2 id="overview">1. Overview</h2>
+  <p>StockPulse is a personal trading workstation. It shows live (or paper) market data, Kronos probabilistic forecasts, news and public sentiment, a background scan of predicted movers, and your open broker positions. Orders are <strong>manual only</strong>. Forecasts never submit trades.</p>
+  <p>The repository also contains Kronos itself (tokenizer, predictor, fine-tuning examples) and a separate production-grade backtester in <code>kronos_backtest/</code>.</p>
+  <div class="callout">
+    <strong>Not investment advice.</strong> Forecasts are research outputs. Broker acceptance does not guarantee execution. Use paper mode until you understand the risk controls.
+  </div>
+
+  <h2 id="architecture">2. Architecture</h2>
+  <table>
+    <thead><tr><th>Layer</th><th>Path</th><th>Role</th></tr></thead>
+    <tbody>
+      <tr><td>Dashboard</td><td><code>frontend/</code></td><td>React + TypeScript + Vite. Serves the UI and proxies <code>/api</code> to the backend.</td></tr>
+      <tr><td>API</td><td><code>backend/</code></td><td>FastAPI on loopback port 8000. Alpaca, Finnhub, Kronos.</td></tr>
+      <tr><td>Model</td><td><code>model/</code></td><td>Kronos predictor and tokenizer. Loaded lazily on first forecast.</td></tr>
+      <tr><td>Backtester</td><td><code>kronos_backtest/</code></td><td>Look-ahead-safe historical engine, walk-forward, costs, reports.</td></tr>
+      <tr><td>Legacy demo</td><td><code>webui/</code></td><td>Unchanged Flask demo. Not required for StockPulse.</td></tr>
+    </tbody>
+  </table>
+  <div class="note">
+    The backend binds to <code>127.0.0.1:8000</code>. LAN clients reach it only through the frontend proxy on port 5173. Do not expose the API directly on the network unless you intend to.
+  </div>
+  <h3>Request path</h3>
+  <pre>Browser (localhost or LAN)
+    → Vite preview :5173
+        → static dashboard
+        → /api/v1/*  proxy  → FastAPI :8000 (loopback)
+            → Alpaca / Finnhub / Kronos</pre>
+
+  <h2 id="hosting">3. Local hosting</h2>
+  <p>StockPulse is meant to run as a normal Windows website, not inside a Cursor terminal. Two Task Scheduler tasks start at logon:</p>
+  <table>
+    <thead><tr><th>Task</th><th>Script</th><th>Listens</th></tr></thead>
+    <tbody>
+      <tr><td><code>KronosWeb</code></td><td><code>scripts/start-kronos-web.ps1</code></td><td><code>0.0.0.0:5173</code> (Vite preview of the production build)</td></tr>
+      <tr><td><code>KronosAPI</code></td><td><code>scripts/start-kronos-api.ps1</code></td><td><code>127.0.0.1:8000</code> (uvicorn)</td></tr>
+    </tbody>
+  </table>
+  <p>Open <strong>http://localhost:5173</strong> in Edge or Chrome. Other devices on the same Wi-Fi can use <strong>http://192.168.86.197:5173</strong> if the PC firewall allows inbound TCP 5173.</p>
+  <h3>Manual start</h3>
+  <pre>powershell -ExecutionPolicy Bypass -File scripts/publish-kronos-lan.ps1 -SkipChecks</pre>
+  <p>That script builds the frontend if needed, starts both processes detached, and prints the local and LAN URLs. After application code changes, run backend and frontend checks first; do not publish a broken build. Documentation-only changes do not need republishing.</p>
+  <h3>Logs</h3>
+  <ul>
+    <li><code>runtime-logs/web.log</code> — website</li>
+    <li><code>backend/logs/api.log</code> — API (scheduled task)</li>
+    <li><code>runtime-logs/backend.*.log</code> — API when started via the LAN publish script</li>
+  </ul>
+
+  <h2 id="dashboard">4. Dashboard</h2>
+  <p>The UI is a single-page workstation:</p>
+  <ul>
+    <li><strong>Search</strong> — symbol or company name; results stay in a scrollable list.</li>
+    <li><strong>Market light</strong> — US session: pre-market, regular, after hours, or closed (America/New_York).</li>
+    <li><strong>Quote card</strong> — last, change, OHLC, volume, market cap, P/E, EPS, dividend yield.</li>
+    <li><strong>Chart</strong> — historical OHLC plus Kronos forecast path. Toggle <strong>Kronos</strong> (single model) vs <strong>Forecast</strong> (ensemble). Short vs long horizon, and chart interval (1m–1D).</li>
+    <li><strong>Sentiment</strong> — Public (Finnhub news sentiment) and Investors (Kronos trend). Dimmed investor badge means no reliable out-of-sample edge.</li>
+    <li><strong>News</strong> — merged Finnhub + Alpaca coverage for the selected symbol.</li>
+    <li><strong>Portfolio / ticket</strong> — paper or live account, equity or single-leg option, review-before-send.</li>
+    <li><strong>Movers</strong> — top 50 predicted gainers and losers from a background Kronos scan.</li>
+    <li><strong>Open positions</strong> — full-width holdings table under the movers scan. Click a symbol to load it.</li>
+  </ul>
+  <p>Partial-data banners appear when quote data loaded but chart or forecast did not (including brief forecast throttling). Forecast retries and in-flight request coalescing reduce false “unavailable” states when switching symbols.</p>
+
+  <h2 id="forecasts">5. Forecasts and movers</h2>
+  <p>The chart engine toggle is labeled <strong>Kronos</strong> (single Kronos model, <code>engine=kronos</code>) or <strong>Forecast</strong> (weighted ensemble, <code>engine=ensemble</code>). Kronos weights load on the first Kronos request (not at API startup). Device is <code>auto</code> unless overridden (<code>cpu</code>, <code>cuda:0</code>, MPS).</p>
+  <table>
+    <thead><tr><th>Preset</th><th>Bars</th><th>Context</th><th>Horizon</th></tr></thead>
+    <tbody>
+      <tr><td><code>short</code></td><td>5-minute</td><td>256</td><td>12 bars</td></tr>
+      <tr><td><code>long</code></td><td>daily</td><td>256</td><td>20 bars</td></tr>
+    </tbody>
+  </table>
+  <p>Context is capped at 512. Future timestamps skip weekends and stay inside the US regular session. That is market-aware, not a full exchange-holiday calendar.</p>
+  <p>The movers scan ranks today’s active names by absolute Kronos forecast change after a spread/slippage haircut. It uses a <strong>separate rate-limit bucket</strong> from per-ticker forecasts (defaults: 10 scan requests/min vs 30 ticker forecasts/min) so a universe scan does not starve the chart.</p>
+  <p><code>POST /forecast/movers</code> starts a background scan and returns immediately. Poll <code>GET /forecast/movers/status</code> for progressive top-50 gainers and losers.</p>
+
+  <h2 id="trading">6. Trading and safety</h2>
+  <ul>
+    <li>Default mode is <strong>paper</strong>. Live is disabled until <code>ALLOW_LIVE_TRADING=true</code> on the server.</li>
+    <li>Enabling live in the UI requires typing <code>LIVE</code>. Live orders also send that confirmation token.</li>
+    <li>Every order opens a review dialog. There is no scheduler or signal executor.</li>
+    <li>Equity sells cannot exceed the long position unless <code>ALLOW_SHORT_SELLING=true</code>.</li>
+    <li>Option <code>sell_to_open</code> requires <code>ALLOW_UNCOVERED_OPTIONS=true</code>.</li>
+    <li>Risk preview can block buys (position size, spread, daily loss halt).</li>
+    <li>Cancel open orders from Activity. Replace is available on the API.</li>
+  </ul>
+  <h3>Paper smoke checklist</h3>
+  <ol>
+    <li>Configure only paper Alpaca keys (and optionally Finnhub).</li>
+    <li>Keep <code>ALLOW_LIVE_TRADING=false</code>.</li>
+    <li>Confirm <code>/health</code> and <code>/config/status</code> show no secrets.</li>
+    <li>Search AAPL, open overview, load daily bars.</li>
+    <li>Inspect paper account, positions, and orders.</li>
+    <li>View an option chain without submitting.</li>
+    <li>Place a one-share or low-notional paper order; confirm in Alpaca.</li>
+    <li>Cancel an open paper order from the UI or API.</li>
+    <li>Run a short Kronos forecast (first call downloads weights).</li>
+    <li>Confirm a live request returns 403 while live is disabled.</li>
+  </ol>
+
+  <h2 id="api">7. API reference</h2>
+  <p>All routes use the prefix <code>/api/v1</code>. Interactive docs: http://127.0.0.1:8000/docs (loopback only). Responses include <code>X-Request-ID</code>.</p>
+  <table>
+    <thead><tr><th>Method</th><th>Path</th><th>Purpose</th></tr></thead>
+    <tbody>
+      <tr><td>GET</td><td><code>/health</code></td><td>Liveness</td></tr>
+      <tr><td>GET</td><td><code>/ready</code></td><td>Service presence</td></tr>
+      <tr><td>GET</td><td><code>/config/status</code></td><td>Safe config flags (no secrets)</td></tr>
+      <tr><td>GET</td><td><code>/market/clock</code></td><td>Session / next open-close</td></tr>
+      <tr><td>GET</td><td><code>/symbols/search</code></td><td>Symbol lookup</td></tr>
+      <tr><td>GET</td><td><code>/stocks/{symbol}/overview</code></td><td>Quote, news, fundamentals, public sentiment</td></tr>
+      <tr><td>GET</td><td><code>/stocks/{symbol}/bars</code></td><td>OHLCV</td></tr>
+      <tr><td>POST</td><td><code>/forecast</code></td><td>Kronos or ensemble Forecast (<code>engine</code>)</td></tr>
+      <tr><td>POST</td><td><code>/forecast/movers</code></td><td>Start movers scan</td></tr>
+      <tr><td>GET</td><td><code>/forecast/movers/status</code></td><td>Scan progress and rankings</td></tr>
+      <tr><td>GET</td><td><code>/account</code>, <code>/positions</code>, <code>/orders</code></td><td>Broker state (<code>mode=paper|live</code>)</td></tr>
+      <tr><td>GET</td><td><code>/options/contracts</code>, <code>/options/chain</code></td><td>Option chain</td></tr>
+      <tr><td>POST</td><td><code>/orders/preview</code></td><td>Risk preview</td></tr>
+      <tr><td>POST</td><td><code>/orders/equity</code>, <code>/orders/option</code></td><td>Submit order</td></tr>
+      <tr><td>DELETE / PATCH</td><td><code>/orders/{id}</code></td><td>Cancel / replace</td></tr>
+    </tbody>
+  </table>
+  <p>Missing providers return generic 503; upstream failures return generic 502. Details stay in server logs. If <code>API_KEY</code> is set, every route except <code>/health</code> requires header <code>X-API-Key</code>.</p>
+  <h3>Example paper equity order</h3>
+  <pre>{
+  "mode": "paper",
+  "symbol": "AAPL",
+  "side": "buy",
+  "type": "limit",
+  "time_in_force": "day",
+  "qty": 1,
+  "limit_price": 190.00
+}</pre>
+
+  <h2 id="config">8. Configuration</h2>
+  <p>Copy <code>backend/.env.example</code> to <code>backend/.env</code> (gitignored). Important variables:</p>
+  <table>
+    <thead><tr><th>Variable</th><th>Default / notes</th></tr></thead>
+    <tbody>
+      <tr><td><code>ALPACA_PAPER_KEY</code> / <code>_SECRET</code></td><td>Paper trading and default market data</td></tr>
+      <tr><td><code>ALPACA_LIVE_KEY</code> / <code>_SECRET</code></td><td>Live trading only when enabled</td></tr>
+      <tr><td><code>ALPACA_DATA_FEED</code></td><td><code>iex</code> (use <code>sip</code> only with a SIP subscription)</td></tr>
+      <tr><td><code>FINNHUB_API_KEY</code></td><td>Fundamentals, company news, public sentiment</td></tr>
+      <tr><td><code>ALLOW_LIVE_TRADING</code></td><td><code>false</code></td></tr>
+      <tr><td><code>API_KEY</code></td><td>Empty = no API auth (local default)</td></tr>
+      <tr><td><code>CORS_ORIGIN</code></td><td><code>http://localhost:5173</code> plus LAN origins as needed</td></tr>
+      <tr><td><code>FORECAST_RATE_LIMIT_PER_MINUTE</code></td><td>30</td></tr>
+      <tr><td><code>FORECAST_SCAN_RATE_LIMIT_PER_MINUTE</code></td><td>10</td></tr>
+      <tr><td><code>KRONOS_MODEL_ID</code></td><td><code>NeoQuasar/Kronos-small</code></td></tr>
+    </tbody>
+  </table>
+  <p>Frontend: <code>frontend/.env.local</code> with optional <code>VITE_API_BASE_URL</code> (default same-origin <code>/api/v1</code>) and <code>VITE_API_KEY</code> if the backend requires a key. A key in the browser is not a substitute for firewall and CORS controls.</p>
+
+  <h2 id="backtest">9. Historical backtester</h2>
+  <p><code>kronos_backtest</code> is the supported engine. <code>examples/run_backtest_kronos.py</code> and <code>finetune/qlib_test.py</code> are demo-grade only.</p>
+  <h3>Event loop (no look-ahead)</h3>
+  <pre>For each bar T:
+  1. OHLCV for T is known
+  2. Pending orders fill at this bar's OPEN if delay has elapsed
+     (never this bar's close, never the signal bar's close)
+  3. Mark portfolio to T close
+  4. Context = history with timestamps &lt;= T
+  5. Predictor sees only that context (LookAheadBiasError otherwise)
+  6. Strategy emits BUY / SELL / HOLD after estimated costs
+  7. Risk manager sizes or rejects
+  8. Order is queued; it cannot fill until a later bar</pre>
+  <p>Default: signal at T, fill at T+1 open, plus spread, slippage, and fees. If bid/ask columns are missing, a synthetic spread is applied around the next-bar open.</p>
+  <pre>pip install -r requirements.txt
+python -m kronos_backtest --config configs/backtest.yaml --predictor dummy --output backtest_results
+pytest tests/backtest -q</pre>
+  <p>Use <code>--predictor kronos</code> to wrap the real model (downloads weights). Outputs: <code>summary.json</code>, <code>metrics.json</code>, <code>trades.csv</code>, equity/drawdown CSVs, and <code>report.html</code>.</p>
+  <p>Limitations: no market-impact model beyond proportional slippage; only MARKET fills; default loop is one symbol per run; fine-tune quality depends on the callback you supply (test rows are never passed to <code>fit</code>).</p>
+
+  <h2 id="dev">10. Development and tests</h2>
+  <p>Use separate virtualenvs for the core model and the StockPulse backend when dependency sets conflict. Application CI uses Python 3.12 and Node 22.</p>
+  <pre># Backend
+cd backend
+pytest -q
+
+# Frontend
+cd frontend
+npm run lint
+npm run typecheck
+npm test
+npm run build
+
+# Backtester
+pytest -q tests/backtest</pre>
+  <p>Backend tests use fakes and HTTP mock transports. They never call Alpaca, Finnhub, Hugging Face, or place orders. Optional Docker: <code>docker compose up --build</code> from the repo root (frontend :5173, API docs :8000).</p>
+
+  <h2 id="security">11. Security and licensing</h2>
+  <ul>
+    <li>Never commit <code>.env</code>, credentials, account IDs, or model weights.</li>
+    <li>Report vulnerabilities privately via GitHub Security, not a public issue.</li>
+    <li>Financial loss, forecast accuracy, and provider outages are not software vulnerabilities.</li>
+    <li>Source is MIT unless a file says otherwise. Hugging Face weights, broker data, and third-party packages keep their own terms.</li>
+  </ul>
+  <p>Related files: <code>SECURITY.md</code>, <code>docs/LICENSING.md</code>, <code>docs/DEVELOPMENT.md</code>, <code>docs/BACKTEST.md</code>, <code>backend/README.md</code>, <code>frontend/README.md</code>, <code>TRADING_APP.md</code>.</p>
+  <p class="doc-end">End of StockPulse documentation — 19 August 2026. This guide describes the personal StockPulse build in this repository and is not a broker disclosure or offer to transact.</p>
+</body>
+</html>

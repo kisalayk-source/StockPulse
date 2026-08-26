@@ -65,11 +65,28 @@ export interface ChartResponse {
   asOf?: string
 }
 
+export interface ForecastPathSegment {
+  direction: 'up' | 'down' | 'flat'
+  startIndex: number
+  endIndex: number
+  startClose: number
+  endClose: number
+  change: number
+  startTimestamp?: string
+  endTimestamp?: string
+}
+
+export type ChartInterval = '1Min' | '5Min' | '15Min' | '1Hour' | '1Day'
+
 export interface ForecastResponse {
   symbol: string
   horizon: 'short' | 'long'
+  bars: number
+  timeframe?: ChartInterval
+  engine?: 'kronos' | 'ensemble'
   points: ForecastPoint[]
   model?: string
+  modelsUsed?: string[]
   generatedAt?: string
   predictionStart?: string
   predictionEnd?: string
@@ -80,11 +97,13 @@ export interface ForecastResponse {
   roundTripBps?: number | null
   regime?: string
   edgeReliable?: boolean
+  pathSegments?: ForecastPathSegment[]
   evaluation?: {
     folds: number
     hitRate: number | null
     meanNetReturn: number | null
     ic: number | null
+    evalHorizon?: number | null
   }
 }
 
@@ -213,6 +232,8 @@ export interface Mover {
   dayChange: number | null
   volume: number | null
   asOf?: string
+  predictionEnd?: string
+  horizon?: number
   regime?: string
   edgeReliable?: boolean
 }
@@ -419,6 +440,8 @@ function mapMover(value: unknown): Mover {
     dayChange: number(item.day_change),
     volume: number(item.volume),
     asOf: text(item.as_of) || undefined,
+    predictionEnd: text(item.prediction_end) || undefined,
+    horizon: number(item.horizon) ?? undefined,
     regime: text(item.regime) || undefined,
     edgeReliable: item.edge_reliable == null ? undefined : Boolean(item.edge_reliable),
   }
@@ -514,10 +537,16 @@ export const api = {
       publicSentiment: mapPublicSentiment(payload.public_sentiment),
     }
   },
-  chart: async (symbol: string, range = '6M'): Promise<ChartResponse> => {
-    const limit = range === '1M' ? 30 : range === '1Y' ? 365 : 180
+  chart: async (symbol: string, timeframe: ChartInterval = '1Day'): Promise<ChartResponse> => {
+    const limits: Record<ChartInterval, number> = {
+      '1Min': 390,
+      '5Min': 256,
+      '15Min': 256,
+      '1Hour': 240,
+      '1Day': 180,
+    }
     const payload = object(await request<unknown>(
-      `/stocks/${encodeURIComponent(symbol)}/bars?${query({ timeframe: '1Day', limit })}`,
+      `/stocks/${encodeURIComponent(symbol)}/bars?${query({ timeframe, limit: limits[timeframe] })}`,
     ))
     const candles = list(payload.bars).map((value) => {
       const item = object(value)
@@ -532,10 +561,23 @@ export const api = {
     })
     return { symbol: text(payload.symbol, symbol), interval: text(payload.timeframe), candles }
   },
-  forecast: async (symbol: string, horizon: 'short' | 'long'): Promise<ForecastResponse> => {
-    const payload = object(await coalesced(`forecast:${symbol}:${horizon}`, () => requestWithRetry<unknown>('/forecast', {
+  forecast: async (
+    symbol: string,
+    horizon: 'short' | 'long',
+    bars: number = horizon === 'long' ? 20 : 12,
+    engine: 'kronos' | 'ensemble' = 'kronos',
+    timeframe?: ChartInterval,
+  ): Promise<ForecastResponse> => {
+    const cacheKey = `forecast:${symbol}:${horizon}:${bars}:${engine}:${timeframe || 'default'}`
+    const payload = object(await coalesced(cacheKey, () => requestWithRetry<unknown>('/forecast', {
       method: 'POST',
-      body: JSON.stringify({ symbol, preset: horizon }),
+      body: JSON.stringify({
+        symbol,
+        preset: horizon,
+        horizon: bars,
+        engine,
+        ...(timeframe ? { timeframe } : {}),
+      }),
     })))
     const model = object(payload.model)
     const trend = object(payload.trend)
@@ -548,11 +590,43 @@ export const api = {
         upper: number(item.upper) ?? undefined,
       }
     })
+    const pathSegments = list(payload.path_segments).map((value) => {
+      const item = object(value)
+      const directionRaw = text(item.direction)
+      const direction = directionRaw === 'up' || directionRaw === 'down' || directionRaw === 'flat'
+        ? directionRaw
+        : 'flat'
+      return {
+        direction,
+        startIndex: number(item.start_index) ?? 0,
+        endIndex: number(item.end_index) ?? 0,
+        startClose: number(item.start_close) ?? 0,
+        endClose: number(item.end_close) ?? 0,
+        change: number(item.change) ?? 0,
+        startTimestamp: text(item.start_timestamp) || undefined,
+        endTimestamp: text(item.end_timestamp) || undefined,
+      } satisfies ForecastPathSegment
+    })
+    const modelsUsed = list(model.models_used).map((value) => text(value)).filter(Boolean)
+    const engineRaw = text(model.engine) || engine
+    const resolvedEngine = engineRaw === 'ensemble' ? 'ensemble' : 'kronos'
+    const timeframeRaw = text(payload.timeframe) || timeframe || ''
+    const resolvedTimeframe = (
+      timeframeRaw === '1Min'
+      || timeframeRaw === '5Min'
+      || timeframeRaw === '15Min'
+      || timeframeRaw === '1Hour'
+      || timeframeRaw === '1Day'
+    ) ? timeframeRaw : undefined
     return {
       symbol: text(payload.symbol, symbol),
       horizon,
+      bars,
+      timeframe: resolvedTimeframe,
+      engine: resolvedEngine,
       points,
-      model: text(model.id, 'Kronos'),
+      model: text(model.id, resolvedEngine === 'ensemble' ? 'ensemble' : 'Kronos'),
+      modelsUsed: modelsUsed.length ? modelsUsed : undefined,
       generatedAt: text(payload.as_of),
       predictionStart: text(points[0]?.time),
       predictionEnd: text(points.at(-1)?.time),
@@ -564,11 +638,13 @@ export const api = {
       edgeReliable: object(payload.evaluation).edge_reliable == null
         ? undefined
         : Boolean(object(payload.evaluation).edge_reliable),
+      pathSegments,
       evaluation: {
         folds: number(object(payload.evaluation).folds) ?? 0,
         hitRate: number(object(payload.evaluation).hit_rate),
         meanNetReturn: number(object(payload.evaluation).mean_net_return),
         ic: number(object(payload.evaluation).ic),
+        evalHorizon: number(object(payload.evaluation).eval_horizon),
       },
     }
   },
@@ -593,6 +669,14 @@ export const api = {
       currency: text(item.currency, 'USD'),
       dailyPnlPercent: number(risk.daily_pnl_pct),
       newBuysHalted: Boolean(risk.new_buys_halted),
+    }
+  },
+  realizedPl: async (mode: TradingMode): Promise<{ realizedPl: number; fillCount: number; asOf?: string }> => {
+    const item = object(await request<unknown>(`/account/realized-pl?${query({ mode })}`))
+    return {
+      realizedPl: number(item.realized_pl) ?? 0,
+      fillCount: number(item.fill_count) ?? 0,
+      asOf: text(item.as_of) || undefined,
     }
   },
   positions: async (mode: TradingMode): Promise<Position[]> => {

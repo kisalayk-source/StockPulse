@@ -249,6 +249,11 @@ async def account(mode: TradingMode, services: ServiceDep) -> dict[str, Any]:
     return await run_in_threadpool(provider_call, services.alpaca.account, mode.value)
 
 
+@router.get("/account/realized-pl")
+async def account_realized_pl(mode: TradingMode, services: ServiceDep) -> dict[str, Any]:
+    return await run_in_threadpool(provider_call, services.alpaca.realized_pl, mode.value)
+
+
 @router.get("/positions")
 async def positions(mode: TradingMode, services: ServiceDep) -> dict[str, Any]:
     return {
@@ -451,6 +456,10 @@ async def forecast(
         forecast_request.timeframe,
         forecast_request.context,
         forecast_request.horizon,
+        None,
+        True,
+        forecast_request.engine == "kronos",
+        forecast_request.engine,
     )
 
 
@@ -475,3 +484,4 @@ def forecast_movers_status(services: ServiceDep) -> dict[str, Any]:
     if status_call is None:
         return {"status": "idle", "movers": [], "gainers": [], "losers": [], "scanned": 0}
     return provider_call(status_call)
+

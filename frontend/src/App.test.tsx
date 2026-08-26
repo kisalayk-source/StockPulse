@@ -1,4 +1,4 @@
-import { render, screen } from '@testing-library/react'
+import { render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import App from './App'
@@ -33,7 +33,7 @@ describe('live trading safeguard', () => {
 
   it('shows a market open or closed status light', () => {
     render(<App />)
-    expect(screen.getByRole('status', { name: /market/i })).toBeInTheDocument()
+    expect(screen.getByRole('status', { name: /market|hours/i })).toBeInTheDocument()
     expect(document.querySelector('.traffic-housing')).toBeTruthy()
     expect(document.querySelectorAll('.traffic-lamp')).toHaveLength(3)
   })
@@ -252,6 +252,168 @@ describe('live trading safeguard', () => {
     const publicBadge = await screen.findByLabelText('Public unavailable')
     expect(publicBadge).toHaveTextContent(/Public\s*—/)
     expect(await screen.findByLabelText('Investors neutral')).toBeInTheDocument()
+  })
+
+  it('lets the user pick chart intervals and restores original short/long horizons', async () => {
+    const user = userEvent.setup()
+    const fetch = vi.fn().mockImplementation((input: RequestInfo, init?: RequestInit) => {
+      const url = String(input)
+      if (url.includes('/overview')) {
+        return Promise.resolve({
+          ok: true,
+          json: async () => ({
+            symbol: 'SPY',
+            name: 'SPDR S&P 500 ETF Trust',
+            current_price: 500,
+            timestamp: '2026-08-12T18:00:00Z',
+            session: 'regular',
+            daily: {},
+            previous_daily: {},
+            fundamentals: {},
+            news: [{
+              id: 'n1',
+              headline: 'SPY gains on strong earnings',
+              source: 'Reuters',
+              url: 'https://example.com/spy',
+              created_at: '2026-08-12T17:00:00Z',
+              sentiment: 'positive',
+            }],
+            public_sentiment: { label: 'bullish', bullish_percent: 0.6, bearish_percent: 0.2 },
+          }),
+        } as Response)
+      }
+      if (url.includes('/forecast') && init?.method === 'POST' && !url.includes('/movers')) {
+        const body = JSON.parse(String(init.body || '{}')) as {
+          preset?: string
+          horizon?: number
+          timeframe?: string
+        }
+        return Promise.resolve({
+          ok: true,
+          json: async () => ({
+            symbol: 'SPY',
+            as_of: '2026-08-12T18:00:00Z',
+            timeframe: body.timeframe || '5Min',
+            model: { id: 'Kronos', horizon: body.horizon ?? 12 },
+            trend: { direction: 'up', forecast_change: 0.02, net_forecast_change: 0.015 },
+            costs: { round_trip_bps: 5 },
+            regime: { label: 'normal_vol_up' },
+            evaluation: { folds: 3, hit_rate: 0.66, edge_reliable: true },
+            path_segments: [{
+              direction: 'up',
+              start_index: 0,
+              end_index: body.horizon ?? 12,
+              start_close: 500,
+              end_close: 510,
+              change: 0.02,
+            }],
+            forecast: Array.from({ length: body.horizon ?? 12 }, (_, index) => ({
+              timestamp: `2026-08-13T13:${String(30 + index).padStart(2, '0')}:00Z`,
+              close: 500 + index,
+            })),
+          }),
+        } as Response)
+      }
+      if (url.includes('/bars')) {
+        const timeframe = new URL(url, 'http://localhost').searchParams.get('timeframe') || '1Day'
+        return Promise.resolve({
+          ok: true,
+          json: async () => ({ symbol: 'SPY', timeframe, bars: [] }),
+        } as Response)
+      }
+      return Promise.reject(new Error('offline'))
+    })
+    vi.stubGlobal('fetch', fetch)
+
+    render(<App />)
+    expect(await screen.findByText(/Path:/i)).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '5m', pressed: true })).toBeInTheDocument()
+    expect(screen.getAllByText(/12 five-minute bars/i).length).toBeGreaterThan(0)
+
+    await user.click(screen.getByRole('button', { name: '15m' }))
+    await waitFor(() => {
+      const bodies = fetch.mock.calls
+        .filter((call) => String(call[0]).includes('/forecast') && call[1]?.method === 'POST')
+        .map((call) => JSON.parse(String(call[1]?.body || '{}')))
+      expect(bodies.some((body) => body.preset === 'short' && body.horizon === 12 && body.timeframe === '15Min')).toBe(true)
+      expect(fetch.mock.calls.some((call) => String(call[0]).includes('timeframe=15Min'))).toBe(true)
+    })
+
+    await user.click(screen.getByRole('button', { name: 'Long horizon' }))
+    expect(await screen.findByRole('button', { name: '1D', pressed: true })).toBeInTheDocument()
+    await waitFor(() => {
+      const bodies = fetch.mock.calls
+        .filter((call) => String(call[0]).includes('/forecast') && call[1]?.method === 'POST')
+        .map((call) => JSON.parse(String(call[1]?.body || '{}')))
+      expect(bodies.some((body) => body.preset === 'long' && body.horizon === 20 && body.timeframe === '1Day')).toBe(true)
+    })
+  })
+
+  it('lets the user switch between Kronos and Forecast engines', async () => {
+    const user = userEvent.setup()
+    const fetch = vi.fn().mockImplementation((input: RequestInfo, init?: RequestInit) => {
+      const url = String(input)
+      if (url.includes('/overview')) {
+        return Promise.resolve({
+          ok: true,
+          json: async () => ({
+            symbol: 'SPY',
+            name: 'SPDR S&P 500 ETF Trust',
+            current_price: 500,
+            timestamp: '2026-08-12T18:00:00Z',
+            session: 'regular',
+            daily: {},
+            previous_daily: {},
+            fundamentals: {},
+            news: [],
+            public_sentiment: { label: 'neutral', bullish_percent: 0.5, bearish_percent: 0.5 },
+          }),
+        } as Response)
+      }
+      if (url.includes('/forecast') && init?.method === 'POST' && !url.includes('/movers')) {
+        const body = JSON.parse(String(init.body || '{}')) as { engine?: string }
+        const engine = body.engine === 'ensemble' ? 'ensemble' : 'kronos'
+        return Promise.resolve({
+          ok: true,
+          json: async () => ({
+            symbol: 'SPY',
+            as_of: '2026-08-12T18:00:00Z',
+            model: {
+              id: engine === 'ensemble' ? 'ensemble' : 'Kronos',
+              engine,
+              models_used: engine === 'ensemble' ? ['persistence', 'kronos'] : undefined,
+            },
+            trend: { direction: 'up', forecast_change: 0.02, net_forecast_change: 0.015 },
+            costs: { round_trip_bps: 5 },
+            regime: { label: 'normal_vol_up' },
+            evaluation: { folds: 0, edge_reliable: true },
+            forecast: [{ timestamp: '2026-08-13T13:30:00Z', close: 505 }],
+          }),
+        } as Response)
+      }
+      if (url.includes('/bars')) {
+        return Promise.resolve({
+          ok: true,
+          json: async () => ({ symbol: 'SPY', timeframe: '1Day', bars: [] }),
+        } as Response)
+      }
+      return Promise.reject(new Error('offline'))
+    })
+    vi.stubGlobal('fetch', fetch)
+
+    render(<App />)
+    expect(await screen.findByRole('button', { name: 'Kronos', pressed: true })).toBeInTheDocument()
+
+    await user.click(screen.getByRole('button', { name: 'Forecast' }))
+    expect(await screen.findByRole('button', { name: 'Forecast', pressed: true })).toBeInTheDocument()
+    expect(await screen.findByText('Ensemble forecast')).toBeInTheDocument()
+
+    await waitFor(() => {
+      const bodies = fetch.mock.calls
+        .filter((call) => String(call[0]).includes('/forecast') && call[1]?.method === 'POST')
+        .map((call) => JSON.parse(String(call[1]?.body || '{}')))
+      expect(bodies.some((body) => body.engine === 'ensemble')).toBe(true)
+    })
   })
 
   it('retries a throttled forecast instead of leaving the chart without a prediction', async () => {

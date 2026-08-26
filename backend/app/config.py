@@ -40,6 +40,9 @@ class Settings(BaseSettings):
     kronos_tokenizer_id: str = "NeoQuasar/Kronos-Tokenizer-base"
     kronos_device: str = "auto"
     kronos_max_context: int = Field(default=512, ge=16, le=512)
+    kronos_temperature: float = Field(default=0.6, ge=0.1, le=2.0)
+    kronos_sample_count: int = Field(default=5, ge=1, le=16)
+    kronos_top_p: float = Field(default=0.9, ge=0.1, le=1.0)
     kronos_eval_folds: int = Field(default=3, ge=0, le=8)
     kronos_eval_context: int = Field(default=32, ge=16, le=256)
     kronos_journal_path: str | None = None

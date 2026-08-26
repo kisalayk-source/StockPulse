@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+from collections import defaultdict, deque
 from datetime import datetime, timedelta, timezone
 from enum import Enum
 from typing import Any
@@ -9,6 +10,61 @@ import httpx
 from cachetools import TTLCache
 
 from app.config import Settings
+
+_FILL_PAGE_SIZE = 100
+_FILL_MAX_PAGES = 50
+_QTY_EPS = 1e-12
+
+
+def fifo_realized_pl(fills: list[dict[str, Any]]) -> float:
+    """Compute closed-trade realized P/L from FILL activities using FIFO lots.
+
+    Each fill needs ``symbol``, ``side`` (buy/sell), ``qty``, and ``price``.
+    Fills must be ordered oldest-first. Open lots are ignored (unrealized).
+    """
+    lots: dict[str, deque[tuple[float, float]]] = defaultdict(deque)
+    realized = 0.0
+
+    for fill in fills:
+        symbol = str(fill.get("symbol") or "").upper()
+        if not symbol:
+            continue
+        side = str(fill.get("side") or "").lower()
+        try:
+            qty = abs(float(fill.get("qty") or 0))
+            price = float(fill.get("price") or 0)
+        except (TypeError, ValueError):
+            continue
+        if qty <= 0:
+            continue
+        remaining = qty if side == "buy" else -qty if side == "sell" else 0.0
+        if remaining == 0:
+            continue
+
+        book = lots[symbol]
+        while abs(remaining) > _QTY_EPS and book and (
+            (remaining > 0 and book[0][0] < 0) or (remaining < 0 and book[0][0] > 0)
+        ):
+            lot_qty, lot_price = book[0]
+            if remaining > 0:
+                close_qty = min(remaining, -lot_qty)
+                realized += (lot_price - price) * close_qty
+                lot_qty += close_qty
+                remaining -= close_qty
+            else:
+                close_qty = min(-remaining, lot_qty)
+                realized += (price - lot_price) * close_qty
+                lot_qty -= close_qty
+                remaining += close_qty
+            if abs(lot_qty) <= _QTY_EPS:
+                book.popleft()
+            else:
+                book[0] = (lot_qty, lot_price)
+
+        if abs(remaining) > _QTY_EPS:
+            book.append((remaining, price))
+
+    return realized
 
 
 class ProviderUnavailable(RuntimeError):
@@ -586,6 +642,72 @@ class AlpacaService:
 
     def positions(self, mode: str) -> list[dict[str, Any]]:
         return jsonable(self._trading(mode).get_all_positions())
+
+    def _fill_activities(self, mode: str) -> list[dict[str, Any]]:
+        """Paginate Alpaca FILL activities (newest-first pages) into a flat list."""
+        client = self._trading(mode)
+        fills: list[dict[str, Any]] = []
+        page_token: str | None = None
+        for _ in range(_FILL_MAX_PAGES):
+            params: dict[str, Any] = {
+                "activity_types": "FILL",
+                "direction": "desc",
+                "page_size": _FILL_PAGE_SIZE,
+            }
+            if page_token:
+                params["page_token"] = page_token
+            raw = client.get("/account/activities", params)
+            page = jsonable(raw)
+            if not isinstance(page, list):
+                page = []
+            if not page:
+                break
+            for item in page:
+                if not isinstance(item, dict):
+                    continue
+                activity_type = str(item.get("activity_type") or item.get("activityType") or "")
+                if activity_type and activity_type.upper() != "FILL":
+                    continue
+                fills.append(item)
+            if len(page) < _FILL_PAGE_SIZE:
+                break
+            last_id = page[-1].get("id") if isinstance(page[-1], dict) else None
+            if not last_id or last_id == page_token:
+                break
+            page_token = str(last_id)
+        return fills
+
+    def realized_pl(self, mode: str) -> dict[str, Any]:
+        fills = self._fill_activities(mode)
+
+        def sort_key(item: dict[str, Any]) -> str:
+            return str(
+                item.get("transaction_time")
+                or item.get("transactionTime")
+                or item.get("date")
+                or item.get("id")
+                or ""
+            )
+
+        ordered = sorted(fills, key=sort_key)
+        normalized: list[dict[str, Any]] = []
+        for item in ordered:
+            side = item.get("side")
+            if hasattr(side, "value"):
+                side = side.value
+            normalized.append(
+                {
+                    "symbol": item.get("symbol"),
+                    "side": side,
+                    "qty": item.get("qty"),
+                    "price": item.get("price"),
+                }
+            )
+        return {
+            "realized_pl": round(fifo_realized_pl(normalized), 6),
+            "fill_count": len(normalized),
+            "as_of": datetime.now(timezone.utc).isoformat(),
+        }
 
     def orders(self, mode: str, status: str, limit: int) -> list[dict[str, Any]]:
         from alpaca.trading.enums import QueryOrderStatus

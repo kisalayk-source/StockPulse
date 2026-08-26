@@ -1,0 +1,1 @@
+"""Forecasting package tests."""

@@ -2,11 +2,23 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import { ArrowDownRight, ArrowUpRight, LoaderCircle, RefreshCw, Sparkles } from 'lucide-react'
 import { api, type Mover, type MoversResponse } from './api'
 import { formatCurrency, formatDateTime, formatNumber, formatPercent } from './format'
+import type { HoldSuggestion } from './PortfolioPanel'
 
 type LoadState = 'idle' | 'loading' | 'ready' | 'error'
 
 function predictedMove(mover: Mover) {
   return mover.netForecastChange ?? mover.forecastChange ?? 0
+}
+
+function pickHoldSuggestions(gainers: Mover[]): HoldSuggestion[] {
+  const positive = gainers.filter((item) => predictedMove(item) > 0)
+  const reliable = positive.filter((item) => item.edgeReliable !== false)
+  const pool = reliable.length >= 1 ? reliable : positive
+  return pool.slice(0, 2).map((item) => ({
+    symbol: item.symbol,
+    projectedMove: predictedMove(item),
+    holdUntil: item.predictionEnd,
+  }))
 }
 
 function MoversTable({
@@ -67,7 +79,13 @@ function MoversTable({
   )
 }
 
-export function MoversPanel({ onSelectSymbol }: { onSelectSymbol: (symbol: string) => void }) {
+export function MoversPanel({
+  onSelectSymbol,
+  onHoldSuggestions,
+}: {
+  onSelectSymbol: (symbol: string) => void
+  onHoldSuggestions?: (suggestions: HoldSuggestion[]) => void
+}) {
   const [state, setState] = useState<LoadState>('idle')
   const [movers, setMovers] = useState<Mover[]>([])
   const [asOf, setAsOf] = useState('')
@@ -140,6 +158,10 @@ export function MoversPanel({ onSelectSymbol }: { onSelectSymbol: (symbol: strin
     losers: serverLosers.length ? serverLosers : movers.filter((item) => predictedMove(item) < 0),
   }), [movers, serverGainers, serverLosers])
 
+  useEffect(() => {
+    onHoldSuggestions?.(pickHoldSuggestions(gainers))
+  }, [gainers, onHoldSuggestions])
+
   return (
     <section className="card movers-card" aria-labelledby="movers-title">
       <div className="card-heading">
@@ -176,7 +198,7 @@ export function MoversPanel({ onSelectSymbol }: { onSelectSymbol: (symbol: strin
       ) : movers.length === 0 ? (
         <div className="movers-status">
           {skipped
-            ? `The scan completed, but forecasts were unavailable for ${skipped} or more symbols. Check backend configuration and logs.`
+            ? `The scan completed with no ranked movers. ${skipped}+ blue-chip names were skipped for thin volume or unavailable forecasts.`
             : 'No predicted movers are available yet.'}
         </div>
       ) : (
@@ -195,9 +217,9 @@ export function MoversPanel({ onSelectSymbol }: { onSelectSymbol: (symbol: strin
         </>
       )}
       <p className="disclaimer">
-        Ranked by absolute Kronos forecast change among today&apos;s most active names, haircut for
-        spread and slippage. Dimmed rows have no reliable out-of-sample edge. Display-only — this
-        scan never places orders.
+        Ranked by absolute Kronos forecast change among blue-chip names with solid daily volume,
+        haircut for spread and slippage. Dimmed rows have no reliable out-of-sample edge.
+        Display-only — this scan never places orders.
       </p>
     </section>
   )

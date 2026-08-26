@@ -91,3 +91,6 @@ backtest_results/
 *_prediction.csv
 *_prediction.png
 *_analysis_report.json
+
+# Multi-model forecasting research cache
+forecasting/.cache/

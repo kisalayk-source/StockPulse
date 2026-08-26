@@ -286,25 +286,29 @@ class RotaryPositionalEmbedding(nn.Module):
         super().__init__()
         inv_freq = 1.0 / (10000 ** (torch.arange(0, dim, 2).float() / dim))
         self.register_buffer("inv_freq", inv_freq)
-        self.seq_len_cached = None
-        self.cos_cached = None
-        self.sin_cached = None
 
-    def _update_cos_sin_cache(self, x, seq_len):
-        if seq_len != self.seq_len_cached:
-            self.seq_len_cached = seq_len
-            t = torch.arange(seq_len, device=x.device).type_as(self.inv_freq)
-            freqs = torch.einsum('i,j->ij', t, self.inv_freq)
-            emb = torch.cat((freqs, freqs), dim=-1).to(x.device)
-            self.cos_cached = emb.cos()[None, None, :, :]
-            self.sin_cached = emb.sin()[None, None, :, :]
-        return self.cos_cached, self.sin_cached
+    def _cos_sin(self, x, seq_len):
+        """Build RoPE tables for ``seq_len`` as local tensors (no shared mutable cache).
+
+        Shared module-level caches race when concurrent forecasts use different
+        sequence lengths on the same model weights.
+        """
+        t = torch.arange(seq_len, device=x.device).type_as(self.inv_freq)
+        freqs = torch.einsum("i,j->ij", t, self.inv_freq)
+        emb = torch.cat((freqs, freqs), dim=-1).to(x.device)
+        cos = emb.cos()[None, None, :, :]
+        sin = emb.sin()[None, None, :, :]
+        return cos, sin
 
     def forward(self, q, k):
-        cos, sin = self._update_cos_sin_cache(q, q.shape[-2])
+        cos_q, sin_q = self._cos_sin(q, q.shape[-2])
+        if k.shape[-2] == q.shape[-2]:
+            cos_k, sin_k = cos_q, sin_q
+        else:
+            cos_k, sin_k = self._cos_sin(k, k.shape[-2])
         return (
-            (q * cos) + (self._rotate_half(q) * sin),
-            (k * cos) + (self._rotate_half(k) * sin),
+            (q * cos_q) + (self._rotate_half(q) * sin_q),
+            (k * cos_k) + (self._rotate_half(k) * sin_k),
         )
 
     def _rotate_half(self, x):
