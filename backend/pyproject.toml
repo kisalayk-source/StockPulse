@@ -1,9 +1,10 @@
 [project]
 name = "stockpulse-api"
 version = "0.1.0"
-description = "FastAPI backend for the Kronos trading application"
+description = "FastAPI backend for the StockPulse trading application"
 requires-python = ">=3.11"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+pythonpath = ["."]
 addopts = "-ra"
