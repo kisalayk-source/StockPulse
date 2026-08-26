@@ -1,0 +1,36 @@
+name: Feature request
+description: Propose a focused improvement
+title: "[Feature]: "
+labels: ["enhancement"]
+body:
+  - type: dropdown
+    id: component
+    attributes:
+      label: Component
+      options:
+        - Core model
+        - StockPulse backend
+        - StockPulse frontend
+        - Legacy web UI
+        - Fine-tuning
+        - Documentation or deployment
+    validations:
+      required: true
+  - type: textarea
+    id: need
+    attributes:
+      label: Problem or use case
+      description: Describe the user need without assuming a particular solution.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: Include alternatives and compatibility considerations.
+    validations:
+      required: true
+  - type: textarea
+    id: additional
+    attributes:
+      label: Additional context

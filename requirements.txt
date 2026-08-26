@@ -1,10 +1,13 @@
-numpy
-pandas
-torch>=2.0.0
-
+# Direct dependencies for the core model and regression suite.
+# Exact pins preserve known numerical behavior; bounded ranges allow compatible
+# platform-specific Torch/NumPy wheels. Update pins through a tested PR.
+numpy>=1.26,<3
+pandas==2.2.2
+torch>=2.0,<3
 einops==0.8.1
 huggingface_hub==0.33.1
 matplotlib==3.9.3
-pandas==2.2.2
 tqdm==4.67.1
 safetensors==0.6.2
+pytest>=8.3,<9
+pyyaml>=6,<7

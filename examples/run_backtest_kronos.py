@@ -1,3 +1,12 @@
+"""DEMO-GRADE BACKTEST (educational only).
+
+This script is not suitable for realistic strategy evaluation. It may execute
+at the same bar's close, ignore transaction costs, slippage, and spread, and
+can introduce look-ahead bias.
+
+Use ``python -m kronos_backtest`` (see docs/BACKTEST.md) for the
+production-grade engine.
+"""
 # run_backtest.py
 import pandas as pd
 import numpy as np

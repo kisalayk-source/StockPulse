@@ -1,3 +1,7 @@
+"""DEMO-GRADE historical backtest (educational only).
+
+Use ``python -m kronos_backtest`` (docs/BACKTEST.md) for the production engine.
+"""
 # historical_backtest.py
 import pandas as pd
 import numpy as np

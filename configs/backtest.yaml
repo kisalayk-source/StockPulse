@@ -1,0 +1,77 @@
+# Production Kronos backtest configuration.
+# Same-bar close execution is disabled. Signals at T fill at T+delay open.
+
+execution:
+  delay_bars: 1
+  allow_same_bar_execution: false
+  fill_on: open
+
+slippage:
+  enabled: true
+  rate: 0.0005
+
+# When bid/ask columns are absent, a synthetic spread is applied around the
+# next-bar open: buy = mid * (1 + rate/2), sell = mid * (1 - rate/2).
+spread:
+  enabled: true
+  rate: 0.0005
+  use_bid_ask_when_available: true
+
+costs:
+  commission_rate: 0.0001
+  exchange_fee_rate: 0.00005
+  regulatory_fee_rate: 0.0
+
+walk_forward:
+  enabled: false
+  type: expanding
+  training_period: 3y
+  test_period: 1m
+  embargo_bars: 0
+
+position_sizing:
+  max_position_pct: 0.10
+  confidence_scaling: true
+  integer_shares: false
+
+risk:
+  max_position_pct: 0.10
+  max_total_exposure_pct: 1.0
+  max_daily_loss_pct: 0.02
+  max_drawdown_pct: 0.15
+  max_leverage: 1.0
+  allow_short: false
+  close_positions_on_drawdown: false
+  close_positions_on_daily_loss: false
+
+strategy:
+  minimum_edge: 0.002
+  name: expected_return_threshold
+
+model:
+  mode: pretrained
+  tokenizer_id: NeoQuasar/Kronos-Tokenizer-base
+  model_id: NeoQuasar/Kronos-small
+  device: cpu
+  max_context: 512
+  lookback: 64
+  pred_len: 1
+  sample_count: 1
+
+initial_capital: 100000.0
+symbol: ASSET
+seed: 42
+
+scenarios:
+  optimistic:
+    slippage: 0.0001
+    transaction_cost: 0.0002
+  normal:
+    slippage: 0.0005
+    transaction_cost: 0.001
+  conservative:
+    slippage: 0.001
+    transaction_cost: 0.002
+  severe:
+    slippage: 0.0025
+    transaction_cost: 0.005

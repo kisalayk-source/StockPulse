@@ -1,3 +1,10 @@
+"""DEMO-GRADE Qlib inference + backtest (educational only).
+
+This script is a simplified top-K experiment. It is not the production
+Kronos backtester. For look-ahead-safe walk-forward evaluation with
+next-bar execution, costs, and risk limits, use ``python -m kronos_backtest``
+(see docs/BACKTEST.md).
+"""
 import os
 import sys
 import argparse

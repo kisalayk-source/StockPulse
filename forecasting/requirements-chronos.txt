@@ -1,0 +1,5 @@
+# Chronos (Amazon) — install in an isolated env if pins conflict.
+chronos-forecasting>=1.4.0
+torch>=2.2.0
+numpy>=1.24
+pandas>=2.0

@@ -1,5 +1,6 @@
 # Python
 __pycache__/
+.pytest_cache/
 *.py[cod]
 *$py.class
 *.so
@@ -58,9 +59,15 @@ Desktop.ini
 # Logs
 *.log
 logs/
+*.log.*
+runtime-logs/
+backend/data/
 
 # Environment
 .env
+.env.*
+!.env.example
+!**/.env.example
 .venv
 env/
 venv/
@@ -74,3 +81,16 @@ venv.bak/
 temp/
 tmp/
 .python-version
+
+# Generated predictions and reports
+prediction_results/
+predictions/
+outputs/
+backtest_results/
+*_prediction.json
+*_prediction.csv
+*_prediction.png
+*_analysis_report.json
+
+# Multi-model forecasting research cache
+forecasting/.cache/

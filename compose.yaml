@@ -1,0 +1,52 @@
+services:
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile.backend
+    environment:
+      ALPACA_PAPER_KEY: ${ALPACA_PAPER_KEY:-}
+      ALPACA_PAPER_SECRET: ${ALPACA_PAPER_SECRET:-}
+      ALPACA_LIVE_KEY: ${ALPACA_LIVE_KEY:-}
+      ALPACA_LIVE_SECRET: ${ALPACA_LIVE_SECRET:-}
+      FINNHUB_API_KEY: ${FINNHUB_API_KEY:-}
+      ALLOW_LIVE_TRADING: ${ALLOW_LIVE_TRADING:-false}
+      LIVE_CONFIRMATION_TOKEN: ${LIVE_CONFIRMATION_TOKEN:-}
+      CORS_ORIGIN: http://localhost:5173
+    ports:
+      - "127.0.0.1:8000:8000"
+    volumes:
+      - huggingface-cache:/root/.cache/huggingface
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/v1/health')"
+      interval: 10s
+      timeout: 5s
+      retries: 6
+
+  frontend:
+    build:
+      context: .
+      dockerfile: Dockerfile.frontend
+      args:
+        VITE_API_BASE_URL: http://localhost:8000/api/v1
+    ports:
+      - "127.0.0.1:5173:5173"
+    depends_on:
+      backend:
+        condition: service_healthy
+
+  webui:
+    profiles: [legacy]
+    build:
+      context: .
+      dockerfile: Dockerfile.webui
+    ports:
+      - "127.0.0.1:7070:7070"
+    volumes:
+      - huggingface-cache:/root/.cache/huggingface
+
+volumes:
+  huggingface-cache:

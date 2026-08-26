@@ -1,0 +1,38 @@
+models:
+  persistence:
+    enabled: true
+    adapter: forecasting.adapters.persistence_adapter.PersistenceAdapter
+    weight: 0.5
+    params: {}
+  kronos:
+    enabled: true
+    adapter: forecasting.adapters.kronos_adapter.KronosAdapter
+    weight: 1.0
+    params:
+      size: small
+      sample_count: 5
+      temperature: 0.6
+      top_p: 0.9
+  chronos:
+    enabled: true
+    adapter: forecasting.adapters.chronos_adapter.ChronosAdapter
+    weight: 0.7
+    params:
+      checkpoint: amazon/chronos-t5-small
+  timesfm:
+    enabled: true
+    adapter: forecasting.adapters.timesfm_adapter.TimesFMAdapter
+    weight: 0.7
+    params:
+      checkpoint: google/timesfm-1.0-200m-pytorch
+  lag_llama:
+    enabled: false  # flip on when ready — no code change needed
+    adapter: forecasting.adapters.lag_llama_adapter.LagLlamaAdapter
+    weight: 0.6
+    params:
+      checkpoint: time-series-foundation-models/Lag-Llama
+
+ensemble:
+  strategy: weighted_average  # weighted_average | inverse_error | stacking
+  inverse_error_window: 20
+  stacking_model: ridge
