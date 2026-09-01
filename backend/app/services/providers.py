@@ -352,6 +352,40 @@ class FinnhubService:
             "eps": number("epsBasicExclExtraItemsTTM", "epsTTM"),
         }
 
+    async def extended_fundamentals(self, symbol: str) -> dict[str, float | None]:
+        base = await self.fundamentals(symbol)
+        metric = await self._get("/stock/metric", {"symbol": symbol, "metric": "all"})
+        values = metric.get("metric") or {}
+
+        def number(*names: str) -> float | None:
+            for name in names:
+                value = values.get(name)
+                if value is not None:
+                    try:
+                        return float(value)
+                    except (TypeError, ValueError):
+                        return None
+            return None
+
+        return {
+            **base,
+            "revenue_growth": number("revenueGrowthTTMYoy", "revenueGrowth5Y"),
+            "eps_growth": number("epsGrowthTTMYoy", "epsGrowth5Y"),
+            "roic": number("roicTTM", "roiTTM"),
+            "fcf_margin": number("fcfMarginTTM"),
+            "debt_to_equity": number("totalDebt/totalEquityQuarterly"),
+        }
+
+    async def company_profile(self, symbol: str) -> dict[str, str | None]:
+        payload = await self._get("/stock/profile2", {"symbol": symbol.upper()})
+        return {
+            "sector": payload.get("finnhubIndustry") or payload.get("gsector"),
+            "industry": payload.get("finnhubIndustry"),
+            "exchange": payload.get("exchange"),
+            "name": payload.get("name"),
+            "market_cap": payload.get("marketCapitalization"),
+        }
+
     async def news_sentiment(self, symbol: str) -> dict[str, Any]:
         payload = await self._get("/news-sentiment", {"symbol": symbol.upper()})
         sentiment = payload.get("sentiment") if isinstance(payload, dict) else {}
@@ -395,6 +429,11 @@ class AlpacaService:
         self._asset_cache: TTLCache[str, Any] = TTLCache(maxsize=4, ttl=300)
 
     def _credentials(self, mode: str) -> tuple[str, str]:
+        from app.auth import current_trading_credentials
+
+        override = current_trading_credentials()
+        if override is not None:
+            return override.key, override.secret
         if mode == "paper":
             key, secret = self.settings.alpaca_paper_key, self.settings.alpaca_paper_secret
         else:
@@ -404,12 +443,16 @@ class AlpacaService:
         return key, secret
 
     def _trading(self, mode: str) -> Any:
+        from app.auth import current_trading_credentials
+
+        override = current_trading_credentials()
         key, secret = self._credentials(mode)
-        if mode not in self._trading_clients:
+        cache_key = f"{mode}:{override.key}" if override is not None else f"{mode}:env"
+        if cache_key not in self._trading_clients:
             from alpaca.trading.client import TradingClient
 
-            self._trading_clients[mode] = TradingClient(key, secret, paper=(mode == "paper"))
-        return self._trading_clients[mode]
+            self._trading_clients[cache_key] = TradingClient(key, secret, paper=(mode == "paper"))
+        return self._trading_clients[cache_key]
 
     def _stock_data(self) -> Any:
         key, secret = self._credentials(self.settings.alpaca_data_credentials_mode)

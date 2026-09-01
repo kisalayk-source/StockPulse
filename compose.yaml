@@ -11,11 +11,16 @@ services:
       FINNHUB_API_KEY: ${FINNHUB_API_KEY:-}
       ALLOW_LIVE_TRADING: ${ALLOW_LIVE_TRADING:-false}
       LIVE_CONFIRMATION_TOKEN: ${LIVE_CONFIRMATION_TOKEN:-}
+      DATABASE_URL: ${DATABASE_URL:-sqlite:////data/kronos.db}
+      JWT_SECRET: ${JWT_SECRET:-dev-only-change-me-jwt-secret-32b}
+      JWT_EXPIRE_MINUTES: ${JWT_EXPIRE_MINUTES:-10080}
+      CREDENTIALS_ENCRYPTION_KEY: ${CREDENTIALS_ENCRYPTION_KEY:-Ew-PE79v7whzOuVHD2GJ4YHXIPD-THvZVQ2ItZsmvO8=}
       CORS_ORIGIN: http://localhost:5173
     ports:
       - "127.0.0.1:8000:8000"
     volumes:
       - huggingface-cache:/root/.cache/huggingface
+      - kronos-data:/data
     healthcheck:
       test:
         - CMD
@@ -50,3 +55,4 @@ services:
 
 volumes:
   huggingface-cache:
+  kronos-data:

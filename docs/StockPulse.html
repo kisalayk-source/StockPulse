@@ -89,10 +89,10 @@
     <div class="mark">SP</div>
     <p class="eyebrow">Product &amp; operations guide</p>
     <h1>StockPulse</h1>
-    <p class="lede">Paper-first trading dashboard, Kronos forecasts, WallStreetBets research, and a look-ahead-safe historical backtester — built on the Kronos foundation model for financial markets.</p>
+    <p class="lede">Paper-first trading dashboard, Kronos forecasts, SEC EDGAR accumulation intelligence, and a look-ahead-safe historical backtester — built on the Kronos foundation model for financial markets.</p>
     <p class="meta">
       Version: unreleased personal build<br />
-      Date: 19 August 2026<br />
+      Date: 1 September 2026<br />
       Local site: http://localhost:5173<br />
       LAN: http://192.168.86.197:5173
     </p>
@@ -104,6 +104,7 @@
     <li><a href="#architecture">Architecture</a></li>
     <li><a href="#hosting">Local hosting</a></li>
     <li><a href="#dashboard">Dashboard</a></li>
+    <li><a href="#sec">SEC &amp; accumulation</a></li>
     <li><a href="#forecasts">Forecasts and movers</a></li>
     <li><a href="#trading">Trading and safety</a></li>
     <li><a href="#api">API reference</a></li>
@@ -114,7 +115,7 @@
   </ol>
 
   <h2 id="overview">1. Overview</h2>
-  <p>StockPulse is a personal trading workstation. It shows live (or paper) market data, Kronos probabilistic forecasts, news and public sentiment, a background scan of predicted movers, and your open broker positions. Orders are <strong>manual only</strong>. Forecasts never submit trades.</p>
+  <p>StockPulse is a personal trading workstation. It shows live (or paper) market data, Kronos probabilistic forecasts, news and public sentiment, SEC ownership intelligence with an explainable Accumulation Score, a background scan of predicted movers, and your open broker positions. Orders are <strong>manual only</strong>. Forecasts and accumulation scores never submit trades.</p>
   <p>The repository also contains Kronos itself (tokenizer, predictor, fine-tuning examples) and a separate production-grade backtester in <code>kronos_backtest/</code>.</p>
   <div class="callout">
     <strong>Not investment advice.</strong> Forecasts are research outputs. Broker acceptance does not guarantee execution. Use paper mode until you understand the risk controls.
@@ -125,7 +126,8 @@
     <thead><tr><th>Layer</th><th>Path</th><th>Role</th></tr></thead>
     <tbody>
       <tr><td>Dashboard</td><td><code>frontend/</code></td><td>React + TypeScript + Vite. Serves the UI and proxies <code>/api</code> to the backend.</td></tr>
-      <tr><td>API</td><td><code>backend/</code></td><td>FastAPI on loopback port 8000. Alpaca, Finnhub, Kronos.</td></tr>
+      <tr><td>API</td><td><code>backend/</code></td><td>FastAPI on loopback port 8000. Alpaca, Finnhub, SEC EDGAR, Kronos.</td></tr>
+      <tr><td>SEC layer</td><td><code>backend/app/sec/</code></td><td>EDGAR client, form parsers, Accumulation Score engine, SQLite persistence.</td></tr>
       <tr><td>Model</td><td><code>model/</code></td><td>Kronos predictor and tokenizer. Loaded lazily on first forecast.</td></tr>
       <tr><td>Backtester</td><td><code>kronos_backtest/</code></td><td>Look-ahead-safe historical engine, walk-forward, costs, reports.</td></tr>
       <tr><td>Legacy demo</td><td><code>webui/</code></td><td>Unchanged Flask demo. Not required for StockPulse.</td></tr>
@@ -139,7 +141,7 @@
     → Vite preview :5173
         → static dashboard
         → /api/v1/*  proxy  → FastAPI :8000 (loopback)
-            → Alpaca / Finnhub / Kronos</pre>
+            → Alpaca / Finnhub / SEC EDGAR / Kronos</pre>
 
   <h2 id="hosting">3. Local hosting</h2>
   <p>StockPulse is meant to run as a normal Windows website, not inside a Cursor terminal. Two Task Scheduler tasks start at logon:</p>
@@ -162,7 +164,8 @@
   </ul>
 
   <h2 id="dashboard">4. Dashboard</h2>
-  <p>The UI is a single-page workstation:</p>
+  <p>The UI is a single-page workstation with tabs: <strong>Market</strong>, <strong>Sectors</strong>, <strong>Top Accumulation</strong>, <strong>SEC Records</strong>, and <strong>AI Research</strong>.</p>
+  <h3>Market tab</h3>
   <ul>
     <li><strong>Search</strong> — symbol or company name; results stay in a scrollable list.</li>
     <li><strong>Market light</strong> — US session: pre-market, regular, after hours, or closed (America/New_York).</li>
@@ -170,13 +173,41 @@
     <li><strong>Chart</strong> — historical OHLC plus Kronos forecast path. Toggle <strong>Kronos</strong> (single model) vs <strong>Forecast</strong> (ensemble). Short vs long horizon, and chart interval (1m–1D).</li>
     <li><strong>Sentiment</strong> — Public (Finnhub news sentiment) and Investors (Kronos trend). Dimmed investor badge means no reliable out-of-sample edge.</li>
     <li><strong>News</strong> — merged Finnhub + Alpaca coverage for the selected symbol.</li>
+    <li><strong>SEC &amp; Ownership Intelligence</strong> — Accumulation Score (0–100), component bars, trend history, institutional/insider activity, filing caveats.</li>
     <li><strong>Portfolio / ticket</strong> — paper or live account, equity or single-leg option, review-before-send.</li>
     <li><strong>Movers</strong> — top 50 predicted gainers and losers from a background Kronos scan.</li>
     <li><strong>Open positions</strong> — full-width holdings table under the movers scan. Click a symbol to load it.</li>
   </ul>
-  <p>Partial-data banners appear when quote data loaded but chart or forecast did not (including brief forecast throttling). Forecast retries and in-flight request coalescing reduce false “unavailable” states when switching symbols.</p>
+  <p>Partial-data banners appear when quote data loaded but chart, forecast, or SEC data did not. SEC panels mute when provider data is partial.</p>
 
-  <h2 id="forecasts">5. Forecasts and movers</h2>
+  <h2 id="sec">5. SEC &amp; accumulation</h2>
+  <p>StockPulse ingests public SEC EDGAR filings and produces an explainable <strong>Accumulation Score (0–100)</strong>. This is a research signal — not investment advice or a trading instruction.</p>
+  <div class="callout">
+    <strong>Filing caveats.</strong> 13F holdings are quarterly reported positions (available after filing date, not period end). Form 4 filing dates may differ from transaction dates. Never describe 13F changes as real-time trades.
+  </div>
+  <h3>Data ingested</h3>
+  <table>
+    <thead><tr><th>Form</th><th>Signal</th></tr></thead>
+    <tbody>
+      <tr><td>13F</td><td>Institutional position changes (new, increased, decreased, exited)</td></tr>
+      <tr><td>13D / 13G</td><td>Beneficial ownership (activist vs passive preserved)</td></tr>
+      <tr><td>Form 4</td><td>Insider transactions (P/S discretionary; A/M/F excluded from buy/sell scoring)</td></tr>
+    </tbody>
+  </table>
+  <h3>Score components</h3>
+  <p>Default weights in <code>backend/configs/sec_accumulation.yaml</code>: institutional 35%, insider 30%, major holder 15%, price/volume 10%, fundamentals 10%. Bands: 80+ Strong Accumulation, 60–79 Accumulation, 40–59 Neutral, 20–39 Distribution, 0–19 Very Strong Distribution.</p>
+  <h3>Other tabs</h3>
+  <ul>
+    <li><strong>Sectors</strong> — average score, % increasing/decreasing, top tickers per sector (from market scan).</li>
+    <li><strong>Top Accumulation</strong> — ranked stocks with sector, human-readable signal labels, and component breakdown.</li>
+    <li><strong>SEC Records</strong> — compact ticker search; filings from the last 6 months with EDGAR links (syncs on tab open).</li>
+    <li><strong>AI Research</strong> — natural-language query → candidate table, filters, evidence-backed narrative (optional LLM when <code>RESEARCH_LLM_ENABLED=true</code>).</li>
+  </ul>
+  <h3>Market scan</h3>
+  <p>On login the UI starts a background scan that merges the blue-chip universe with current Alpaca movers (up to <code>SEC_SCAN_UNIVERSE_CAP</code>, default 100). Each ticker is synced from EDGAR and scored into SQLite. Sectors and Top Accumulation read from this cache — not only the active Market symbol. Poll <code>GET /accumulation/scan/status</code> for progress.</p>
+  <p>Full reference: <code>docs/SEC_ACCUMULATION.md</code>.</p>
+
+  <h2 id="forecasts">6. Forecasts and movers</h2>
   <p>The chart engine toggle is labeled <strong>Kronos</strong> (single Kronos model, <code>engine=kronos</code>) or <strong>Forecast</strong> (weighted ensemble, <code>engine=ensemble</code>). Kronos weights load on the first Kronos request (not at API startup). Device is <code>auto</code> unless overridden (<code>cpu</code>, <code>cuda:0</code>, MPS).</p>
   <table>
     <thead><tr><th>Preset</th><th>Bars</th><th>Context</th><th>Horizon</th></tr></thead>
@@ -189,7 +220,7 @@
   <p>The movers scan ranks today’s active names by absolute Kronos forecast change after a spread/slippage haircut. It uses a <strong>separate rate-limit bucket</strong> from per-ticker forecasts (defaults: 10 scan requests/min vs 30 ticker forecasts/min) so a universe scan does not starve the chart.</p>
   <p><code>POST /forecast/movers</code> starts a background scan and returns immediately. Poll <code>GET /forecast/movers/status</code> for progressive top-50 gainers and losers.</p>
 
-  <h2 id="trading">6. Trading and safety</h2>
+  <h2 id="trading">7. Trading and safety</h2>
   <ul>
     <li>Default mode is <strong>paper</strong>. Live is disabled until <code>ALLOW_LIVE_TRADING=true</code> on the server.</li>
     <li>Enabling live in the UI requires typing <code>LIVE</code>. Live orders also send that confirmation token.</li>
@@ -201,7 +232,7 @@
   </ul>
   <h3>Paper smoke checklist</h3>
   <ol>
-    <li>Configure only paper Alpaca keys (and optionally Finnhub).</li>
+    <li>Configure only paper Alpaca keys, optionally Finnhub, and <code>SEC_USER_AGENT</code>.</li>
     <li>Keep <code>ALLOW_LIVE_TRADING=false</code>.</li>
     <li>Confirm <code>/health</code> and <code>/config/status</code> show no secrets.</li>
     <li>Search AAPL, open overview, load daily bars.</li>
@@ -210,10 +241,13 @@
     <li>Place a one-share or low-notional paper order; confirm in Alpaca.</li>
     <li>Cancel an open paper order from the UI or API.</li>
     <li>Run a short Kronos forecast (first call downloads weights).</li>
+    <li>Open the SEC Intelligence panel or <code>GET /stocks/AAPL/sec</code>.</li>
+    <li>Wait for accumulation scan to finish; confirm Sectors and Top list multiple tickers.</li>
+    <li>Search <strong>SEC Records</strong> for AAPL and review filings from the last 6 months.</li>
     <li>Confirm a live request returns 403 while live is disabled.</li>
   </ol>
 
-  <h2 id="api">7. API reference</h2>
+  <h2 id="api">8. API reference</h2>
   <p>All routes use the prefix <code>/api/v1</code>. Interactive docs: http://127.0.0.1:8000/docs (loopback only). Responses include <code>X-Request-ID</code>.</p>
   <table>
     <thead><tr><th>Method</th><th>Path</th><th>Purpose</th></tr></thead>
@@ -225,6 +259,17 @@
       <tr><td>GET</td><td><code>/symbols/search</code></td><td>Symbol lookup</td></tr>
       <tr><td>GET</td><td><code>/stocks/{symbol}/overview</code></td><td>Quote, news, fundamentals, public sentiment</td></tr>
       <tr><td>GET</td><td><code>/stocks/{symbol}/bars</code></td><td>OHLCV</td></tr>
+      <tr><td>GET</td><td><code>/stocks/{symbol}/sec</code></td><td>SEC intelligence summary</td></tr>
+      <tr><td>GET</td><td><code>/stocks/{symbol}/institutional</code></td><td>13F position changes</td></tr>
+      <tr><td>GET</td><td><code>/stocks/{symbol}/insiders</code></td><td>Form 4 transactions</td></tr>
+      <tr><td>GET</td><td><code>/stocks/{symbol}/accumulation</code></td><td>Accumulation Score + history</td></tr>
+      <tr><td>GET</td><td><code>/stocks/{symbol}/filings</code></td><td>Recent SEC filings (<code>months</code>, <code>limit</code>)</td></tr>
+      <tr><td>GET</td><td><code>/sectors</code></td><td>Normalized sector list</td></tr>
+      <tr><td>GET</td><td><code>/sectors/{sector}/accumulation</code></td><td>Sector aggregates</td></tr>
+      <tr><td>GET</td><td><code>/accumulation/top</code></td><td>Ranked accumulation stocks</td></tr>
+      <tr><td>POST</td><td><code>/accumulation/scan</code></td><td>Start background market scan</td></tr>
+      <tr><td>GET</td><td><code>/accumulation/scan/status</code></td><td>Scan progress</td></tr>
+      <tr><td>POST</td><td><code>/research/query</code></td><td>NL research query</td></tr>
       <tr><td>POST</td><td><code>/forecast</code></td><td>Kronos or ensemble Forecast (<code>engine</code>)</td></tr>
       <tr><td>POST</td><td><code>/forecast/movers</code></td><td>Start movers scan</td></tr>
       <tr><td>GET</td><td><code>/forecast/movers/status</code></td><td>Scan progress and rankings</td></tr>
@@ -235,7 +280,7 @@
       <tr><td>DELETE / PATCH</td><td><code>/orders/{id}</code></td><td>Cancel / replace</td></tr>
     </tbody>
   </table>
-  <p>Missing providers return generic 503; upstream failures return generic 502. Details stay in server logs. If <code>API_KEY</code> is set, every route except <code>/health</code> requires header <code>X-API-Key</code>.</p>
+  <p>Missing providers return generic 503; upstream failures return generic 502. Details stay in server logs. When using the LAN UI, a **502** on <code>/api/v1/*</code> usually means the Vite proxy could not reach the API on <code>127.0.0.1:8000</code> — restart with <code>scripts/publish-kronos-lan.ps1</code> and check <code>runtime-logs/backend.stderr.log</code>. If <code>API_KEY</code> is set, every route except <code>/health</code> requires header <code>X-API-Key</code>.</p>
   <h3>Example paper equity order</h3>
   <pre>{
   "mode": "paper",
@@ -247,7 +292,7 @@
   "limit_price": 190.00
 }</pre>
 
-  <h2 id="config">8. Configuration</h2>
+  <h2 id="config">9. Configuration</h2>
   <p>Copy <code>backend/.env.example</code> to <code>backend/.env</code> (gitignored). Important variables:</p>
   <table>
     <thead><tr><th>Variable</th><th>Default / notes</th></tr></thead>
@@ -255,7 +300,13 @@
       <tr><td><code>ALPACA_PAPER_KEY</code> / <code>_SECRET</code></td><td>Paper trading and default market data</td></tr>
       <tr><td><code>ALPACA_LIVE_KEY</code> / <code>_SECRET</code></td><td>Live trading only when enabled</td></tr>
       <tr><td><code>ALPACA_DATA_FEED</code></td><td><code>iex</code> (use <code>sip</code> only with a SIP subscription)</td></tr>
-      <tr><td><code>FINNHUB_API_KEY</code></td><td>Fundamentals, company news, public sentiment</td></tr>
+      <tr><td><code>FINNHUB_API_KEY</code></td><td>Fundamentals, company news, public sentiment, sector profile</td></tr>
+      <tr><td><code>SEC_USER_AGENT</code></td><td>Required for SEC EDGAR (e.g. <code>StockPulse contact@example.com</code>)</td></tr>
+      <tr><td><code>SEC_ENABLED</code></td><td><code>true</code> (set <code>false</code> to disable SEC fetches)</td></tr>
+      <tr><td><code>SEC_SCORE_CONFIG_PATH</code></td><td><code>backend/configs/sec_accumulation.yaml</code></td></tr>
+      <tr><td><code>SEC_SCAN_UNIVERSE_CAP</code></td><td>Max tickers in accumulation scan (default <code>100</code>)</td></tr>
+      <tr><td><code>SEC_SCAN_ON_STARTUP</code></td><td>Start scan when API boots (default <code>false</code>; UI also triggers scan)</td></tr>
+      <tr><td><code>RESEARCH_LLM_ENABLED</code></td><td><code>false</code> (optional OpenAI-compatible narration)</td></tr>
       <tr><td><code>ALLOW_LIVE_TRADING</code></td><td><code>false</code></td></tr>
       <tr><td><code>API_KEY</code></td><td>Empty = no API auth (local default)</td></tr>
       <tr><td><code>CORS_ORIGIN</code></td><td><code>http://localhost:5173</code> plus LAN origins as needed</td></tr>
@@ -266,7 +317,7 @@
   </table>
   <p>Frontend: <code>frontend/.env.local</code> with optional <code>VITE_API_BASE_URL</code> (default same-origin <code>/api/v1</code>) and <code>VITE_API_KEY</code> if the backend requires a key. A key in the browser is not a substitute for firewall and CORS controls.</p>
 
-  <h2 id="backtest">9. Historical backtester</h2>
+  <h2 id="backtest">10. Historical backtester</h2>
   <p><code>kronos_backtest</code> is the supported engine. <code>examples/run_backtest_kronos.py</code> and <code>finetune/qlib_test.py</code> are demo-grade only.</p>
   <h3>Event loop (no look-ahead)</h3>
   <pre>For each bar T:
@@ -285,8 +336,13 @@ python -m kronos_backtest --config configs/backtest.yaml --predictor dummy --out
 pytest tests/backtest -q</pre>
   <p>Use <code>--predictor kronos</code> to wrap the real model (downloads weights). Outputs: <code>summary.json</code>, <code>metrics.json</code>, <code>trades.csv</code>, equity/drawdown CSVs, and <code>report.html</code>.</p>
   <p>Limitations: no market-impact model beyond proportional slippage; only MARKET fills; default loop is one symbol per run; fine-tune quality depends on the callback you supply (test rows are never passed to <code>fit</code>).</p>
+  <h3>SEC accumulation backtest</h3>
+  <p>Separate offline tool comparing forward returns by accumulation bucket with <code>filing_date &lt;= as_of_date</code> enforcement:</p>
+  <pre>cd backend
+python scripts/sec_backtest.py XOM --days 365
+pytest -q tests/test_sec_backtest.py</pre>
 
-  <h2 id="dev">10. Development and tests</h2>
+  <h2 id="dev">11. Development and tests</h2>
   <p>Use separate virtualenvs for the core model and the StockPulse backend when dependency sets conflict. Application CI uses Python 3.12 and Node 22.</p>
   <pre># Backend
 cd backend
@@ -300,17 +356,18 @@ npm test
 npm run build
 
 # Backtester
-pytest -q tests/backtest</pre>
-  <p>Backend tests use fakes and HTTP mock transports. They never call Alpaca, Finnhub, Hugging Face, or place orders. Optional Docker: <code>docker compose up --build</code> from the repo root (frontend :5173, API docs :8000).</p>
+pytest -q tests/backtest
+pytest -q tests/test_sec_*.py</pre>
+  <p>Backend tests use fakes and HTTP mock transports. They never call Alpaca, Finnhub, SEC EDGAR, Hugging Face, or place orders. Optional Docker: <code>docker compose up --build</code> from the repo root (frontend :5173, API docs :8000).</p>
 
-  <h2 id="security">11. Security and licensing</h2>
+  <h2 id="security">12. Security and licensing</h2>
   <ul>
     <li>Never commit <code>.env</code>, credentials, account IDs, or model weights.</li>
     <li>Report vulnerabilities privately via GitHub Security, not a public issue.</li>
     <li>Financial loss, forecast accuracy, and provider outages are not software vulnerabilities.</li>
     <li>Source is MIT unless a file says otherwise. Hugging Face weights, broker data, and third-party packages keep their own terms.</li>
   </ul>
-  <p>Related files: <code>SECURITY.md</code>, <code>docs/LICENSING.md</code>, <code>docs/DEVELOPMENT.md</code>, <code>docs/BACKTEST.md</code>, <code>backend/README.md</code>, <code>frontend/README.md</code>, <code>TRADING_APP.md</code>.</p>
-  <p class="doc-end">End of StockPulse documentation — 19 August 2026. This guide describes the personal StockPulse build in this repository and is not a broker disclosure or offer to transact.</p>
+  <p>Related files: <code>SECURITY.md</code>, <code>docs/LICENSING.md</code>, <code>docs/DEVELOPMENT.md</code>, <code>docs/BACKTEST.md</code>, <code>docs/SEC_ACCUMULATION.md</code>, <code>backend/README.md</code>, <code>frontend/README.md</code>, <code>TRADING_APP.md</code>.</p>
+  <p class="doc-end">End of StockPulse documentation — 1 September 2026. This guide describes the personal StockPulse build in this repository and is not a broker disclosure or offer to transact.</p>
 </body>
 </html>

@@ -84,6 +84,24 @@ $backendProcess = Start-Process `
     -WindowStyle Hidden `
     -PassThru
 
+$backendReady = $false
+$backendDeadline = (Get-Date).AddSeconds(30)
+do {
+    Start-Sleep -Milliseconds 500
+    try {
+        $directBackendHealth = Invoke-WebRequest "http://127.0.0.1:8000/api/v1/health" -UseBasicParsing -TimeoutSec 2
+        if ($directBackendHealth.StatusCode -eq 200) {
+            $backendReady = $true
+            break
+        }
+    } catch {
+        if ((Get-Date) -ge $backendDeadline) {
+            Stop-Process -Id $backendProcess.Id -Force -ErrorAction SilentlyContinue
+            throw "Backend did not become healthy on port 8000 before the timeout."
+        }
+    }
+} while ((Get-Date) -lt $backendDeadline)
+
 $frontendProcess = Start-Process `
     -FilePath $nodeCommand `
     -ArgumentList @($viteEntry, "preview", "--host", "0.0.0.0", "--port", "5173") `

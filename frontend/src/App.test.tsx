@@ -3,16 +3,62 @@ import userEvent from '@testing-library/user-event'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import App from './App'
 
+const AUTH_USER = {
+  id: 1,
+  email: 'test@example.com',
+  alpaca: {
+    paper: { configured: true, key_preview: 'PKTE…3456' },
+    live: { configured: false, key_preview: null },
+  },
+}
+
+function jsonResponse(data: unknown, status = 200): Promise<Response> {
+  return Promise.resolve({
+    ok: status >= 200 && status < 300,
+    status,
+    headers: new Headers(),
+    json: async () => data,
+  } as Response)
+}
+
+function withAuth(
+  handler: (url: string, init?: RequestInit) => ReturnType<typeof fetch> | Promise<Response>,
+) {
+  return vi.fn().mockImplementation((input: RequestInfo | URL, init?: RequestInit) => {
+    const url = String(input)
+    if (url.includes('/auth/me')) return jsonResponse(AUTH_USER)
+    if (url.includes('/config/status')) {
+      return jsonResponse({
+        alpaca: {
+          paper_configured: true,
+          live_configured: false,
+          paper_key_preview: 'PKTE…3456',
+          live_key_preview: null,
+        },
+        live_trading_allowed: true,
+        data_feed: 'iex',
+        user: { id: 1, email: 'test@example.com' },
+      })
+    }
+    return handler(url, init)
+  })
+}
+
 describe('live trading safeguard', () => {
   beforeEach(() => {
-    vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('offline')))
+    localStorage.setItem('stockpulse_access_token', 'test-token')
+    vi.stubGlobal('fetch', withAuth(() => Promise.reject(new Error('offline'))))
   })
 
-  afterEach(() => vi.unstubAllGlobals())
+  afterEach(() => {
+    localStorage.clear()
+    vi.unstubAllGlobals()
+  })
 
   it('does not enable live mode until LIVE is typed exactly', async () => {
     const user = userEvent.setup()
     render(<App />)
+    await screen.findByRole('button', { name: 'Live' })
     await user.click(screen.getByRole('button', { name: 'Live' }))
     const confirmation = screen.getByRole('button', { name: /enable live mode/i })
     expect(confirmation).toBeDisabled()
@@ -25,38 +71,36 @@ describe('live trading safeguard', () => {
     expect(screen.getByText(/LIVE TRADING — REAL FUNDS AT RISK/)).toBeInTheDocument()
   })
 
-  it('renders the manual-only execution boundary', () => {
+  it('renders the manual-only execution boundary', async () => {
     render(<App />)
-    expect(screen.getByText(/Manual orders only/i)).toBeInTheDocument()
+    expect(await screen.findByText(/Manual orders only/i)).toBeInTheDocument()
     expect(screen.getByText(/never trigger orders/i)).toBeInTheDocument()
   })
 
-  it('shows a market open or closed status light', () => {
+  it('shows a market open or closed status light', async () => {
     render(<App />)
-    expect(screen.getByRole('status', { name: /market|hours/i })).toBeInTheDocument()
+    expect(await screen.findByRole('status', { name: /market|hours/i })).toBeInTheDocument()
     expect(document.querySelector('.traffic-housing')).toBeTruthy()
     expect(document.querySelectorAll('.traffic-lamp')).toHaveLength(3)
   })
 
   it('shows every search match in a scrollable list', async () => {
     const user = userEvent.setup()
-    vi.stubGlobal('fetch', vi.fn().mockImplementation((input: RequestInfo) => {
-      if (String(input).includes('/symbols/search')) {
-        return Promise.resolve({
-          ok: true,
-          json: async () => ({
-            results: Array.from({ length: 12 }, (_, index) => ({
-              symbol: `T${index}`,
-              name: `Ticker ${index}`,
-              exchange: 'NASDAQ',
-            })),
-          }),
-        } as Response)
+    vi.stubGlobal('fetch', withAuth((url) => {
+      if (url.includes('/symbols/search')) {
+        return jsonResponse({
+          results: Array.from({ length: 12 }, (_, index) => ({
+            symbol: `T${index}`,
+            name: `Ticker ${index}`,
+            exchange: 'NASDAQ',
+          })),
+        })
       }
       return Promise.reject(new Error('offline'))
     }))
 
     render(<App />)
+    await screen.findByLabelText('Search stocks')
     await user.type(screen.getByLabelText('Search stocks'), 'te')
     expect(await screen.findByText('T11')).toBeInTheDocument()
     expect(document.querySelector('.search-results')).toBeTruthy()
@@ -64,8 +108,7 @@ describe('live trading safeguard', () => {
 
   it('updates the news section to the selected stock', async () => {
     const user = userEvent.setup()
-    vi.stubGlobal('fetch', vi.fn().mockImplementation((input: RequestInfo) => {
-      const url = String(input)
+    vi.stubGlobal('fetch', withAuth((url) => {
       if (url.includes('/symbols/search')) {
         return Promise.resolve({
           ok: true,
@@ -115,8 +158,7 @@ describe('live trading safeguard', () => {
   })
 
   it('borders news cards green for positive and red for negative', async () => {
-    vi.stubGlobal('fetch', vi.fn().mockImplementation((input: RequestInfo) => {
-      const url = String(input)
+    vi.stubGlobal('fetch', withAuth((url) => {
       if (url.includes('/overview')) {
         return Promise.resolve({
           ok: true,
@@ -166,8 +208,7 @@ describe('live trading safeguard', () => {
   })
 
   it('shows public and investors sentiment badges beside the ticker', async () => {
-    vi.stubGlobal('fetch', vi.fn().mockImplementation((input: RequestInfo, init?: RequestInit) => {
-      const url = String(input)
+    vi.stubGlobal('fetch', withAuth((url, init) => {
       if (url.includes('/overview')) {
         return Promise.resolve({
           ok: true,
@@ -218,8 +259,7 @@ describe('live trading safeguard', () => {
   })
 
   it('shows an em dash when public sentiment is unavailable', async () => {
-    vi.stubGlobal('fetch', vi.fn().mockImplementation((input: RequestInfo) => {
-      const url = String(input)
+    vi.stubGlobal('fetch', withAuth((url) => {
       if (url.includes('/overview')) {
         return Promise.resolve({
           ok: true,
@@ -256,8 +296,7 @@ describe('live trading safeguard', () => {
 
   it('lets the user pick chart intervals and restores original short/long horizons', async () => {
     const user = userEvent.setup()
-    const fetch = vi.fn().mockImplementation((input: RequestInfo, init?: RequestInit) => {
-      const url = String(input)
+    const fetch = withAuth((url, init) => {
       if (url.includes('/overview')) {
         return Promise.resolve({
           ok: true,
@@ -351,8 +390,7 @@ describe('live trading safeguard', () => {
 
   it('lets the user switch between Kronos and Forecast engines', async () => {
     const user = userEvent.setup()
-    const fetch = vi.fn().mockImplementation((input: RequestInfo, init?: RequestInit) => {
-      const url = String(input)
+    const fetch = withAuth((url, init) => {
       if (url.includes('/overview')) {
         return Promise.resolve({
           ok: true,
@@ -418,8 +456,7 @@ describe('live trading safeguard', () => {
 
   it('retries a throttled forecast instead of leaving the chart without a prediction', async () => {
     let forecastCalls = 0
-    vi.stubGlobal('fetch', vi.fn().mockImplementation((input: RequestInfo, init?: RequestInit) => {
-      const url = String(input)
+    vi.stubGlobal('fetch', withAuth((url, init) => {
       if (url.includes('/overview')) {
         return Promise.resolve({
           ok: true,
@@ -472,8 +509,7 @@ describe('live trading safeguard', () => {
 
   it('loads and selects both call and put contracts without losing expirations', async () => {
     const user = userEvent.setup()
-    vi.stubGlobal('fetch', vi.fn().mockImplementation((input: RequestInfo) => {
-      const url = String(input)
+    vi.stubGlobal('fetch', withAuth((url) => {
       if (url.includes('/options/contracts')) {
         const type = url.includes('type=put') ? 'put' : 'call'
         const marker = type === 'put' ? 'P' : 'C'
@@ -518,7 +554,7 @@ describe('live trading safeguard', () => {
     }))
 
     render(<App />)
-    await user.click(screen.getByRole('button', { name: 'Single-leg option' }))
+    await user.click(await screen.findByRole('button', { name: 'Single-leg option' }))
 
     const expirationSelect = await screen.findByLabelText('Expiration')
     expect(screen.getByRole('option', { name: '2026-08-21' })).toBeInTheDocument()

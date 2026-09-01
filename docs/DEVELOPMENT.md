@@ -41,7 +41,7 @@ powershell -ExecutionPolicy Bypass -File scripts/build-guide-pdfs.ps1
 ```
 
 Outputs: `docs/StockPulse.pdf`, `docs/StockPulse-Architecture.pdf`,
-`docs/StockPulse-Finance-Glossary.pdf`.
+`docs/StockPulse-Finance-Glossary.pdf`. See also `docs/SEC_ACCUMULATION.md`.
 
 ## Multi-model forecasting (research)
 
@@ -90,6 +90,25 @@ uvicorn app.main:app --reload
 Copy `backend/.env.example` to `backend/.env` only for local use. Tests use
 fakes; do not put real credentials in fixtures or commits.
 
+### SEC accumulation
+
+- Code: `backend/app/sec/`
+- Config: `backend/configs/sec_accumulation.yaml`, env vars in `backend/.env.example`
+- Docs: [SEC_ACCUMULATION.md](./SEC_ACCUMULATION.md)
+
+```bash
+cd backend
+pytest -q tests/test_sec_*.py tests/test_research_query.py
+python scripts/sec_backtest.py XOM --days 365
+```
+
+To trigger a scan manually (requires running API with credentials):
+
+```bash
+curl -X POST http://127.0.0.1:8000/api/v1/accumulation/scan -H "Authorization: Bearer …"
+curl http://127.0.0.1:8000/api/v1/accumulation/scan/status -H "Authorization: Bearer …"
+```
+
 ## StockPulse frontend
 
 ```bash
@@ -101,6 +120,18 @@ npm run test
 npm run build
 npm run dev
 ```
+
+## LAN publish (local network)
+
+From the repository root:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/publish-kronos-lan.ps1
+```
+
+The script builds the frontend, starts the API on loopback `:8000`, **waits for `/api/v1/health`**, then starts Vite preview on `0.0.0.0:5173`. LAN clients use the UI proxy — the API is not exposed off loopback. Logs: `runtime-logs/backend.*.log`, `runtime-logs/frontend.*.log`. A watchdog (`scripts/watch-kronos-lan.ps1`) can restart the stack when health checks fail.
+
+If you see **502** on API routes through the UI, confirm `http://127.0.0.1:8000/api/v1/health` responds and republish.
 
 ## Containers
 
@@ -137,3 +168,4 @@ powershell -ExecutionPolicy Bypass -File scripts/build-docs-pdf.ps1
 ```
 
 Output: `docs/StockPulse.pdf`. Print-ready HTML: `docs/StockPulse.html`.
+SEC accumulation reference: `docs/SEC_ACCUMULATION.md`.

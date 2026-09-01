@@ -24,6 +24,15 @@ class Settings(BaseSettings):
     forecast_scan_rate_limit_per_minute: int = Field(default=10, ge=0, le=10_000)
     order_rate_limit_per_minute: int = Field(default=30, ge=0, le=10_000)
 
+    database_url: str = "sqlite:///./data/kronos.db"
+    jwt_secret: str = Field(default="dev-only-change-me-jwt-secret-32b", repr=False)
+    jwt_expire_minutes: int = Field(default=60 * 24 * 7, ge=5, le=60 * 24 * 365)
+    # Valid Fernet key for local/dev; replace in production.
+    credentials_encryption_key: str = Field(
+        default="Ew-PE79v7whzOuVHD2GJ4YHXIPD-THvZVQ2ItZsmvO8=",
+        repr=False,
+    )
+
     alpaca_paper_key: str | None = None
     alpaca_paper_secret: str | None = None
     alpaca_live_key: str | None = None
@@ -53,6 +62,19 @@ class Settings(BaseSettings):
     risk_max_spread_bps: float = Field(default=80.0, ge=5.0, le=500.0)
     risk_min_adv_shares: float = Field(default=200_000.0, ge=0.0)
     risk_max_gross_pct: float = Field(default=1.5, ge=0.2, le=5.0)
+
+    sec_user_agent: str = "StockPulse contact@example.com"
+    sec_enabled: bool = True
+    sec_requests_per_second: float = Field(default=8.0, ge=1.0, le=10.0)
+    sec_cache_ttl_seconds: int = Field(default=3600, ge=60, le=86400)
+    sec_score_config_path: str = "backend/configs/sec_accumulation.yaml"
+    sec_rate_limit_per_minute: int = Field(default=60, ge=0, le=10_000)
+    sec_scan_universe_cap: int = Field(default=100, ge=10, le=500)
+    sec_scan_on_startup: bool = False
+    openai_api_key: str | None = Field(default=None, repr=False)
+    openai_base_url: str | None = None
+    openai_model: str = "gpt-4o-mini"
+    research_llm_enabled: bool = False
 
     @property
     def cors_origins(self) -> list[str]:

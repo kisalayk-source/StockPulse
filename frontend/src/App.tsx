@@ -2,11 +2,16 @@ import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } fro
 import {
   Activity, AlertCircle, AlertTriangle, ArrowDownRight, ArrowUpRight, BarChart3,
   BriefcaseBusiness, CheckCircle2, ChevronDown, Clock3, ExternalLink, LoaderCircle,
-  RefreshCw, Search, ShieldCheck, WalletCards, XCircle,
+  LogOut, RefreshCw, Search, Settings, ShieldCheck, WalletCards, XCircle,
 } from 'lucide-react'
 import {
   ApiError,
-  api, type Account, type AppConfig, type ChartInterval, type ChartResponse, type ForecastResponse, type MarketClock, type NewsItem,
+  api,
+  getAccessToken,
+  onAuthChange,
+  type Account, type AppConfig, type AuthUser, type ChartInterval, type ChartResponse, type ForecastResponse, type MarketClock, type NewsItem,
+  type ResearchQueryResponse, type SecFilingsResponse, type SecIntelligenceResponse, type SectorAccumulationResponse, type TopAccumulationResponse,
+  type AccumulationScanStatus,
   type OptionChain, type OptionContract, type OptionPositionIntent, type Order, type OrderSide, type OrderType,
   type Position, type PublicSentiment, type Quote, type SearchResult, type SentimentLabel,
   type TradingMode,
@@ -15,10 +20,13 @@ import {
   formatCurrency, formatDateTime, formatNumber, formatPercent,
   localMarketClock, marketStatusLabel, marketStatusTone,
 } from './format'
+import { AuthScreen } from './AuthScreen'
 import { MarketChart } from './MarketChart'
 import { MoversPanel } from './MoversPanel'
 import { PortfolioPanel, type HoldSuggestion } from './PortfolioPanel'
 import { OrderReview, type ReviewOrder } from './OrderReview'
+import { SettingsModal } from './SettingsModal'
+import { ResearchPanel, SecIntelligencePanel, SecRecordsPanel, SectorsPanel, TopAccumulationPanel } from './SecIntelligencePanel'
 import './App.css'
 
 type LoadState = 'idle' | 'loading' | 'ready' | 'error'
@@ -225,7 +233,19 @@ function DecisionPanel({
   )
 }
 
+type DashboardView = 'market' | 'sectors' | 'top' | 'research' | 'records'
+
+const FALLBACK_SECTORS = ['Energy', 'Technology', 'Healthcare', 'Financials', 'Industrials']
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => { window.setTimeout(resolve, ms) })
+}
+
 function App() {
+  const [accessToken, setAccessTokenState] = useState<string | null>(() => getAccessToken())
+  const [authUser, setAuthUser] = useState<AuthUser | null>(null)
+  const [authChecking, setAuthChecking] = useState(() => Boolean(getAccessToken()))
+  const [settingsOpen, setSettingsOpen] = useState(false)
   const [mode, setMode] = useState<TradingMode>('paper')
   const [modeConfirm, setModeConfirm] = useState(false)
   const [livePhrase, setLivePhrase] = useState('')
@@ -279,6 +299,125 @@ function App() {
     const local = localMarketClock()
     return { isOpen: local.isOpen, session: local.session }
   })
+  const [dashboardView, setDashboardView] = useState<DashboardView>('market')
+  const [secData, setSecData] = useState<SecIntelligenceResponse | null>(null)
+  const [secState, setSecState] = useState<LoadState>('idle')
+  const [secError, setSecError] = useState('')
+  const [sectorRows, setSectorRows] = useState<SectorAccumulationResponse[]>([])
+  const [sectorsState, setSectorsState] = useState<LoadState>('idle')
+  const [topAccumulation, setTopAccumulation] = useState<TopAccumulationResponse | null>(null)
+  const [topState, setTopState] = useState<LoadState>('idle')
+  const [researchResponse, setResearchResponse] = useState<ResearchQueryResponse | null>(null)
+  const [researchState, setResearchState] = useState<LoadState>('idle')
+  const [researchError, setResearchError] = useState('')
+  const [scanProgress, setScanProgress] = useState<AccumulationScanStatus | null>(null)
+  const [recordsData, setRecordsData] = useState<SecFilingsResponse | null>(null)
+  const [recordsState, setRecordsState] = useState<LoadState>('idle')
+  const [recordsError, setRecordsError] = useState('')
+
+  const loadSec = useCallback(async () => {
+    setSecState('loading')
+    setSecError('')
+    try {
+      const payload = await api.secIntelligence(symbol)
+      setSecData(payload)
+      setSecState('ready')
+    } catch (error) {
+      setSecData(null)
+      setSecError(error instanceof Error ? error.message : 'SEC data unavailable')
+      setSecState('error')
+    }
+  }, [symbol])
+
+  const reloadMarketSecData = useCallback(async () => {
+    setSectorsState('loading')
+    setTopState('loading')
+    try {
+      const sectorList = await api.listSectors()
+      const names = sectorList.sectors.map((row) => row.sector).filter(Boolean)
+      const sectors = names.length ? names : FALLBACK_SECTORS
+      const rows = await Promise.all(sectors.map((sector) => api.sectorAccumulation(sector)))
+      setSectorRows(rows)
+      setSectorsState('ready')
+      const top = await api.topAccumulation({ minScore: 0, limit: 50 })
+      setTopAccumulation(top)
+      setTopState('ready')
+    } catch (error) {
+      setSectorsState('error')
+      setTopState('error')
+      setSectorRows([])
+      setTopAccumulation(null)
+      if (error instanceof Error && !scanProgress?.error) {
+        /* keep silent; panels show error state */
+      }
+    }
+  }, [])
+
+  const pollAccumulationScan = useCallback(async () => {
+    try {
+      await api.startAccumulationScan()
+    } catch {
+      /* scan may already be running */
+    }
+    for (let attempt = 0; attempt < 90; attempt += 1) {
+      try {
+        const status = await api.accumulationScanStatus()
+        setScanProgress(status)
+        if (status.status === 'ready' || status.status === 'error' || status.status === 'disabled') {
+          await reloadMarketSecData()
+          return
+        }
+        if (status.status === 'running' && attempt > 0 && attempt % 3 === 0) {
+          await reloadMarketSecData()
+        }
+      } catch {
+        break
+      }
+      await sleep(2000)
+    }
+    await reloadMarketSecData()
+  }, [reloadMarketSecData])
+
+  const loadSectorPanels = useCallback(async () => {
+    void pollAccumulationScan()
+  }, [pollAccumulationScan])
+
+  const refreshMarketScan = useCallback(async () => {
+    try {
+      await api.startAccumulationScan(true)
+      await pollAccumulationScan()
+    } catch {
+      await reloadMarketSecData()
+    }
+  }, [pollAccumulationScan, reloadMarketSecData])
+
+  const loadRecords = useCallback(async (ticker: string) => {
+    setRecordsState('loading')
+    setRecordsError('')
+    try {
+      const payload = await api.secFilings(ticker, { months: 6, limit: 100 })
+      setRecordsData(payload)
+      setRecordsState('ready')
+    } catch (error) {
+      setRecordsData(null)
+      setRecordsError(error instanceof Error ? error.message : 'SEC records unavailable')
+      setRecordsState('error')
+    }
+  }, [])
+
+  const runResearch = useCallback(async (query: string) => {
+    setResearchState('loading')
+    setResearchError('')
+    try {
+      const payload = await api.researchQuery(query)
+      setResearchResponse(payload)
+      setResearchState('ready')
+    } catch (error) {
+      setResearchResponse(null)
+      setResearchError(error instanceof Error ? error.message : 'Research query failed')
+      setResearchState('error')
+    }
+  }, [])
 
   const loadMarket = useCallback(async () => {
     const requestId = ++marketRequest.current
@@ -372,18 +511,68 @@ function App() {
     }
   }, [])
 
-  useEffect(() => { void loadMarket() }, [loadMarket])
-  useEffect(() => { void loadPortfolio() }, [loadPortfolio])
+  useEffect(() => onAuthChange((token) => {
+    setAccessTokenState(token)
+    if (!token) setAuthUser(null)
+  }), [])
+
   useEffect(() => {
+    if (!accessToken) {
+      setAuthUser(null)
+      setAuthChecking(false)
+      return
+    }
+    let active = true
+    setAuthChecking(true)
+    api.me()
+      .then((user) => {
+        if (active) {
+          setAuthUser(user)
+          setAuthChecking(false)
+        }
+      })
+      .catch(() => {
+        if (active) {
+          setAuthUser(null)
+          setAuthChecking(false)
+        }
+      })
+    return () => { active = false }
+  }, [accessToken])
+
+  useEffect(() => {
+    if (!authUser) return
+    void loadMarket()
+  }, [loadMarket, authUser])
+  useEffect(() => {
+    if (!authUser) return
+    void loadSec()
+  }, [loadSec, authUser])
+  useEffect(() => {
+    if (!authUser) return
+    void loadSectorPanels()
+  }, [loadSectorPanels, authUser])
+  useEffect(() => {
+    if (!authUser || dashboardView !== 'records') return
+    void loadRecords(symbol)
+  }, [authUser, dashboardView, loadRecords, symbol])
+  useEffect(() => {
+    if (!authUser) return
+    void loadPortfolio()
+  }, [loadPortfolio, authUser])
+  useEffect(() => {
+    if (!authUser) return
     api.config().then(setConfig).catch(() => setConfig(null))
-  }, [])
+  }, [authUser])
   useEffect(() => {
+    if (!authUser) return
     void loadClock()
     const timer = window.setInterval(() => void loadClock(), 60_000)
     return () => window.clearInterval(timer)
-  }, [loadClock])
+  }, [loadClock, authUser])
 
   useEffect(() => {
+    if (!authUser) return
     if (searchTerm.trim().length < 2) {
       setResults([])
       setSearchError('')
@@ -406,10 +595,10 @@ function App() {
       }
     }, 250)
     return () => { active = false; window.clearTimeout(timer) }
-  }, [searchTerm])
+  }, [searchTerm, authUser])
 
   useEffect(() => {
-    if (assetType !== 'option') return
+    if (!authUser || assetType !== 'option') return
     let active = true
     setChainState('loading')
     setChainError('')
@@ -429,7 +618,7 @@ function App() {
         setChainState('error')
       })
     return () => { active = false }
-  }, [assetType, symbol, mode, expiration, optionType])
+  }, [assetType, symbol, mode, expiration, optionType, authUser])
 
   useEffect(() => {
     setPositionIntent((current) => {
@@ -571,13 +760,30 @@ function App() {
 
   const direction = (quote?.change || 0) >= 0 ? 'positive' : 'negative'
 
+  if (authChecking) {
+    return (
+      <div className="auth-shell">
+        <div className="auth-card auth-loading"><LoaderCircle className="spin" size={22} /><span>Checking session…</span></div>
+      </div>
+    )
+  }
+
+  if (!accessToken || !authUser) {
+    return <AuthScreen onAuthenticated={(user) => { setAuthUser(user); setAccessTokenState(getAccessToken()) }} />
+  }
+
+  const paperReady = authUser.alpaca.paper.configured
+  const liveReady = authUser.alpaca.live.configured
+  const modeReady = mode === 'paper' ? paperReady : liveReady
+  const alpacaLabel = modeReady ? 'ALPACA CONNECTED' : 'ADD ALPACA KEYS'
+
   return (
     <div className="app-shell">
       {mode === 'live' && <div className="live-banner"><AlertTriangle size={16} /> LIVE TRADING — REAL FUNDS AT RISK</div>}
       <header className="topbar">
         <a className="brand" href="/" aria-label="StockPulse home">
           <span className="brand-mark"><BarChart3 size={20} /></span>
-          <span>StockPulse<small>ALPACA CONNECTED</small></span>
+          <span>StockPulse<small>{alpacaLabel}</small></span>
         </a>
         <div className="search-wrap">
           <Search size={18} />
@@ -615,7 +821,25 @@ function App() {
             onClick={() => setModeConfirm(true)}
           >Live</button>
         </div>
+        <div className="account-actions">
+          <button type="button" className="icon-button" aria-label="Account settings" title="Account settings" onClick={() => setSettingsOpen(true)}>
+            <Settings size={18} />
+          </button>
+          <button type="button" className="icon-button" aria-label="Sign out" title="Sign out" onClick={() => api.logout()}>
+            <LogOut size={18} />
+          </button>
+        </div>
       </header>
+
+      {!modeReady && (
+        <div className="warning-banner" role="status">
+          <AlertTriangle size={18} />
+          <span>
+            <strong>Alpaca {mode} keys required.</strong> Add your API key and secret to trade with your own account.
+          </span>
+          <button type="button" onClick={() => setSettingsOpen(true)}>Open settings</button>
+        </div>
+      )}
 
       <main>
         <section className="market-heading">
@@ -630,9 +854,18 @@ function App() {
               {quote?.isStale && <span className="stale"><Clock3 size={13} /> Stale data</span>}
             </div>
           </div>
-          <button className="icon-button" aria-label="Refresh dashboard" onClick={() => { void loadMarket(); void loadPortfolio(); void loadClock() }}><RefreshCw size={18} /></button>
+          <button className="icon-button" aria-label="Refresh dashboard" onClick={() => { void loadMarket(); void loadPortfolio(); void loadClock(); void loadSec(); void refreshMarketScan() }}><RefreshCw size={18} /></button>
         </section>
 
+        <div className="dashboard-tabs" role="tablist" aria-label="Dashboard views">
+          <button role="tab" aria-selected={dashboardView === 'market'} className={dashboardView === 'market' ? 'active' : ''} onClick={() => setDashboardView('market')}>Market</button>
+          <button role="tab" aria-selected={dashboardView === 'sectors'} className={dashboardView === 'sectors' ? 'active' : ''} onClick={() => setDashboardView('sectors')}>Sectors</button>
+          <button role="tab" aria-selected={dashboardView === 'top'} className={dashboardView === 'top' ? 'active' : ''} onClick={() => setDashboardView('top')}>Top Accumulation</button>
+          <button role="tab" aria-selected={dashboardView === 'records'} className={dashboardView === 'records' ? 'active' : ''} onClick={() => setDashboardView('records')}>SEC Records</button>
+          <button role="tab" aria-selected={dashboardView === 'research'} className={dashboardView === 'research' ? 'active' : ''} onClick={() => setDashboardView('research')}>AI Research</button>
+        </div>
+
+        {dashboardView === 'market' && <>
         {marketState === 'error' && (
           <div className="error-banner"><AlertCircle size={18} /><span><strong>Market data unavailable.</strong> {marketError}</span><button onClick={() => void loadMarket()}>Retry</button></div>
         )}
@@ -765,6 +998,8 @@ function App() {
                 )) : <EmptyState>No recent news is available for {symbol}.</EmptyState>}
               </div>
             </section>
+
+            <SecIntelligencePanel data={secData} loading={secState === 'loading'} error={secState === 'error' ? secError : undefined} />
           </div>
 
           <aside className="side-column">
@@ -811,6 +1046,50 @@ function App() {
           </aside>
         </section>
 
+        </>}
+
+        {dashboardView === 'sectors' && (
+          <SectorsPanel
+            sectors={sectorRows}
+            loading={sectorsState === 'loading'}
+            error={sectorsState === 'error' ? 'Sector data unavailable. Try refresh.' : undefined}
+            scanProgress={scanProgress}
+            onSelectSector={(sector) => {
+              setDashboardView('top')
+              void api.topAccumulation({ sector, minScore: 0, limit: 50 }).then(setTopAccumulation).catch(() => undefined)
+            }}
+            onSelectTicker={(ticker) => { setSymbol(ticker); setDashboardView('market'); void loadSec() }}
+          />
+        )}
+        {dashboardView === 'top' && (
+          <TopAccumulationPanel
+            data={topAccumulation}
+            loading={topState === 'loading'}
+            error={topState === 'error' ? 'Top accumulation data unavailable. Try refresh.' : undefined}
+            scanProgress={scanProgress}
+            onSelectTicker={(ticker) => { setSymbol(ticker); setDashboardView('market'); void loadSec() }}
+          />
+        )}
+        {dashboardView === 'records' && (
+          <SecRecordsPanel
+            symbol={symbol}
+            data={recordsData}
+            loading={recordsState === 'loading'}
+            error={recordsState === 'error' ? recordsError : undefined}
+            onSearch={(ticker) => { setSymbol(ticker); void loadRecords(ticker) }}
+          />
+        )}
+        {dashboardView === 'research' && (
+          <ResearchPanel
+            response={researchResponse}
+            loading={researchState === 'loading'}
+            error={researchState === 'error' ? researchError : undefined}
+            scanProgress={scanProgress}
+            onSubmit={(query) => void runResearch(query)}
+          />
+        )}
+
+        {dashboardView === 'market' && <>
         <MoversPanel
           onSelectSymbol={(ticker) => { setSymbol(ticker.toUpperCase()); setSelectedContract(null) }}
           onHoldSuggestions={setHoldSuggestions}
@@ -825,6 +1104,7 @@ function App() {
           holdSuggestions={holdSuggestions}
           onSelectSymbol={(ticker) => { setSymbol(ticker.toUpperCase()); setSelectedContract(null) }}
         />
+        </>}
       </main>
 
       {modeConfirm && <div
@@ -853,6 +1133,17 @@ function App() {
         </section>
       </div>}
       {notice && <div className={`toast ${notice.status}`} role="status" aria-live="polite"><StatusPill status={notice.status} /><div><strong>Order {notice.status}</strong><span>{notice.symbol} · {notice.side} {notice.quantity || formatCurrency(notice.notional)}</span></div><button className="icon-button" aria-label="Dismiss order status" onClick={() => setNotice(null)}><XCircle size={17} /></button></div>}
+      {settingsOpen && (
+        <SettingsModal
+          user={authUser}
+          liveTradingEnabled={config?.liveTradingEnabled !== false}
+          onClose={() => setSettingsOpen(false)}
+          onUpdated={(user) => {
+            setAuthUser(user)
+            api.config().then(setConfig).catch(() => undefined)
+          }}
+        />
+      )}
     </div>
   )
 }
