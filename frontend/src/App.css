@@ -404,6 +404,57 @@ label input:focus,label select:focus { border-color: #655298; }.bid-ask { displa
 }
 .sec-filer-cell { max-width: 220px; font-weight: 500; }
 .sec-records-mini-table { font-size: .85rem; }
+.sec-records-filings-table .sec-filing-row.expandable { cursor: pointer; }
+.sec-filing-expand { width: 36px; }
+.sec-filing-expand-btn {
+  width: 24px;
+  height: 24px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--panel-2);
+  color: var(--text);
+  font: inherit;
+  line-height: 1;
+  cursor: pointer;
+}
+.sec-report-period {
+  display: block;
+  margin-top: 4px;
+  font-size: .72rem;
+  color: var(--muted);
+}
+.sec-filing-details-row td { background: var(--panel-2); padding: 0; }
+.sec-filing-details { padding: 12px 14px; display: grid; gap: 10px; }
+.sec-filing-detail-card {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 10px 12px;
+  background: var(--panel);
+}
+.sec-filing-detail-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 8px;
+}
+.sec-filing-detail-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: 8px 12px;
+  margin: 0;
+}
+.sec-filing-detail-item dt {
+  margin: 0;
+  font-size: .72rem;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: .04em;
+}
+.sec-filing-detail-item dd {
+  margin: 2px 0 0;
+  font-size: .85rem;
+}
 .sec-records-warnings { margin-bottom: 12px; }
 .sec-records-section { margin-top: 16px; }
 .sec-records-section h3 { margin: 0 0 8px; font-size: .95rem; }

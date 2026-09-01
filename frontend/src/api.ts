@@ -333,6 +333,39 @@ export interface AccumulationScanStatus {
   error?: string
 }
 
+export interface SecFilingDetail {
+  type: 'insider' | 'institutional' | 'ownership' | 'holding'
+  entity: string
+  action: string
+  action_tone?: 'positive' | 'negative' | 'neutral'
+  title?: string | null
+  transaction_code?: string
+  normalized_type?: string
+  transaction_date?: string | null
+  shares?: number | null
+  price?: number | null
+  value?: number | null
+  shares_owned_after?: number | null
+  ownership_type?: string | null
+  is_derivative?: boolean
+  classification?: string
+  previous_shares?: number | null
+  current_shares?: number | null
+  change_shares?: number | null
+  change_pct?: number | null
+  report_period?: string | null
+  issuer_name?: string | null
+  event_type?: string | null
+  ownership_pct?: number | null
+  purpose?: string | null
+  passive?: boolean
+  form_type?: string
+  market_value?: number | null
+  issuer_cusip?: string | null
+  security_type?: string | null
+  put_call?: string | null
+}
+
 export interface SecFilingRecord {
   accession_number: string
   form_type: string
@@ -345,6 +378,7 @@ export interface SecFilingRecord {
   filer_name?: string | null
   action?: string | null
   action_tone?: 'positive' | 'negative' | 'neutral'
+  details?: SecFilingDetail[]
 }
 
 export interface SecFilingsResponse {
@@ -1202,6 +1236,42 @@ export const api = {
           filer_name: item.filer_name as string | null | undefined,
           action: item.action as string | null | undefined,
           action_tone: ['positive', 'negative', 'neutral'].includes(actionTone || '') ? actionTone : 'neutral',
+          details: list(item.details).map((detailRow) => {
+            const detail = object(detailRow)
+            const detailTone = text(detail.action_tone) as SecFilingDetail['action_tone']
+            return {
+              type: text(detail.type) as SecFilingDetail['type'],
+              entity: text(detail.entity),
+              action: text(detail.action),
+              action_tone: ['positive', 'negative', 'neutral'].includes(detailTone || '') ? detailTone : 'neutral',
+              title: detail.title as string | null | undefined,
+              transaction_code: detail.transaction_code as string | undefined,
+              normalized_type: detail.normalized_type as string | undefined,
+              transaction_date: detail.transaction_date as string | null | undefined,
+              shares: number(detail.shares) ?? undefined,
+              price: number(detail.price) ?? undefined,
+              value: number(detail.value) ?? undefined,
+              shares_owned_after: number(detail.shares_owned_after) ?? undefined,
+              ownership_type: detail.ownership_type as string | null | undefined,
+              is_derivative: detail.is_derivative as boolean | undefined,
+              classification: detail.classification as string | undefined,
+              previous_shares: number(detail.previous_shares) ?? undefined,
+              current_shares: number(detail.current_shares) ?? undefined,
+              change_shares: number(detail.change_shares) ?? undefined,
+              change_pct: number(detail.change_pct) ?? undefined,
+              report_period: detail.report_period as string | null | undefined,
+              issuer_name: detail.issuer_name as string | null | undefined,
+              event_type: detail.event_type as string | null | undefined,
+              ownership_pct: number(detail.ownership_pct) ?? undefined,
+              purpose: detail.purpose as string | null | undefined,
+              passive: detail.passive as boolean | undefined,
+              form_type: detail.form_type as string | undefined,
+              market_value: number(detail.market_value) ?? undefined,
+              issuer_cusip: detail.issuer_cusip as string | null | undefined,
+              security_type: detail.security_type as string | null | undefined,
+              put_call: detail.put_call as string | null | undefined,
+            }
+          }),
         }
       }),
       insider_transactions: list(payload.insider_transactions) as Array<Record<string, unknown>>,

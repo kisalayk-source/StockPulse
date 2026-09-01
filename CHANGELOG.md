@@ -10,10 +10,11 @@ Notable changes to this project are documented here. The format follows
 
 - **SEC Records AI analysis** — `GET /stocks/{symbol}/filings/analysis` returns a headline, gist bullets, good/bad/mixed/neutral sentiment, and highlight chips from structured filing data (OpenAI when `RESEARCH_LLM_ENABLED=true`, rule-based fallback otherwise). The SEC Records tab shows an analysis card above the filings table.
 - **SEC filing entity and action columns** — each filing row includes `filer_name`, `action` (e.g. Bought, Sold, New investment), and `action_tone` for color-coded display; insider and beneficial-ownership tables use the same action labels.
+- **SEC filing XML parsing and expandable details** — EDGAR XML is parsed into structured `details[]` per filing (insider trades, institutional changes, ownership events, holdings). The SEC Records UI expands each row with a **+** control to show the full parsed breakdown (shares, price, ownership %, purpose, etc.).
 
 ### Changed
 
-- **SEC Records tab** — polished layout with stat chips, AI analysis card, filing-entity/action columns, and improved insider/ownership mini-tables (replaces plain description text and bullet lists).
+- **SEC Records tab** — polished layout with stat chips, AI analysis card, filing-entity/action columns, expandable parsed-detail rows, and improved insider/ownership mini-tables (replaces plain description text and bullet lists).
 - **SEC market tabs** — background accumulation scan (blue-chip + movers universe) populates Sectors, Top Accumulation, and AI Research; sector names normalized from Finnhub profiles.
 - Chart interval control (1m / 5m / 15m / 1h / 1D) for historical candles and
   forecasts; Short/Long horizons restored to original 12 and 20 bars (bar-count
@@ -54,6 +55,7 @@ Notable changes to this project are documented here. The format follows
 
 ### Fixed
 
+- **SEC Records empty entity/action columns** — filings that were stored without parsed XML children are now backfilled on sync and on each `/filings` request; EDGAR document selection ranks Form 4/13D/13G/13F XML attachments (`ownership.xml`, `infotable.xml`, etc.) and retries parsing until structured data is extracted.
 - **SEC Records empty for valid tickers** — `/stocks/{symbol}/filings` syncs EDGAR submissions before querying SQLite; the SEC Records tab auto-loads on open and after search.
 - **LAN 502 on first load** — publish script waits for backend health before starting the frontend; accumulation scan no longer blocks API requests while building the mover universe.
 - **Sparse Sectors / Top tabs** — market-wide tabs read from the accumulation score cache populated by the background scan, not only the active Market symbol.

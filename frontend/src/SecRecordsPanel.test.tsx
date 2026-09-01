@@ -20,6 +20,17 @@ const mockFilingsData = {
     filer_name: 'Jane Smith',
     action: 'Bought 10,000 shares',
     action_tone: 'positive' as const,
+    details: [{
+      type: 'insider' as const,
+      entity: 'Jane Smith',
+      title: 'Chief Executive Officer',
+      action: 'Bought 10,000 shares',
+      action_tone: 'positive' as const,
+      transaction_code: 'P',
+      shares: 10000,
+      price: 110.5,
+      value: 1105000,
+    }],
   }],
   insider_transactions: [],
   beneficial_ownership: [],
@@ -52,6 +63,8 @@ describe('SecRecordsPanel', () => {
     expect(screen.getByText('Form 4')).toBeInTheDocument()
     expect(screen.getByText('Jane Smith')).toBeInTheDocument()
     expect(screen.getByText('Bought 10,000 shares')).toBeInTheDocument()
+    await userEvent.click(screen.getByRole('button', { name: /Show parsed filing details/i }))
+    expect(screen.getByText('Chief Executive Officer')).toBeInTheDocument()
     await userEvent.clear(screen.getByPlaceholderText(/Search ticker/i))
     await userEvent.type(screen.getByPlaceholderText(/Search ticker/i), 'MSFT')
     await userEvent.click(screen.getByRole('button', { name: 'Search' }))

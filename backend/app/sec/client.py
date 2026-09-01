@@ -18,6 +18,36 @@ SEC_DATA_BASE = "https://data.sec.gov"
 SEC_WWW_BASE = "https://www.sec.gov"
 
 
+def rank_filing_documents(names: list[str], form_type: str, form_family: str) -> list[str]:
+    family = form_family.upper()
+    form_token = form_type.replace("/", "").replace(" ", "").lower()
+
+    def score(name: str) -> int:
+        lower = name.lower()
+        if not lower.endswith((".xml", ".htm", ".html")):
+            return -1
+        points = 0
+        if lower.endswith(".xml"):
+            points += 5
+        if family == "4" and any(token in lower for token in ("form4", "form_4", "ownership", "wk-form4", "xslf345")):
+            points += 20
+        if family in {"13D", "13G"} and any(token in lower for token in ("sc13", "13d", "13g", "ownership")):
+            points += 20
+        if family == "13F":
+            if "infotable" in lower or "informationtable" in lower:
+                points += 25
+            if "primary" in lower:
+                points += 15
+        if form_token and form_token in lower:
+            points += 8
+        if "primary" in lower:
+            points += 3
+        return points
+
+    ranked = sorted({name for name in names if score(name) >= 0}, key=score, reverse=True)
+    return ranked
+
+
 class SecClient:
     """Async SEC EDGAR HTTP client with rate limiting and caching."""
 
@@ -133,28 +163,48 @@ class SecClient:
         return await self._get_text(url, f"doc:{accession_no_dash}:{filename}")
 
     async def fetch_filing_document(self, cik: str, accession: str, form_type: str) -> str:
+        documents = await self.fetch_filing_documents(cik, accession, form_type)
+        return documents.get("main") or documents.get("primary") or next(iter(documents.values()))
+
+    async def fetch_filing_documents(self, cik: str, accession: str, form_type: str) -> dict[str, str]:
+        from app.sec.edgar import form_family
+
         index = await self.filing_index(cik, accession)
         items = index.get("directory", {}).get("item", [])
         if isinstance(items, dict):
             items = [items]
-        preferred = []
-        for item in items:
-            name = str(item.get("name", ""))
+        names = [str(item.get("name", "")) for item in items if item.get("name")]
+        family = form_family(form_type)
+        ranked = rank_filing_documents(names, form_type, family)
+        documents: dict[str, str] = {}
+        for name in ranked:
             lower = name.lower()
-            if lower.endswith(".xml") and "primary" in lower:
-                preferred.insert(0, name)
-            elif lower.endswith(".xml"):
-                preferred.append(name)
-            elif lower.endswith(".htm") and form_type.replace("/", "").lower() in lower:
-                preferred.append(name)
-        if not preferred:
-            for item in items:
-                name = str(item.get("name", ""))
-                if name.lower().endswith((".xml", ".htm")):
-                    preferred.append(name)
-        if not preferred:
+            text = await self.fetch_document(cik, accession, name)
+            if "infotable" in lower or "informationtable" in lower:
+                documents.setdefault("infotable", text)
+            elif "primary" in lower:
+                documents.setdefault("primary", text)
+            else:
+                documents.setdefault("main", text)
+        if not documents:
             raise ProviderUnavailable("sec", f"No parseable document for accession {accession}")
-        return await self.fetch_document(cik, accession, preferred[0])
+        return documents
+
+    async def fetch_ranked_filing_documents(self, cik: str, accession: str, form_type: str) -> list[tuple[str, str]]:
+        from app.sec.edgar import form_family
+
+        index = await self.filing_index(cik, accession)
+        items = index.get("directory", {}).get("item", [])
+        if isinstance(items, dict):
+            items = [items]
+        names = [str(item.get("name", "")) for item in items if item.get("name")]
+        family = form_family(form_type)
+        documents: list[tuple[str, str]] = []
+        for name in rank_filing_documents(names, form_type, family):
+            documents.append((name, await self.fetch_document(cik, accession, name)))
+        if not documents:
+            raise ProviderUnavailable("sec", f"No parseable document for accession {accession}")
+        return documents
 
     async def aclose(self) -> None:
         await self.client.aclose()

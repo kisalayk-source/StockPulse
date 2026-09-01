@@ -4,7 +4,7 @@ import httpx
 import pytest
 
 from app.config import Settings
-from app.sec.client import SecClient
+from app.sec.client import SecClient, rank_filing_documents
 from app.sec.submissions import TickerCikMapper
 from app.services.providers import ProviderUnavailable
 
@@ -62,3 +62,42 @@ def test_sec_disabled_raises(settings: Settings) -> None:
         await client.aclose()
 
     asyncio.run(run())
+
+
+def test_fetch_filing_documents_selects_primary_and_infotable(settings: Settings) -> None:
+    async def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/index.json"):
+            return httpx.Response(
+                200,
+                json={
+                    "directory": {
+                        "item": [
+                            {"name": "primary_doc.xml"},
+                            {"name": "infotable.xml"},
+                        ]
+                    }
+                },
+            )
+        if "primary_doc.xml" in request.url.path:
+            return httpx.Response(200, text="<primary><name>Fund A</name></primary>")
+        if "infotable.xml" in request.url.path:
+            return httpx.Response(200, text="<informationTable><infoTable/></informationTable>")
+        return httpx.Response(404)
+
+    async def run() -> None:
+        client = SecClient(settings, client=httpx.AsyncClient(transport=httpx.MockTransport(handler)))
+        docs = await client.fetch_filing_documents("0000034088", "0001-001", "13F-HR")
+        assert "primary" in docs
+        assert "infotable" in docs
+        await client.aclose()
+
+    asyncio.run(run())
+
+
+def test_rank_filing_documents_prefers_form4_xml() -> None:
+    ranked = rank_filing_documents(
+        ["report.htm", "primary_doc.xml", "ownership.xml", "other.xml"],
+        "4",
+        "4",
+    )
+    assert ranked[0] == "ownership.xml"

@@ -1,9 +1,10 @@
-import { useEffect, useState } from 'react'
+import { Fragment, useEffect, useState } from 'react'
 import { ExternalLink } from 'lucide-react'
 import type {
   AccumulationScanStatus,
   ResearchQueryResponse,
   SecFilingsAnalysisResponse,
+  SecFilingDetail,
   SecFilingsResponse,
   SecIntelligenceResponse,
   SectorAccumulationResponse,
@@ -338,6 +339,75 @@ function actionToneClass(tone: string | undefined): string {
   return 'neutral'
 }
 
+function detailFieldRows(detail: SecFilingDetail): Array<{ label: string; value: string }> {
+  const rows: Array<{ label: string; value: string }> = []
+  const add = (label: string, value: unknown) => {
+    if (value == null || value === '' || value === false) return
+    if (typeof value === 'number' && !Number.isFinite(value)) return
+    rows.push({ label, value: String(value) })
+  }
+  add('Role', detail.title)
+  add('Transaction date', detail.transaction_date)
+  add('Transaction code', detail.transaction_code)
+  if (detail.type === 'insider') {
+    add('Shares', detail.shares != null ? formatNumber(Math.round(detail.shares)) : null)
+    add('Price', detail.price != null ? `$${formatNumber(detail.price)}` : null)
+    add('Value', detail.value != null ? `$${formatNumber(Math.round(detail.value))}` : null)
+    add('Shares after', detail.shares_owned_after != null ? formatNumber(Math.round(detail.shares_owned_after)) : null)
+    add('Ownership', detail.ownership_type)
+    add('Derivative', detail.is_derivative ? 'Yes' : null)
+  }
+  if (detail.type === 'institutional') {
+    add('Classification', detail.classification?.replaceAll('_', ' '))
+    add('Previous shares', detail.previous_shares != null ? formatNumber(Math.round(detail.previous_shares)) : null)
+    add('Current shares', detail.current_shares != null ? formatNumber(Math.round(detail.current_shares)) : null)
+    add('Change', detail.change_shares != null ? formatNumber(Math.round(detail.change_shares)) : null)
+    add('Change %', detail.change_pct != null ? `${formatNumber(detail.change_pct)}%` : null)
+    add('Report period', detail.report_period)
+  }
+  if (detail.type === 'ownership') {
+    add('Issuer', detail.issuer_name)
+    add('Ownership %', detail.ownership_pct != null ? `${formatNumber(detail.ownership_pct)}%` : null)
+    add('Shares', detail.shares != null ? formatNumber(Math.round(detail.shares)) : null)
+    add('Stance', detail.passive === true ? 'Passive' : detail.passive === false ? 'Active' : null)
+    add('Purpose', detail.purpose)
+  }
+  if (detail.type === 'holding') {
+    add('Issuer', detail.issuer_name)
+    add('Shares held', detail.shares != null ? formatNumber(Math.round(detail.shares)) : null)
+    add('Market value', detail.market_value != null ? `$${formatNumber(Math.round(detail.market_value))}` : null)
+    add('CUSIP', detail.issuer_cusip)
+    add('Security type', detail.security_type)
+    add('Put/Call', detail.put_call)
+    add('Report period', detail.report_period)
+  }
+  return rows
+}
+
+function FilingDetailsPanel({ details }: { details: SecFilingDetail[] }) {
+  if (!details.length) return null
+  return (
+    <div className="sec-filing-details">
+      {details.map((detail, idx) => (
+        <div key={idx} className="sec-filing-detail-card">
+          <div className="sec-filing-detail-header">
+            <strong>{detail.entity}</strong>
+            <span className={`sec-band ${actionToneClass(detail.action_tone)}`}>{detail.action}</span>
+          </div>
+          <dl className="sec-filing-detail-grid">
+            {detailFieldRows(detail).map((field) => (
+              <div key={field.label} className="sec-filing-detail-item">
+                <dt>{field.label}</dt>
+                <dd>{field.value}</dd>
+              </div>
+            ))}
+          </dl>
+        </div>
+      ))}
+    </div>
+  )
+}
+
 function sentimentClass(sentiment: SecFilingsAnalysisResponse['sentiment']): string {
   return sentiment
 }
@@ -427,7 +497,9 @@ export function SecRecordsPanel({
   onSearch: (ticker: string) => void
 }) {
   const [query, setQuery] = useState(symbol)
+  const [expanded, setExpanded] = useState<string | null>(null)
   useEffect(() => { setQuery(symbol) }, [symbol])
+  useEffect(() => { setExpanded(null) }, [data?.ticker])
 
   const statItems = [
     { label: '13F', key: '13F', hint: 'Institutional' },
@@ -489,35 +561,72 @@ export function SecRecordsPanel({
           {!data.filings.length ? (
             <div className="empty-state">No SEC filings in the last {data.months} months for {data.ticker}.</div>
           ) : (
-            <table className="sec-table">
+            <table className="sec-table sec-records-filings-table">
               <thead>
-                <tr><th>Filing date</th><th>Form</th><th>Filing entity</th><th>Action</th><th>EDGAR</th></tr>
+                <tr><th aria-hidden="true" /><th>Filing date</th><th>Form</th><th>Filing entity</th><th>Action</th><th>EDGAR</th></tr>
               </thead>
               <tbody>
-                {data.filings.map((row) => (
-                  <tr key={row.accession_number}>
-                    <td>{row.filing_date ? formatDateTime(row.filing_date) : '—'}</td>
-                    <td>
-                      <span className={`sec-type-badge ${row.form_family.toLowerCase().replace(/\s/g, '')}`}>
-                        {row.form_type}
-                      </span>
-                      {row.is_amendment && <span className="sec-amendment-badge">Amendment</span>}
-                    </td>
-                    <td className="sec-filer-cell">{row.filer_name || '—'}</td>
-                    <td>
-                      {row.action ? (
-                        <span className={`sec-band ${actionToneClass(row.action_tone)}`}>{row.action}</span>
-                      ) : '—'}
-                    </td>
-                    <td>
-                      {row.edgar_url ? (
-                        <a href={row.edgar_url} target="_blank" rel="noreferrer" className="sec-edgar-link">
-                          View <ExternalLink size={14} />
-                        </a>
-                      ) : '—'}
-                    </td>
-                  </tr>
-                ))}
+                {data.filings.map((row) => {
+                  const isOpen = expanded === row.accession_number
+                  const hasDetails = Boolean(row.details?.length)
+                  return (
+                    <Fragment key={row.accession_number}>
+                      <tr
+                        key={row.accession_number}
+                        className={hasDetails ? 'sec-filing-row expandable' : 'sec-filing-row'}
+                        onClick={() => {
+                          if (!hasDetails) return
+                          setExpanded(isOpen ? null : row.accession_number)
+                        }}
+                      >
+                        <td className="sec-filing-expand">
+                          {hasDetails ? (
+                            <button
+                              type="button"
+                              className="sec-filing-expand-btn"
+                              aria-expanded={isOpen}
+                              aria-label={isOpen ? 'Hide parsed filing details' : 'Show parsed filing details'}
+                              onClick={(event) => {
+                                event.stopPropagation()
+                                setExpanded(isOpen ? null : row.accession_number)
+                              }}
+                            >
+                              {isOpen ? '−' : '+'}
+                            </button>
+                          ) : null}
+                        </td>
+                        <td>{row.filing_date ? formatDateTime(row.filing_date) : '—'}</td>
+                        <td>
+                          <span className={`sec-type-badge ${row.form_family.toLowerCase().replace(/\s/g, '')}`}>
+                            {row.form_type}
+                          </span>
+                          {row.is_amendment && <span className="sec-amendment-badge">Amendment</span>}
+                          {row.report_period && <span className="sec-report-period">Period {row.report_period}</span>}
+                        </td>
+                        <td className="sec-filer-cell">{row.filer_name || '—'}</td>
+                        <td>
+                          {row.action ? (
+                            <span className={`sec-band ${actionToneClass(row.action_tone)}`}>{row.action}</span>
+                          ) : '—'}
+                        </td>
+                        <td>
+                          {row.edgar_url ? (
+                            <a href={row.edgar_url} target="_blank" rel="noreferrer" className="sec-edgar-link" onClick={(event) => event.stopPropagation()}>
+                              View <ExternalLink size={14} />
+                            </a>
+                          ) : '—'}
+                        </td>
+                      </tr>
+                      {isOpen && hasDetails && (
+                        <tr key={`${row.accession_number}-details`} className="sec-filing-details-row">
+                          <td colSpan={6}>
+                            <FilingDetailsPanel details={row.details || []} />
+                          </td>
+                        </tr>
+                      )}
+                    </Fragment>
+                  )
+                })}
               </tbody>
             </table>
           )}

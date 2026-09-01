@@ -103,7 +103,8 @@ All routes use the `/api/v1` prefix and require authentication when JWT/API-key 
 | GET | `/stocks/{symbol}/institutional` | 13F position changes |
 | GET | `/stocks/{symbol}/insiders` | Classified Form 4 transactions |
 | GET | `/stocks/{symbol}/accumulation` | Score, components, events, history, `as_of` |
-| GET | `/stocks/{symbol}/filings` | Recent SEC filings (`months`, `limit`) with insider/ownership detail |
+| GET | `/stocks/{symbol}/filings` | Recent SEC filings (`months`, `limit`) with parsed XML detail per row |
+| GET | `/stocks/{symbol}/filings/analysis` | AI or rule-based filing summary (sentiment, gist, highlights) |
 | GET | `/sectors` | Normalized sector list with ticker counts |
 | GET | `/sectors/{sector}/accumulation` | Sector averages and per-ticker scores |
 | GET | `/accumulation/top` | Ranked stocks (`sector`, `min_score`, `limit` query params) |
@@ -142,7 +143,7 @@ Additional dashboard tabs:
 
 - **Sectors** — average accumulation score, % increasing/decreasing by sector, top tickers per sector (populated by market scan)
 - **Top Accumulation** — filterable ranked list across scanned universe
-- **SEC Records** — compact ticker search; filings from the last 6 months with **filing entity**, **action** (bought/sold/new investment), EDGAR links, AI analysis card (sentiment + gist), and stat chips (syncs on tab open and search)
+- **SEC Records** — compact ticker search; filings from the last 6 months with **filing entity**, **action** (bought/sold/new investment), expandable **parsed XML details**, EDGAR links, AI analysis card (sentiment + gist), and stat chips (syncs on tab open and search)
 - **AI Research** — query box with candidate table, structured filters, and evidence-backed results (optional LLM narration)
 
 Signal columns use human-readable classification labels (e.g. **Strong Accumulation**, **Distribution**) rather than raw enum strings.
@@ -170,7 +171,25 @@ Sector names from Finnhub are normalized to dashboard buckets (e.g. `Financial S
 
 ## SEC Records tab
 
-`GET /stocks/{symbol}/filings?months=6&limit=100` syncs the issuer from EDGAR when needed, then returns filings in the date window plus related Form 4 insider lines and 13D/G beneficial ownership rows. Each filing includes:
+`GET /stocks/{symbol}/filings?months=6&limit=100` syncs the issuer from EDGAR when needed, backfills any filings that are missing parsed XML children, then returns filings in the date window plus related Form 4 insider lines and 13D/G beneficial ownership rows.
+
+### XML parsing pipeline
+
+EDGAR filings are XML on disk but are not stored raw in SQLite. On ingest (or backfill), the server:
+
+1. Lists documents in the EDGAR filing index for the accession number.
+2. Ranks attachments by form type (`ownership.xml` / `form4` for Form 4, `infotable` for 13F, `sc13` for 13D/13G, etc.).
+3. Fetches and parses the best-matching XML with form-specific parsers in `backend/app/sec/forms/`.
+4. Persists structured rows to `insider_transactions`, `beneficial_ownerships`, `institutional_holdings`, and `institutional_position_changes`.
+5. Enriches each filing in the API response with `filer_name`, `action`, `action_tone`, and `details[]`.
+
+13F ingestion fetches **primary** and **infotable** XML documents separately when both are present in the EDGAR filing index.
+
+If a filing row exists but parsing previously failed (e.g. wrong document selected, SEC rate limit), `ensure_filing_parsed()` retries on the next sync or `/filings` request — you do not need to delete SQLite rows manually.
+
+### Filing response fields
+
+Each filing includes:
 
 | Field | Description |
 |-------|-------------|
@@ -178,6 +197,20 @@ Sector names from Finnhub are normalized to dashboard buckets (e.g. `Financial S
 | `action` | Human-readable activity (e.g. Bought 10,000 shares, New investment, New major holder) |
 | `action_tone` | `positive`, `negative`, or `neutral` for UI coloring |
 | `edgar_url` | SEC archive link when CIK mapping is available |
+| `details[]` | Parsed XML-derived records (insider trades, institutional changes, ownership events, holdings) |
+
+Each `details` item includes `type` (`insider`, `institutional`, `ownership`, `holding`), `entity`, `action`, `action_tone`, and type-specific fields:
+
+| `type` | Key parsed fields |
+|--------|-------------------|
+| `insider` | `title`, `transaction_code`, `shares`, `price`, `value`, `shares_owned_after`, `ownership_type`, `is_derivative` |
+| `institutional` | `classification`, `previous_shares`, `current_shares`, `change_shares`, `change_pct`, `report_period` |
+| `ownership` | `issuer_name`, `ownership_pct`, `shares`, `purpose`, `passive`, `event_type` |
+| `holding` | `issuer_name`, `shares`, `market_value`, `issuer_cusip`, `security_type`, `put_call`, `report_period` |
+
+In the dashboard, click **+** on a filing row to expand the full parsed breakdown.
+
+### AI analysis
 
 `GET /stocks/{symbol}/filings/analysis?months=6` reads from SQLite only (no re-sync) and returns an AI-powered or rule-based summary:
 
@@ -206,6 +239,7 @@ The dashboard loads filings first, then fetches analysis in a separate request s
 | Sectors / Top show one ticker (e.g. SPY) or stay empty | Score cache not populated yet | Wait for scan progress to finish; use dashboard **Refresh** or `POST /accumulation/scan`. |
 | AI Research returns no candidates | Scan still running or strict filters | Wait for scan; try a broader query (e.g. “top accumulation stocks”). |
 | SEC Records empty for a valid ticker | EDGAR sync still running, no filings in the last N months, or `SEC_ENABLED=false` | Wait for the loading state to finish; confirm `SEC_USER_AGENT` and network; check `provider_errors` in the response. Re-search the ticker to trigger a fresh sync. |
+| Filing entity / action columns empty | Filing shell exists but XML was not parsed yet (prior failed fetch or wrong EDGAR attachment) | Re-search the ticker — `/filings` backfills unparsed accessions automatically. Confirm `SEC_USER_AGENT` is set. Expand the row with **+** once `details[]` is populated. HTML-only filings may not parse. |
 
 SQLite uses WAL mode so the background scan and live API reads can overlap safely.
 
@@ -213,12 +247,12 @@ SQLite uses WAL mode so the background scan and live API reads can overlap safel
 
 ```text
 backend/app/sec/
-    client.py          SEC HTTP client (throttle, cache)
+    client.py          SEC HTTP client (throttle, cache, ranked XML document fetch)
     scan.py            Background accumulation scan (universe + progress)
     sectors.py         Finnhub → dashboard sector normalization
     submissions.py     Ticker ↔ CIK mapping
-    service.py         Ingestion orchestrator + filing enrichment (entity/action)
-    forms/             13F, 13D, 13G, Form 4 parsers
+    service.py         Ingestion orchestrator, XML backfill, filing enrichment
+    forms/             13F, 13D, 13G, Form 4 XML parsers
     engines/           Scoring (institutional, insider, major holder, confirmation)
     backtest/          Look-ahead-safe accumulation backtest
     db_models.py       SQLite persistence
