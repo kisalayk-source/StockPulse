@@ -1,10 +1,12 @@
 from types import SimpleNamespace
+from uuid import uuid4
 
 import httpx
 import pytest
 from fastapi.testclient import TestClient
 
 from app.config import Settings
+from app.db import reset_db_state
 from app.dependencies import Services
 from app.main import create_app
 from app.schemas import EquityOrderRequest, OptionOrderRequest, OrderPreviewRequest
@@ -16,6 +18,81 @@ from app.services.providers import (
     normalize_news,
     rank_search_results,
 )
+from app.sec.service import SecService
+
+
+class FakeSec:
+    async def accumulation_for_ticker(self, session, ticker, alpaca, finnhub, sync=True):
+        return {
+            "ticker": ticker.upper(),
+            "score": 50.0,
+            "signal": "NEUTRAL",
+            "classification": "NEUTRAL",
+            "components": {},
+            "events": [],
+            "history": [],
+            "as_of": "2024-01-01T00:00:00+00:00",
+            "provider_errors": [],
+        }
+
+    def sec_intelligence(self, session, ticker, accumulation):
+        return {
+            "ticker": ticker.upper(),
+            "accumulation": accumulation,
+            "institutional_changes": [],
+            "insider_transactions": [],
+            "major_holder_changes": [],
+            "caveats": [],
+        }
+
+    async def sync_ticker(self, *args, **kwargs):
+        return None
+
+    def institutional_payload(self, session, ticker):
+        return {"ticker": ticker.upper(), "changes": []}
+
+    def insiders_payload(self, session, ticker):
+        return {"ticker": ticker.upper(), "transactions": []}
+
+    def top_accumulation(self, session, **kwargs):
+        return []
+
+    def sector_accumulation(self, session, sector):
+        return {
+            "sector": sector,
+            "ticker_count": 0,
+            "avg_score": 50.0,
+            "pct_increasing": 0.0,
+            "pct_decreasing": 0.0,
+            "stocks": [],
+        }
+
+    def list_sectors(self, session):
+        return [{"sector": "Technology", "ticker_count": 0}]
+
+    def scan_status(self):
+        return {"status": "idle", "scanned": 0, "total": 0, "errors": []}
+
+    def start_accumulation_scan(self, services, *, refresh=False):
+        return {"status": "ready", "scanned": 0, "total": 0, "errors": []}
+
+    def maybe_auto_scan(self, session, services):
+        return None
+
+    async def mini_scan(self, services, tickers, *, cap=25):
+        return None
+
+    async def recent_filings_payload(self, session, ticker, finnhub, *, months=6, limit=100):
+        return {
+            "ticker": ticker.upper(),
+            "months": months,
+            "cutoff_date": "2024-01-01",
+            "summary": {"13F": 0, "13D": 0, "13G": 0, "4": 0},
+            "filings": [],
+            "insider_transactions": [],
+            "beneficial_ownership": [],
+            "provider_errors": [],
+        }
 
 
 class FakeAlpaca:
@@ -114,6 +191,12 @@ class FakeFinnhub:
     async def search(self, query: str) -> list[dict]:
         return [{"symbol": "AAPL", "name": "Apple Inc.", "type": "Common Stock"}]
 
+    async def company_profile(self, symbol: str) -> dict:
+        return {"sector": "Technology", "industry": "Technology", "exchange": "NASDAQ"}
+
+    async def extended_fundamentals(self, symbol: str) -> dict:
+        return {"pe_ratio": 20.0, "revenue_growth": 0.1, "eps_growth": 0.05, "roic": 0.15}
+
     async def company_news(self, symbol: str, limit: int) -> list[dict]:
         return [
             {
@@ -199,34 +282,88 @@ class FakeKronos:
 
 
 def settings(**overrides) -> Settings:
-    return Settings(_env_file=None, **overrides)
+    defaults = {"database_url": "sqlite://"}
+    defaults.update(overrides)
+    return Settings(_env_file=None, **defaults)
 
 
 def make_client(config: Settings | None = None, alpaca=None, finnhub=None) -> TestClient:
+    reset_db_state()
     config = config or settings()
     alpaca = alpaca or FakeAlpaca()
-    services = Services(config, alpaca, finnhub or FakeFinnhub(), FakeKronos())
+    services = Services(config, alpaca, finnhub or FakeFinnhub(), FakeKronos(), FakeSec())
     return TestClient(create_app(config, services))
+
+
+def register_and_headers(
+    client: TestClient,
+    *,
+    email: str | None = None,
+    password: str = "password123",
+    with_alpaca: bool = True,
+    mode: str = "paper",
+) -> dict[str, str]:
+    address = email or f"user-{uuid4().hex[:8]}@example.com"
+    response = client.post(
+        "/api/v1/auth/register",
+        json={"email": address, "password": password},
+    )
+    assert response.status_code == 201, response.text
+    headers = {"Authorization": f"Bearer {response.json()['access_token']}"}
+    if with_alpaca:
+        saved = client.put(
+            "/api/v1/auth/alpaca",
+            headers=headers,
+            json={"mode": mode, "key_id": "PKTESTKEY123456", "secret": "secretsecret12"},
+        )
+        assert saved.status_code == 200, saved.text
+    return headers
 
 
 def test_health_and_safe_config_status() -> None:
     with make_client(settings(alpaca_paper_key="key", alpaca_paper_secret="secret")) as client:
         assert client.get("/api/v1/health").json() == {"status": "ok"}
-        response = client.get("/api/v1/config/status")
+        headers = register_and_headers(client)
+        response = client.get("/api/v1/config/status", headers=headers)
         assert response.status_code == 200
         assert response.json()["alpaca"]["paper_configured"] is True
         assert "reddit_configured" not in response.json()
-        assert "key" not in response.text
+        assert "secretsecret12" not in response.text
+        assert "PKTESTKEY123456" not in response.text
 
 
-def test_missing_alpaca_credentials_returns_503() -> None:
-    config = settings()
-    real_alpaca = AlpacaService(config)
-    services = Services(config, real_alpaca, FakeFinnhub(), FakeKronos())
-    with TestClient(create_app(config, services)) as client:
+def test_missing_alpaca_credentials_returns_400() -> None:
+    with make_client() as client:
+        headers = register_and_headers(client, with_alpaca=False)
+        response = client.get("/api/v1/account", params={"mode": "paper"}, headers=headers)
+    assert response.status_code == 400
+    assert "Configure Alpaca paper credentials" in response.json()["detail"]
+
+
+def test_register_login_and_me() -> None:
+    with make_client() as client:
+        created = client.post(
+            "/api/v1/auth/register",
+            json={"email": "trader@example.com", "password": "password123"},
+        )
+        assert created.status_code == 201
+        token = created.json()["access_token"]
+        me = client.get("/api/v1/auth/me", headers={"Authorization": f"Bearer {token}"})
+        assert me.status_code == 200
+        assert me.json()["email"] == "trader@example.com"
+        assert me.json()["alpaca"]["paper"]["configured"] is False
+        login = client.post(
+            "/api/v1/auth/login",
+            json={"email": "trader@example.com", "password": "password123"},
+        )
+        assert login.status_code == 200
+        assert login.json()["access_token"]
+
+
+def test_unauthenticated_trading_is_rejected() -> None:
+    with make_client() as client:
         response = client.get("/api/v1/account", params={"mode": "paper"})
-    assert response.status_code == 503
-    assert response.json()["detail"]["provider"] == "alpaca"
+    assert response.status_code == 401
 
 
 def test_finnhub_fundamental_normalization_and_nulls() -> None:
@@ -310,7 +447,8 @@ def test_finnhub_news_sentiment_classifies_bullish_bearish_and_neutral() -> None
 )
 def test_equity_order_input_validation(payload: dict) -> None:
     with make_client() as client:
-        response = client.post("/api/v1/orders/equity", json=payload)
+        headers = register_and_headers(client)
+        response = client.post("/api/v1/orders/equity", json=payload, headers=headers)
     assert response.status_code == 422
 
 
@@ -325,8 +463,10 @@ def test_live_order_is_blocked_before_provider_call() -> None:
         ),
         alpaca=fake,
     ) as client:
+        headers = register_and_headers(client)
         response = client.post(
             "/api/v1/orders/equity",
+            headers=headers,
             json={
                 "mode": "live",
                 "symbol": "AAPL",
@@ -343,8 +483,16 @@ def test_live_order_requires_exact_token_when_enabled() -> None:
     fake = FakeAlpaca()
     config = settings(allow_live_trading=True, live_confirmation_token="EXACT")
     with make_client(config, alpaca=fake) as client:
+        headers = register_and_headers(client, with_alpaca=False)
+        saved = client.put(
+            "/api/v1/auth/alpaca",
+            headers=headers,
+            json={"mode": "live", "key_id": "PKTESTKEY123456", "secret": "secretsecret12"},
+        )
+        assert saved.status_code == 200, saved.text
         wrong = client.post(
             "/api/v1/orders/equity",
+            headers=headers,
             json={
                 "mode": "live",
                 "symbol": "AAPL",
@@ -355,6 +503,7 @@ def test_live_order_requires_exact_token_when_enabled() -> None:
         )
         valid = client.post(
             "/api/v1/orders/equity",
+            headers=headers,
             json={
                 "mode": "live",
                 "symbol": "AAPL",
@@ -371,13 +520,16 @@ def test_live_order_requires_exact_token_when_enabled() -> None:
 def test_open_order_can_be_canceled_or_replaced() -> None:
     fake = FakeAlpaca()
     with make_client(alpaca=fake) as client:
+        headers = register_and_headers(client)
         canceled = client.request(
             "DELETE",
             "/api/v1/orders/order-1",
+            headers=headers,
             json={"mode": "paper"},
         )
         replaced = client.patch(
             "/api/v1/orders/order-2",
+            headers=headers,
             json={"mode": "paper", "limit_price": 199.5},
         )
 
@@ -423,13 +575,17 @@ def test_search_api_returns_ranked_common_symbols() -> None:
             return [{"symbol": "META", "name": "Meta Platforms Inc", "type": "Common Stock"}]
 
     with make_client(alpaca=NoisyAlpaca(), finnhub=MetaFinnhub()) as client:
-        results = client.get("/api/v1/symbols/search", params={"q": "meta"}).json()["results"]
+        headers = register_and_headers(client, with_alpaca=False)
+        results = client.get(
+            "/api/v1/symbols/search", params={"q": "meta"}, headers=headers
+        ).json()["results"]
         assert results[0]["symbol"] == "META"
 
 
 def test_overview_returns_news_for_the_requested_symbol() -> None:
     with make_client() as client:
-        payload = client.get("/api/v1/stocks/META/overview").json()
+        headers = register_and_headers(client, with_alpaca=False)
+        payload = client.get("/api/v1/stocks/META/overview", headers=headers).json()
     headlines = [item["headline"] for item in payload["news"]]
     assert headlines[0] == "META company news"
     assert "META update" in headlines
@@ -465,45 +621,57 @@ def test_article_sentiment_classifies_positive_and_negative_headlines() -> None:
 
 def test_market_data_account_options_and_forecast_api() -> None:
     with make_client() as client:
-        assert client.get("/api/v1/symbols/search", params={"q": "apple"}).status_code == 200
-        overview = client.get("/api/v1/stocks/AAPL/overview")
+        headers = register_and_headers(client)
+        assert client.get(
+            "/api/v1/symbols/search", params={"q": "apple"}, headers=headers
+        ).status_code == 200
+        overview = client.get("/api/v1/stocks/AAPL/overview", headers=headers)
         assert overview.status_code == 200
         assert overview.json()["fundamentals"]["dividend_yield"] is None
         assert overview.json()["public_sentiment"]["label"] == "bullish"
-        assert client.get("/api/v1/stocks/AAPL/bars").json()["bars"]
-        assert client.get("/api/v1/account", params={"mode": "paper"}).status_code == 200
-        realized = client.get("/api/v1/account/realized-pl", params={"mode": "paper"})
+        assert client.get("/api/v1/stocks/AAPL/bars", headers=headers).json()["bars"]
+        assert client.get(
+            "/api/v1/account", params={"mode": "paper"}, headers=headers
+        ).status_code == 200
+        realized = client.get(
+            "/api/v1/account/realized-pl", params={"mode": "paper"}, headers=headers
+        )
         assert realized.status_code == 200
         assert realized.json()["realized_pl"] == 42.5
-        clock = client.get("/api/v1/market/clock").json()
+        clock = client.get("/api/v1/market/clock", headers=headers).json()
         assert clock["is_open"] is True
         assert clock["session"] == "regular"
         assert client.get(
             "/api/v1/options/contracts",
             params={"underlying": "AAPL", "mode": "paper"},
+            headers=headers,
         ).status_code == 200
         assert client.get(
-            "/api/v1/options/chain", params={"underlying": "AAPL"}
+            "/api/v1/options/chain", params={"underlying": "AAPL"}, headers=headers
         ).status_code == 200
         forecast = client.post(
-            "/api/v1/forecast", json={"symbol": "AAPL", "preset": "short"}
+            "/api/v1/forecast", json={"symbol": "AAPL", "preset": "short"}, headers=headers
         )
         assert forecast.status_code == 200
         assert forecast.json()["symbol"] == "AAPL"
         assert forecast.json()["model"]["engine"] == "kronos"
         ensemble = client.post(
             "/api/v1/forecast",
+            headers=headers,
             json={"symbol": "AAPL", "preset": "short", "engine": "ensemble"},
         )
         assert ensemble.status_code == 200
         assert ensemble.json()["model"]["engine"] == "ensemble"
         preview = client.post(
             "/api/v1/orders/preview",
+            headers=headers,
             json={"kind": "equity", "mode": "paper", "symbol": "AAPL", "side": "buy", "qty": 1},
         )
         assert preview.status_code == 200
         assert preview.json()["ok"] is True
-        movers = client.post("/api/v1/forecast/movers", json={"refresh": True, "limit": 3})
+        movers = client.post(
+            "/api/v1/forecast/movers", json={"refresh": True, "limit": 3}, headers=headers
+        )
         assert movers.status_code == 200
         payload = movers.json()
         assert payload["cached"] is False
@@ -512,7 +680,8 @@ def test_market_data_account_options_and_forecast_api() -> None:
 
 def test_overview_degrades_when_optional_fundamentals_are_unavailable() -> None:
     with make_client(finnhub=UnavailableFinnhub()) as client:
-        response = client.get("/api/v1/stocks/AAPL/overview")
+        headers = register_and_headers(client, with_alpaca=False)
+        response = client.get("/api/v1/stocks/AAPL/overview", headers=headers)
     assert response.status_code == 200
     payload = response.json()
     assert payload["current_price"] == 200.0
@@ -533,8 +702,10 @@ def test_overview_degrades_when_optional_fundamentals_are_unavailable() -> None:
 
 def test_option_order_validation_and_submission() -> None:
     with make_client() as client:
+        headers = register_and_headers(client)
         invalid = client.post(
             "/api/v1/orders/option",
+            headers=headers,
             json={
                 "mode": "paper",
                 "contract_symbol": "AAPL260821C00200000",
@@ -545,6 +716,7 @@ def test_option_order_validation_and_submission() -> None:
         )
         valid = client.post(
             "/api/v1/orders/option",
+            headers=headers,
             json={
                 "mode": "paper",
                 "contract_symbol": "AAPL260821C00200000",

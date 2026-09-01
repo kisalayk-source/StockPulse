@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<edgarSubmission>
+  <formData>
+    <coverPageHeader>
+      <reportingPersonName>Activist Holdings LLC</reportingPersonName>
+      <subjectCompany>
+        <issuerName>EXXON MOBIL CORP</issuerName>
+      </subjectCompany>
+    </coverPageHeader>
+    <items>
+      <item4>
+        <amountBeneficiallyOwned>5000000</amountBeneficiallyOwned>
+        <percentOfClass>5.2</percentOfClass>
+        <purposeOfTransaction>Engage with management regarding capital allocation</purposeOfTransaction>
+      </item4>
+    </items>
+  </formData>
+</edgarSubmission>

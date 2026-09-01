@@ -210,8 +210,27 @@ export interface OptionOrderRequest {
 export interface AppConfig {
   environment?: string
   alpacaConnected?: boolean
+  paperConfigured?: boolean
+  liveConfigured?: boolean
+  paperKeyPreview?: string | null
+  liveKeyPreview?: string | null
   dataFeed?: string
   liveTradingEnabled?: boolean
+  userEmail?: string
+}
+
+export interface AuthUser {
+  id: number
+  email: string
+  alpaca: {
+    paper: { configured: boolean; keyPreview: string | null }
+    live: { configured: boolean; keyPreview: string | null }
+  }
+}
+
+export interface AuthResponse {
+  accessToken: string
+  user: AuthUser
 }
 
 export interface MarketClock {
@@ -255,9 +274,145 @@ export interface MoversResponse {
   skipped?: Array<{ symbol: string; message: string }>
 }
 
+export interface AccumulationComponents {
+  institutional?: number
+  insider?: number
+  major_holder?: number
+  price_volume?: number
+  fundamentals?: number
+}
+
+export interface AccumulationHistoryPoint {
+  date: string
+  score: number
+  classification: string
+}
+
+export interface AccumulationResponse {
+  ticker: string
+  score: number
+  signal: string
+  classification: string
+  components: AccumulationComponents
+  events: Array<Record<string, unknown>>
+  history: AccumulationHistoryPoint[]
+  as_of: string
+  provider_errors?: Array<{ provider: string; message: string }>
+}
+
+export interface SecIntelligenceResponse {
+  ticker: string
+  accumulation: AccumulationResponse
+  institutional_changes: Array<Record<string, unknown>>
+  insider_transactions: Array<Record<string, unknown>>
+  major_holder_changes: Array<Record<string, unknown>>
+  caveats: string[]
+  provider_errors?: Array<{ provider: string; message: string }>
+}
+
+export interface SectorAccumulationResponse {
+  sector: string
+  avg_score: number
+  pct_increasing: number
+  pct_decreasing: number
+  ticker_count?: number
+  stocks: Array<{ ticker: string; score: number; components: AccumulationComponents }>
+}
+
+export interface SectorListResponse {
+  sectors: Array<{ sector: string; ticker_count: number }>
+}
+
+export interface AccumulationScanStatus {
+  status: string
+  scanned: number
+  total: number
+  errors?: Array<{ ticker?: string; message?: string }>
+  started_at?: string | null
+  finished_at?: string | null
+  error?: string
+}
+
+export interface SecFilingRecord {
+  accession_number: string
+  form_type: string
+  form_family: string
+  filing_date: string | null
+  report_period: string | null
+  description: string
+  is_amendment: boolean
+  edgar_url: string | null
+}
+
+export interface SecFilingsResponse {
+  ticker: string
+  months: number
+  cutoff_date: string
+  summary: Record<string, number>
+  filings: SecFilingRecord[]
+  insider_transactions: Array<Record<string, unknown>>
+  beneficial_ownership: Array<Record<string, unknown>>
+  provider_errors?: Array<{ provider: string; message: string }>
+}
+
+export interface ResearchCandidate {
+  ticker: string
+  accumulation_score: number
+  signal?: string
+  why?: string
+  components?: AccumulationComponents
+}
+
+export interface TopAccumulationResponse {
+  results: Array<{
+    ticker: string
+    score: number
+    classification: string
+    sector?: string | null
+    components: AccumulationComponents
+  }>
+  sector?: string | null
+  min_score: number
+}
+
+export interface ResearchQueryResponse {
+  query: string
+  filters: Record<string, unknown>
+  candidates: ResearchCandidate[]
+  narrative: string
+  disclaimer: string
+}
+
 const API_BASE = (import.meta.env.VITE_API_BASE_URL || '/api/v1').replace(/\/$/, '')
 const API_KEY = import.meta.env.VITE_API_KEY || ''
+const TOKEN_KEY = 'stockpulse_access_token'
 const inflight = new Map<string, Promise<unknown>>()
+
+type AuthListener = (token: string | null) => void
+const authListeners = new Set<AuthListener>()
+
+export function getAccessToken(): string | null {
+  try {
+    return localStorage.getItem(TOKEN_KEY)
+  } catch {
+    return null
+  }
+}
+
+export function setAccessToken(token: string | null): void {
+  try {
+    if (token) localStorage.setItem(TOKEN_KEY, token)
+    else localStorage.removeItem(TOKEN_KEY)
+  } catch {
+    /* ignore storage failures */
+  }
+  authListeners.forEach((listener) => listener(token))
+}
+
+export function onAuthChange(listener: AuthListener): () => void {
+  authListeners.add(listener)
+  return () => { authListeners.delete(listener) }
+}
 
 export class ApiError extends Error {
   status: number
@@ -315,16 +470,21 @@ function sleep(ms: number): Promise<void> {
 }
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
+  const token = getAccessToken()
   const response = await fetch(`${API_BASE}${path}`, {
     ...init,
     headers: {
       'Content-Type': 'application/json',
       ...(API_KEY ? { 'X-API-Key': API_KEY } : {}),
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
       ...init?.headers,
     },
   })
   const payload: unknown = response.status === 204 ? null : await response.json().catch(() => null)
   if (!response.ok) {
+    if (response.status === 401 && !path.startsWith('/auth/login') && !path.startsWith('/auth/register')) {
+      setAccessToken(null)
+    }
     throw new ApiError(normalizeError(payload, response.status), response.status, retryAfterMs(response))
   }
   return payload as T
@@ -470,15 +630,105 @@ function mapMoversResponse(value: unknown): MoversResponse {
   }
 }
 
+function mapAuthUser(value: unknown): AuthUser {
+  const payload = object(value)
+  const alpaca = object(payload.alpaca)
+  const paper = object(alpaca.paper)
+  const live = object(alpaca.live)
+  return {
+    id: Number(payload.id) || 0,
+    email: text(payload.email),
+    alpaca: {
+      paper: {
+        configured: Boolean(paper.configured),
+        keyPreview: text(paper.key_preview) || null,
+      },
+      live: {
+        configured: Boolean(live.configured),
+        keyPreview: text(live.key_preview) || null,
+      },
+    },
+  }
+}
+
+function mapAuthResponse(value: unknown): AuthResponse {
+  const payload = object(value)
+  const token = text(payload.access_token)
+  const user = mapAuthUser(payload.user)
+  if (token) setAccessToken(token)
+  return { accessToken: token, user }
+}
+
+function mapAccumulationResponse(payload: JsonObject): AccumulationResponse {
+  const components = object(payload.components)
+  return {
+    ticker: text(payload.ticker),
+    score: number(payload.score) ?? 50,
+    signal: text(payload.signal, 'NEUTRAL'),
+    classification: text(payload.classification, 'NEUTRAL'),
+    components: {
+      institutional: number(components.institutional) ?? undefined,
+      insider: number(components.insider) ?? undefined,
+      major_holder: number(components.major_holder) ?? undefined,
+      price_volume: number(components.price_volume) ?? undefined,
+      fundamentals: number(components.fundamentals) ?? undefined,
+    },
+    events: list(payload.events) as Array<Record<string, unknown>>,
+    history: list(payload.history).map((row) => {
+      const item = object(row)
+      return {
+        date: text(item.date),
+        score: number(item.score) ?? 0,
+        classification: text(item.classification),
+      }
+    }),
+    as_of: text(payload.as_of),
+    provider_errors: payload.provider_errors as AccumulationResponse['provider_errors'],
+  }
+}
+
 export const api = {
   health: () => request<{ status: string }>('/health'),
+  register: async (email: string, password: string): Promise<AuthResponse> => mapAuthResponse(
+    await request<unknown>('/auth/register', {
+      method: 'POST',
+      body: JSON.stringify({ email, password }),
+    }),
+  ),
+  login: async (email: string, password: string): Promise<AuthResponse> => mapAuthResponse(
+    await request<unknown>('/auth/login', {
+      method: 'POST',
+      body: JSON.stringify({ email, password }),
+    }),
+  ),
+  me: async (): Promise<AuthUser> => mapAuthUser(await request<unknown>('/auth/me')),
+  saveAlpacaCredentials: async (
+    mode: TradingMode,
+    keyId: string,
+    secret: string,
+  ): Promise<AuthUser> => mapAuthUser(
+    await request<unknown>('/auth/alpaca', {
+      method: 'PUT',
+      body: JSON.stringify({ mode, key_id: keyId, secret }),
+    }),
+  ),
+  deleteAlpacaCredentials: async (mode: TradingMode): Promise<AuthUser> => mapAuthUser(
+    await request<unknown>(`/auth/alpaca?${query({ mode })}`, { method: 'DELETE' }),
+  ),
+  logout: () => { setAccessToken(null) },
   config: async (): Promise<AppConfig> => {
     const payload = object(await request<unknown>('/config/status'))
     const alpaca = object(payload.alpaca)
+    const user = object(payload.user)
     return {
       alpacaConnected: Boolean(alpaca.paper_configured),
+      paperConfigured: Boolean(alpaca.paper_configured),
+      liveConfigured: Boolean(alpaca.live_configured),
+      paperKeyPreview: text(alpaca.paper_key_preview) || null,
+      liveKeyPreview: text(alpaca.live_key_preview) || null,
       liveTradingEnabled: Boolean(payload.live_trading_allowed),
       dataFeed: text(payload.data_feed),
+      userEmail: text(user.email) || undefined,
     }
   },
   clock: async (): Promise<MarketClock> => {
@@ -829,4 +1079,167 @@ export const api = {
       }),
     }),
   ),
+  secIntelligence: async (symbol: string): Promise<SecIntelligenceResponse> => {
+    const payload = object(await request<unknown>(`/stocks/${encodeURIComponent(symbol)}/sec`))
+    return {
+      ticker: text(payload.ticker, symbol.toUpperCase()),
+      accumulation: mapAccumulationResponse(object(payload.accumulation)),
+      institutional_changes: list(payload.institutional_changes) as Array<Record<string, unknown>>,
+      insider_transactions: list(payload.insider_transactions) as Array<Record<string, unknown>>,
+      major_holder_changes: list(payload.major_holder_changes) as Array<Record<string, unknown>>,
+      caveats: list(payload.caveats).map((value) => text(value)),
+      provider_errors: payload.provider_errors as SecIntelligenceResponse['provider_errors'],
+    }
+  },
+  accumulation: async (symbol: string): Promise<AccumulationResponse> =>
+    mapAccumulationResponse(object(await request<unknown>(`/stocks/${encodeURIComponent(symbol)}/accumulation`))),
+  sectorAccumulation: async (sector: string): Promise<SectorAccumulationResponse> => {
+    const payload = object(await request<unknown>(`/sectors/${encodeURIComponent(sector)}/accumulation`))
+    return {
+      sector: text(payload.sector, sector),
+      avg_score: number(payload.avg_score) ?? 50,
+      pct_increasing: number(payload.pct_increasing) ?? 0,
+      pct_decreasing: number(payload.pct_decreasing) ?? 0,
+      ticker_count: number(payload.ticker_count) ?? undefined,
+      stocks: list(payload.stocks).map((row) => {
+        const item = object(row)
+        const components = object(item.components)
+        return {
+          ticker: text(item.ticker),
+          score: number(item.score) ?? 0,
+          components: {
+            institutional: number(components.institutional) ?? undefined,
+            insider: number(components.insider) ?? undefined,
+            major_holder: number(components.major_holder) ?? undefined,
+            price_volume: number(components.price_volume) ?? undefined,
+            fundamentals: number(components.fundamentals) ?? undefined,
+          },
+        }
+      }),
+    }
+  },
+  listSectors: async (): Promise<SectorListResponse> => {
+    const payload = object(await request<unknown>('/sectors'))
+    return {
+      sectors: list(payload.sectors).map((row) => {
+        const item = object(row)
+        return {
+          sector: text(item.sector),
+          ticker_count: number(item.ticker_count) ?? 0,
+        }
+      }),
+    }
+  },
+  startAccumulationScan: async (refresh = false): Promise<AccumulationScanStatus> => {
+    const suffix = refresh ? '?refresh=true' : ''
+    const payload = object(await request<unknown>(`/accumulation/scan${suffix}`, { method: 'POST' }))
+    return {
+      status: text(payload.status, 'pending'),
+      scanned: number(payload.scanned) ?? 0,
+      total: number(payload.total) ?? 0,
+      errors: list(payload.errors) as AccumulationScanStatus['errors'],
+      started_at: payload.started_at as string | null,
+      finished_at: payload.finished_at as string | null,
+      error: payload.error as string | undefined,
+    }
+  },
+  accumulationScanStatus: async (): Promise<AccumulationScanStatus> => {
+    const payload = object(await request<unknown>('/accumulation/scan/status'))
+    return {
+      status: text(payload.status, 'idle'),
+      scanned: number(payload.scanned) ?? 0,
+      total: number(payload.total) ?? 0,
+      errors: list(payload.errors) as AccumulationScanStatus['errors'],
+      started_at: payload.started_at as string | null,
+      finished_at: payload.finished_at as string | null,
+      error: payload.error as string | undefined,
+    }
+  },
+  secFilings: async (symbol: string, params?: { months?: number; limit?: number }): Promise<SecFilingsResponse> => {
+    const query = new URLSearchParams()
+    if (params?.months != null) query.set('months', String(params.months))
+    if (params?.limit != null) query.set('limit', String(params.limit))
+    const suffix = query.toString() ? `?${query.toString()}` : ''
+    const payload = object(await request<unknown>(`/stocks/${encodeURIComponent(symbol)}/filings${suffix}`))
+    return {
+      ticker: text(payload.ticker, symbol.toUpperCase()),
+      months: number(payload.months) ?? 6,
+      cutoff_date: text(payload.cutoff_date),
+      summary: object(payload.summary) as Record<string, number>,
+      filings: list(payload.filings).map((row) => {
+        const item = object(row)
+        return {
+          accession_number: text(item.accession_number),
+          form_type: text(item.form_type),
+          form_family: text(item.form_family),
+          filing_date: item.filing_date as string | null,
+          report_period: item.report_period as string | null,
+          description: text(item.description),
+          is_amendment: Boolean(item.is_amendment),
+          edgar_url: item.edgar_url as string | null,
+        }
+      }),
+      insider_transactions: list(payload.insider_transactions) as Array<Record<string, unknown>>,
+      beneficial_ownership: list(payload.beneficial_ownership) as Array<Record<string, unknown>>,
+      provider_errors: payload.provider_errors as SecFilingsResponse['provider_errors'],
+    }
+  },
+  topAccumulation: async (params?: { sector?: string; minScore?: number; limit?: number }): Promise<TopAccumulationResponse> => {
+    const query = new URLSearchParams()
+    if (params?.sector) query.set('sector', params.sector)
+    if (params?.minScore != null) query.set('min_score', String(params.minScore))
+    if (params?.limit != null) query.set('limit', String(params.limit))
+    const suffix = query.toString() ? `?${query.toString()}` : ''
+    const payload = object(await request<unknown>(`/accumulation/top${suffix}`))
+    return {
+      sector: payload.sector as string | null,
+      min_score: number(payload.min_score) ?? 0,
+      results: list(payload.results).map((row) => {
+        const item = object(row)
+        const components = object(item.components)
+        return {
+          ticker: text(item.ticker),
+          score: number(item.score) ?? 0,
+          classification: text(item.classification),
+          sector: item.sector as string | null,
+          components: {
+            institutional: number(components.institutional) ?? undefined,
+            insider: number(components.insider) ?? undefined,
+            major_holder: number(components.major_holder) ?? undefined,
+            price_volume: number(components.price_volume) ?? undefined,
+            fundamentals: number(components.fundamentals) ?? undefined,
+          },
+        }
+      }),
+    }
+  },
+  researchQuery: async (query: string): Promise<ResearchQueryResponse> => {
+    const payload = object(await request<unknown>('/research/query', {
+      method: 'POST',
+      body: JSON.stringify({ query }),
+    }))
+    return {
+      query: text(payload.query, query),
+      filters: object(payload.filters) as Record<string, unknown>,
+      candidates: list(payload.candidates).map((row) => {
+        const item = object(row)
+        const components = object(item.components)
+        return {
+          ticker: text(item.ticker),
+          accumulation_score: number(item.accumulation_score) ?? 0,
+          signal: item.signal as string | undefined,
+          why: item.why as string | undefined,
+          components: {
+            institutional: number(components.institutional) ?? undefined,
+            insider: number(components.insider) ?? undefined,
+            major_holder: number(components.major_holder) ?? undefined,
+            price_volume: number(components.price_volume) ?? undefined,
+            fundamentals: number(components.fundamentals) ?? undefined,
+          },
+        }
+      }),
+      narrative: text(payload.narrative),
+      disclaimer: text(payload.disclaimer),
+    }
+  },
 }

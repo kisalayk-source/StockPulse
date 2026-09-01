@@ -4,9 +4,18 @@ import logging
 from typing import Annotated, Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Path, Query, Request, status
+from sqlalchemy.orm import Session
 from starlette.concurrency import run_in_threadpool
 
+from app.auth import (
+    credential_status,
+    get_current_user,
+    get_user_broker_credentials,
+    use_trading_credentials,
+)
+from app.db import get_session
 from app.dependencies import Services, enforce_rate_limit, get_services
+from app.models import User
 from app.schemas import (
     EquityOrderRequest,
     ForecastRequest,
@@ -27,8 +36,24 @@ from app.services.providers import (
 
 router = APIRouter()
 ServiceDep = Annotated[Services, Depends(get_services)]
+SessionDep = Annotated[Session, Depends(get_session)]
+UserDep = Annotated[User, Depends(get_current_user)]
 SymbolPath = Annotated[str, Path(min_length=1, max_length=16, pattern=r"^[A-Za-z.\-]+$")]
 logger = logging.getLogger("app.routes")
+
+
+def trading_provider_call(
+    user: User,
+    session: Session,
+    services: Services,
+    mode: str,
+    function: Any,
+    *args: Any,
+    **kwargs: Any,
+) -> Any:
+    credentials = get_user_broker_credentials(session, services.settings, user, mode)
+    with use_trading_credentials(credentials):
+        return provider_call(function, *args, **kwargs)
 
 
 def provider_call(function: Any, *args: Any, **kwargs: Any) -> Any:
@@ -90,22 +115,30 @@ def readiness(services: ServiceDep) -> dict[str, Any]:
             "alpaca": services.alpaca is not None,
             "finnhub": services.finnhub is not None,
             "kronos": services.kronos is not None,
+            "sec": services.sec is not None,
         },
     }
 
 
 @router.get("/config/status")
-def config_status(services: ServiceDep) -> dict[str, Any]:
+def config_status(services: ServiceDep, user: UserDep) -> dict[str, Any]:
     settings = services.settings
+    user_alpaca = credential_status(user)
     return {
         "alpaca": {
-            "paper_configured": settings.alpaca_configured("paper"),
-            "live_configured": settings.alpaca_configured("live"),
+            "paper_configured": bool(user_alpaca["paper"]["configured"]),
+            "live_configured": bool(user_alpaca["live"]["configured"]),
+            "paper_key_preview": user_alpaca["paper"]["key_preview"],
+            "live_key_preview": user_alpaca["live"]["key_preview"],
+            "env_data_configured": settings.alpaca_configured(settings.alpaca_data_credentials_mode),
         },
         "finnhub_configured": bool(settings.finnhub_api_key),
+        "sec_enabled": settings.sec_enabled,
+        "research_llm_enabled": settings.research_llm_enabled,
         "data_feed": settings.alpaca_data_feed,
         "data_credentials_mode": settings.alpaca_data_credentials_mode,
         "live_trading_allowed": settings.allow_live_trading,
+        "user": {"id": user.id, "email": user.email},
         "kronos": {
             "model_id": settings.kronos_model_id,
             "tokenizer_id": settings.kronos_tokenizer_id,
@@ -245,19 +278,43 @@ async def stock_bars(
 
 
 @router.get("/account")
-async def account(mode: TradingMode, services: ServiceDep) -> dict[str, Any]:
-    return await run_in_threadpool(provider_call, services.alpaca.account, mode.value)
+async def account(
+    mode: TradingMode, services: ServiceDep, user: UserDep, session: SessionDep
+) -> dict[str, Any]:
+    return await run_in_threadpool(
+        trading_provider_call, user, session, services, mode.value, services.alpaca.account, mode.value
+    )
 
 
 @router.get("/account/realized-pl")
-async def account_realized_pl(mode: TradingMode, services: ServiceDep) -> dict[str, Any]:
-    return await run_in_threadpool(provider_call, services.alpaca.realized_pl, mode.value)
+async def account_realized_pl(
+    mode: TradingMode, services: ServiceDep, user: UserDep, session: SessionDep
+) -> dict[str, Any]:
+    return await run_in_threadpool(
+        trading_provider_call,
+        user,
+        session,
+        services,
+        mode.value,
+        services.alpaca.realized_pl,
+        mode.value,
+    )
 
 
 @router.get("/positions")
-async def positions(mode: TradingMode, services: ServiceDep) -> dict[str, Any]:
+async def positions(
+    mode: TradingMode, services: ServiceDep, user: UserDep, session: SessionDep
+) -> dict[str, Any]:
     return {
-        "positions": await run_in_threadpool(provider_call, services.alpaca.positions, mode.value)
+        "positions": await run_in_threadpool(
+            trading_provider_call,
+            user,
+            session,
+            services,
+            mode.value,
+            services.alpaca.positions,
+            mode.value,
+        )
     }
 
 
@@ -265,12 +322,22 @@ async def positions(mode: TradingMode, services: ServiceDep) -> dict[str, Any]:
 async def orders(
     mode: TradingMode,
     services: ServiceDep,
+    user: UserDep,
+    session: SessionDep,
     order_status: Literal["open", "closed", "all"] = "open",
     limit: int = Query(default=100, ge=1, le=500),
 ) -> dict[str, Any]:
     return {
         "orders": await run_in_threadpool(
-            provider_call, services.alpaca.orders, mode.value, order_status, limit
+            trading_provider_call,
+            user,
+            session,
+            services,
+            mode.value,
+            services.alpaca.orders,
+            mode.value,
+            order_status,
+            limit,
         )
     }
 
@@ -280,12 +347,18 @@ async def cancel_order(
     request: Request,
     cancellation: OrderCancelRequest,
     services: ServiceDep,
+    user: UserDep,
+    session: SessionDep,
     order_id: str = Path(min_length=1, max_length=128, pattern=r"^[A-Za-z0-9-]+$"),
 ) -> dict[str, Any]:
     enforce_rate_limit(request, "orders", services.settings.order_rate_limit_per_minute)
     enforce_live(cancellation.mode, cancellation.live_confirmation_token, services)
     result = await run_in_threadpool(
-        provider_call,
+        trading_provider_call,
+        user,
+        session,
+        services,
+        cancellation.mode.value,
         services.alpaca.cancel_order,
         order_id,
         cancellation.mode.value,
@@ -306,12 +379,18 @@ async def replace_order(
     request: Request,
     replacement: OrderReplaceRequest,
     services: ServiceDep,
+    user: UserDep,
+    session: SessionDep,
     order_id: str = Path(min_length=1, max_length=128, pattern=r"^[A-Za-z0-9-]+$"),
 ) -> dict[str, Any]:
     enforce_rate_limit(request, "orders", services.settings.order_rate_limit_per_minute)
     enforce_live(replacement.mode, replacement.live_confirmation_token, services)
     result = await run_in_threadpool(
-        provider_call,
+        trading_provider_call,
+        user,
+        session,
+        services,
+        replacement.mode.value,
         services.alpaca.replace_order,
         order_id,
         replacement,
@@ -332,12 +411,18 @@ async def option_contracts(
     underlying: str,
     mode: TradingMode,
     services: ServiceDep,
+    user: UserDep,
+    session: SessionDep,
     expiration: str | None = None,
     contract_type: Literal["call", "put"] | None = Query(default=None, alias="type"),
     limit: int = Query(default=100, ge=1, le=1000),
 ) -> dict[str, Any]:
     contracts = await run_in_threadpool(
-        provider_call,
+        trading_provider_call,
+        user,
+        session,
+        services,
+        mode.value,
         services.alpaca.option_contracts,
         underlying,
         expiration,
@@ -369,15 +454,31 @@ async def option_chain(
 
 @router.post("/orders/preview")
 async def preview_order(
-    order: OrderPreviewRequest, services: ServiceDep, request: Request
+    order: OrderPreviewRequest,
+    services: ServiceDep,
+    request: Request,
+    user: UserDep,
+    session: SessionDep,
 ) -> dict[str, Any]:
     enforce_rate_limit(request, "orders", services.settings.order_rate_limit_per_minute)
-    return await run_in_threadpool(provider_call, services.alpaca.preview_order, order)
+    return await run_in_threadpool(
+        trading_provider_call,
+        user,
+        session,
+        services,
+        order.mode.value,
+        services.alpaca.preview_order,
+        order,
+    )
 
 
 @router.post("/orders/equity", status_code=201)
 async def submit_equity(
-    order: EquityOrderRequest, services: ServiceDep, request: Request
+    order: EquityOrderRequest,
+    services: ServiceDep,
+    request: Request,
+    user: UserDep,
+    session: SessionDep,
 ) -> dict[str, Any]:
     enforce_rate_limit(request, "orders", services.settings.order_rate_limit_per_minute)
     enforce_live(order.mode, order.live_confirmation_token, services)
@@ -394,7 +495,15 @@ async def submit_equity(
             "notional": order.notional,
         },
     )
-    result = await run_in_threadpool(provider_call, services.alpaca.submit_equity_order, order)
+    result = await run_in_threadpool(
+        trading_provider_call,
+        user,
+        session,
+        services,
+        order.mode.value,
+        services.alpaca.submit_equity_order,
+        order,
+    )
     logger.info(
         "order_submission_completed",
         extra={
@@ -411,7 +520,11 @@ async def submit_equity(
 
 @router.post("/orders/option", status_code=201)
 async def submit_option(
-    order: OptionOrderRequest, services: ServiceDep, request: Request
+    order: OptionOrderRequest,
+    services: ServiceDep,
+    request: Request,
+    user: UserDep,
+    session: SessionDep,
 ) -> dict[str, Any]:
     enforce_rate_limit(request, "orders", services.settings.order_rate_limit_per_minute)
     enforce_live(order.mode, order.live_confirmation_token, services)
@@ -428,7 +541,15 @@ async def submit_option(
             "position_intent": order.position_intent.value if order.position_intent else None,
         },
     )
-    result = await run_in_threadpool(provider_call, services.alpaca.submit_option_order, order)
+    result = await run_in_threadpool(
+        trading_provider_call,
+        user,
+        session,
+        services,
+        order.mode.value,
+        services.alpaca.submit_option_order,
+        order,
+    )
     logger.info(
         "order_submission_completed",
         extra={

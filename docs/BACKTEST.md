@@ -94,3 +94,18 @@ backtest_results/
   default event loop trades one symbol per run.
 - Fine-tuning quality depends on the callback you provide.
 - Synthetic spread is used when bid/ask is missing.
+
+## SEC accumulation backtest
+
+Separate from `kronos_backtest`, StockPulse includes a look-ahead-safe accumulation
+backtest in `backend/app/sec/backtest/`. It compares forward returns across
+accumulation score buckets using only filings whose `filing_date <= as_of_date`
+(13F quarterly data is never treated as available before publication).
+
+```bash
+cd backend
+python scripts/sec_backtest.py XOM --days 365
+pytest -q tests/test_sec_backtest.py
+```
+
+See [SEC_ACCUMULATION.md](./SEC_ACCUMULATION.md) for methodology and limitations.

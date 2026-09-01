@@ -1,14 +1,15 @@
 # StockPulse
 
-Paper-first trading workstation for US equities and single-leg options. Forecasts, charts, news, portfolio, and manual order tickets in one dashboard — wired to Alpaca and powered by Kronos path forecasts.
+Paper-first trading workstation for US equities and single-leg options. Forecasts, charts, news, SEC ownership intelligence, portfolio, and manual order tickets in one dashboard — wired to Alpaca and powered by Kronos path forecasts.
 
-**Not investment advice.** Forecasts are research overlays only. Orders are always manual and never placed by the model.
+**Not investment advice.** Forecasts and accumulation scores are research overlays only. Orders are always manual and never placed by the model.
 
 ## Features
 
 - **Market workspace** — symbol search, session clock, quote, fundamentals, OHLC chart
 - **Forecasts** — Kronos (single model) or ensemble overlay; short / long horizons; path turns and decision context
 - **Sentiment & news** — public news sentiment plus investor/regime cues; merged news feed
+- **SEC & ownership** — EDGAR 13F / 13D / 13G / Form 4 ingestion, explainable **Accumulation Score (0–100)**, background market scan (blue-chip + movers), **Sectors**, **Top Accumulation**, **SEC Records** (6-month filing search), and **AI Research** queries
 - **Movers scan** — background scan of blue-chip names for predicted gainers and losers (display-only)
 - **Portfolio** — open positions, open/realized P/L, hold ideas from the movers scan
 - **Manual trading** — equity and single-leg options tickets with risk preview and review-before-send
@@ -20,7 +21,7 @@ Paper-first trading workstation for US equities and single-leg options. Forecast
 |-------|------|
 | Frontend | React, TypeScript, Vite (`frontend/`) |
 | Backend | FastAPI, uvicorn (`backend/`) |
-| Broker / data | Alpaca (bars + trading), Finnhub (fundamentals, news, public sentiment) |
+| Broker / data | Alpaca (bars + trading), Finnhub (fundamentals, news, public sentiment), SEC EDGAR (filings, accumulation) |
 | Forecasts | Kronos (`NeoQuasar/Kronos-small`) and optional ensemble under `forecasting/` |
 
 ## Quick start
@@ -31,6 +32,7 @@ Paper-first trading workstation for US equities and single-leg options. Forecast
 - Node **22+**
 - Alpaca paper API keys (live keys only if you intentionally enable live trading)
 - Optional: Finnhub API key for fundamentals / public sentiment
+- SEC EDGAR: set `SEC_USER_AGENT` to `AppName contact@example.com` (required by SEC fair-access policy); no API key
 
 ### Configure
 
@@ -47,6 +49,9 @@ ALPACA_PAPER_SECRET=...
 ALPACA_DATA_FEED=iex
 ALLOW_LIVE_TRADING=false
 FINNHUB_API_KEY=...
+SEC_USER_AGENT=StockPulse contact@example.com
+SEC_ENABLED=true
+SEC_SCAN_UNIVERSE_CAP=100
 CORS_ORIGIN=http://localhost:5173
 ```
 
@@ -77,11 +82,13 @@ npm run dev
 
 ### Publish on your LAN
 
-Builds the frontend and starts API + UI (backend stays on loopback; LAN clients use the UI proxy):
+Builds the frontend and starts API + UI (backend stays on loopback; LAN clients use the UI proxy). The publish script waits for the API on port 8000 before starting the frontend to avoid transient **502** proxy errors.
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File scripts/publish-kronos-lan.ps1
 ```
+
+After login, Sectors and Top Accumulation populate from a background **accumulation scan** (may take several minutes on first load). See [docs/SEC_ACCUMULATION.md](./docs/SEC_ACCUMULATION.md).
 
 ### Docker
 
@@ -102,8 +109,10 @@ Same ports: UI `5173`, API `8000`.
 ## Repository layout
 
 ```text
-backend/           FastAPI service (Alpaca, Finnhub, Kronos, risk)
+backend/           FastAPI service (Alpaca, Finnhub, SEC, Kronos, risk)
 frontend/          React dashboard
+backend/app/sec/   SEC EDGAR client, parsers, accumulation scoring
+backend/configs/   sec_accumulation.yaml (score weights)
 forecasting/       Optional multi-model forecast adapters
 scripts/           Start / LAN publish helpers
 docs/              Product & development guides
@@ -119,6 +128,7 @@ kronos_backtest/   Historical backtester (not used by the live dashboard)
 | [backend/README.md](./backend/README.md) | API, config, smoke checklist |
 | [frontend/README.md](./frontend/README.md) | Dashboard commands & API client |
 | [docs/DEVELOPMENT.md](./docs/DEVELOPMENT.md) | Environments, checks, Docker |
+| [docs/SEC_ACCUMULATION.md](./docs/SEC_ACCUMULATION.md) | SEC EDGAR ingestion, Accumulation Score, API, backtest |
 | [docs/StockPulse.html](./docs/StockPulse.html) | Product & operations guide |
 | [CHANGELOG.md](./CHANGELOG.md) | Release notes |
 

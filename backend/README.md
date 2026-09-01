@@ -1,7 +1,7 @@
 # StockPulse API
 
-FastAPI backend for manual Alpaca equity/options trading, Finnhub fundamentals, and
-lazy-loaded Kronos forecasts. Python 3.12 is recommended.
+FastAPI backend for manual Alpaca equity/options trading, Finnhub fundamentals, SEC EDGAR
+accumulation intelligence, and lazy-loaded Kronos forecasts. Python 3.12 is recommended.
 
 ## Setup
 
@@ -29,6 +29,19 @@ ALPACA_LIVE_SECRET=
 ALPACA_DATA_FEED=iex
 ALPACA_DATA_CREDENTIALS_MODE=paper
 FINNHUB_API_KEY=
+
+SEC_USER_AGENT=StockPulse contact@example.com
+SEC_ENABLED=true
+SEC_REQUESTS_PER_SECOND=8
+SEC_CACHE_TTL_SECONDS=3600
+SEC_SCORE_CONFIG_PATH=backend/configs/sec_accumulation.yaml
+SEC_RATE_LIMIT_PER_MINUTE=60
+SEC_SCAN_UNIVERSE_CAP=100
+SEC_SCAN_ON_STARTUP=false
+RESEARCH_LLM_ENABLED=false
+OPENAI_API_KEY=
+OPENAI_BASE_URL=
+OPENAI_MODEL=gpt-4o-mini
 
 ALLOW_LIVE_TRADING=false
 LIVE_CONFIRMATION_TOKEN=
@@ -82,6 +95,17 @@ All routes use the `/api/v1` prefix.
 - `GET /symbols/search?q=apple`
 - `GET /stocks/{symbol}/overview`
 - `GET /stocks/{symbol}/bars?timeframe=1Day&limit=300`
+- `GET /stocks/{symbol}/sec` — SEC intelligence summary (score, components, activity)
+- `GET /stocks/{symbol}/institutional` — 13F position changes
+- `GET /stocks/{symbol}/insiders` — classified Form 4 transactions
+- `GET /stocks/{symbol}/accumulation` — Accumulation Score, history, evidence
+- `GET /stocks/{symbol}/filings?months=6&limit=` — recent SEC filing history
+- `GET /sectors` — normalized sector list
+- `GET /sectors/{sector}/accumulation` — sector aggregates
+- `GET /accumulation/top?sector=&min_score=&limit=` — ranked accumulation stocks
+- `POST /accumulation/scan` — start blue-chip + movers universe scan
+- `GET /accumulation/scan/status` — scan progress
+- `POST /research/query` — NL research query (optional LLM narration)
 - `GET /account?mode=paper`
 - `GET /positions?mode=paper`
 - `GET /orders?mode=paper&order_status=open`
@@ -102,7 +126,10 @@ path. Quantity/notional, order type, limit/stop price requirements, time-in-forc
 and asset tradability are validated before submission. Provider failures are surfaced
 as generic 502 errors and missing configuration as generic 503 errors; detailed causes
 are logged server-side. Missing Finnhub values remain `null`; the API does not
-synthesize fundamentals. Responses include `X-Request-ID`; logs contain structured
+synthesize fundamentals. SEC endpoints populate from EDGAR when `SEC_ENABLED=true`;
+SEC failures return partial data with `provider_errors` and do not break other routes.
+See [docs/SEC_ACCUMULATION.md](../docs/SEC_ACCUMULATION.md) for scoring methodology
+and filing caveats. Responses include `X-Request-ID`; logs contain structured
 request completion and order-submission audit records without credentials or
 confirmation tokens.
 
@@ -120,6 +147,11 @@ multi-worker deployments should use a shared gateway or rate-limit store.
 The movers POST starts a background scan and returns immediately. Poll the status route
 for progressive rankings; it returns separate top-50 `gainers` and `losers` lists plus
 scan progress, so the UI can render results before the full universe finishes.
+
+The accumulation scan (`POST /accumulation/scan`) follows the same pattern: it merges
+the blue-chip universe with cached Alpaca movers, scores each ticker from EDGAR in a
+background thread, and exposes progress at `GET /accumulation/scan/status`. It does not
+block API handlers while building the universe.
 
 Example paper equity order:
 
@@ -153,11 +185,17 @@ pytest -q
 ```
 
 Tests use only fakes and HTTP mock transports. They never call Alpaca, Finnhub,
-Hugging Face, or submit an order.
+SEC EDGAR, Hugging Face, or submit an order.
+
+SEC-specific tests:
+
+```powershell
+pytest -q tests/test_sec_*.py tests/test_research_query.py
+```
 
 ## Paper smoke checklist
 
-1. Configure only `ALPACA_PAPER_KEY`, `ALPACA_PAPER_SECRET`, and optionally Finnhub.
+1. Configure only `ALPACA_PAPER_KEY`, `ALPACA_PAPER_SECRET`, optionally Finnhub, and `SEC_USER_AGENT`.
 2. Keep `ALLOW_LIVE_TRADING=false`.
 3. Verify `/health` and `/config/status`; ensure no secrets appear.
 4. Search for `AAPL`, open its overview, and request daily bars.
@@ -166,7 +204,10 @@ Hugging Face, or submit an order.
 7. Submit a one-share or low-notional paper order and confirm it in Alpaca.
 8. Cancel an open paper order through `DELETE /orders/{order_id}` and verify the broker state.
 9. Run a short Kronos forecast; allow time for the first model download/load.
-10. Confirm a live request returns 403 while live trading is disabled.
+10. Open `GET /stocks/AAPL/sec` or the SEC Intelligence panel in the dashboard.
+11. Wait for `GET /accumulation/scan/status` to reach `ready`; confirm Sectors and Top Accumulation list multiple tickers.
+12. Open the **SEC Records** tab, search `AAPL`, and confirm filings from the last 6 months (or empty state with caveats).
+13. Confirm a live request returns 403 while live trading is disabled.
 
 This application is for personal tooling, not investment advice. Broker acceptance
 does not guarantee execution, and API-side validation does not replace risk controls.

@@ -1,9 +1,11 @@
 from types import SimpleNamespace
+from uuid import uuid4
 
 import pytest
 from fastapi.testclient import TestClient
 
 from app.config import Settings
+from app.db import reset_db_state
 from app.dependencies import Services
 from app.main import create_app
 from app.schemas import EquityOrderRequest, OptionOrderRequest
@@ -27,18 +29,44 @@ class StubKronos:
         return {"movers": [], "status": "ready", "scanned": 0}
 
 
+def _settings(**overrides) -> Settings:
+    defaults = {"database_url": "sqlite://"}
+    defaults.update(overrides)
+    return Settings(_env_file=None, **defaults)
+
+
 def _client(settings: Settings, alpaca=None) -> TestClient:
+    reset_db_state()
     services = Services(
         settings=settings,
         alpaca=alpaca or StubAlpaca(),
         finnhub=SimpleNamespace(client=None),
         kronos=StubKronos(),
+        sec=SimpleNamespace(),
     )
     return TestClient(create_app(settings, services))
 
 
+def _auth_headers(client: TestClient, *, with_alpaca: bool = True) -> dict[str, str]:
+    email = f"user-{uuid4().hex[:8]}@example.com"
+    response = client.post(
+        "/api/v1/auth/register",
+        json={"email": email, "password": "password123"},
+    )
+    assert response.status_code == 201, response.text
+    headers = {"Authorization": f"Bearer {response.json()['access_token']}"}
+    if with_alpaca:
+        saved = client.put(
+            "/api/v1/auth/alpaca",
+            headers=headers,
+            json={"mode": "paper", "key_id": "PKTESTKEY123456", "secret": "secretsecret12"},
+        )
+        assert saved.status_code == 200, saved.text
+    return headers
+
+
 def test_configured_api_key_is_required_and_compared_without_leaking() -> None:
-    config = Settings(_env_file=None, api_key="correct-secret")
+    config = _settings(api_key="correct-secret")
     with _client(config) as client:
         missing = client.get("/api/v1/ready")
         wrong = client.get("/api/v1/ready", headers={"X-API-Key": "wrong"})
@@ -50,7 +78,7 @@ def test_configured_api_key_is_required_and_compared_without_leaking() -> None:
 
 
 def test_request_ids_are_returned_and_invalid_values_are_replaced() -> None:
-    with _client(Settings(_env_file=None)) as client:
+    with _client(_settings()) as client:
         preserved = client.get("/api/v1/health", headers={"X-Request-ID": "test-123"})
         replaced = client.get("/api/v1/health", headers={"X-Request-ID": "bad/id"})
     assert preserved.headers["X-Request-ID"] == "test-123"
@@ -59,37 +87,48 @@ def test_request_ids_are_returned_and_invalid_values_are_replaced() -> None:
 
 def test_provider_exception_response_is_generic() -> None:
     class BrokenAlpaca:
+        def __init__(self) -> None:
+            self.calls = 0
+
         def account(self, mode: str) -> dict:
+            self.calls += 1
+            if self.calls == 1:
+                return {"mode": mode, "id": "acct"}
             raise RuntimeError("upstream leaked secret")
 
-    with _client(Settings(_env_file=None), BrokenAlpaca()) as client:
-        response = client.get("/api/v1/account", params={"mode": "paper"})
+    with _client(_settings(), BrokenAlpaca()) as client:
+        headers = _auth_headers(client)
+        response = client.get("/api/v1/account", params={"mode": "paper"}, headers=headers)
     assert response.status_code == 502
     assert response.json()["detail"] == "Provider request failed"
     assert "leaked secret" not in response.text
 
 
 def test_forecast_rate_limit_is_enforced_without_external_dependency() -> None:
-    config = Settings(_env_file=None, forecast_rate_limit_per_minute=1)
+    config = _settings(forecast_rate_limit_per_minute=1)
     with _client(config) as client:
-        first = client.post("/api/v1/forecast", json={"symbol": "AAPL"})
-        second = client.post("/api/v1/forecast", json={"symbol": "AAPL"})
+        headers = _auth_headers(client, with_alpaca=False)
+        first = client.post("/api/v1/forecast", json={"symbol": "AAPL"}, headers=headers)
+        second = client.post("/api/v1/forecast", json={"symbol": "AAPL"}, headers=headers)
     assert first.status_code == 200
     assert second.status_code == 429
     assert second.headers["Retry-After"] == "60"
 
 
 def test_movers_scan_does_not_consume_ticker_forecast_quota() -> None:
-    config = Settings(_env_file=None, forecast_rate_limit_per_minute=1)
+    config = _settings(forecast_rate_limit_per_minute=1)
     with _client(config) as client:
-        movers = client.post("/api/v1/forecast/movers", json={"refresh": True, "limit": 3})
-        forecast = client.post("/api/v1/forecast", json={"symbol": "AAPL"})
+        headers = _auth_headers(client, with_alpaca=False)
+        movers = client.post(
+            "/api/v1/forecast/movers", json={"refresh": True, "limit": 3}, headers=headers
+        )
+        forecast = client.post("/api/v1/forecast", json={"symbol": "AAPL"}, headers=headers)
     assert movers.status_code == 200
     assert forecast.status_code == 200
 
 
 def test_private_network_cors_is_not_allowed_by_default() -> None:
-    with _client(Settings(_env_file=None)) as client:
+    with _client(_settings()) as client:
         response = client.options(
             "/api/v1/health",
             headers={
@@ -110,7 +149,7 @@ def test_spread_requires_quote_and_range_estimator_uses_basis_points() -> None:
 
 
 def test_equity_sell_cannot_exceed_long_position_by_default() -> None:
-    config = Settings(_env_file=None)
+    config = _settings()
     order = EquityOrderRequest(mode="paper", symbol="AAPL", side="sell", qty=2)
     with pytest.raises(ValueError, match="short selling is disabled"):
         check_order_risk(
@@ -150,7 +189,7 @@ def test_option_intent_is_explicit_and_underlying_has_occ_fallback() -> None:
             return SimpleNamespace(id="option-order")
 
     client = TradingClient()
-    service = AlpacaService(Settings(_env_file=None))
+    service = AlpacaService(_settings())
     service._trading = lambda mode: client
     service.option_snapshot = lambda contract, underlying: {
         "symbol": underlying,

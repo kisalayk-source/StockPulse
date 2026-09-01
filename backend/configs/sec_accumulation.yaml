@@ -1,0 +1,68 @@
+# SEC Accumulation Score configuration.
+# Weights are research signals, not trading instructions.
+
+institutional_signal:
+  new_position: 1.0
+  increased: 0.7
+  unchanged: 0.0
+  decreased: -0.7
+  exited: -1.0
+
+component_weights:
+  institutional: 0.35
+  insider: 0.30
+  major_holder: 0.15
+  price_volume: 0.10
+  fundamentals: 0.10
+
+score_bands:
+  very_strong_distribution:
+    min: 0
+    max: 19
+    label: VERY_STRONG_DISTRIBUTION
+  distribution:
+    min: 20
+    max: 39
+    label: DISTRIBUTION
+  neutral:
+    min: 40
+    max: 59
+    label: NEUTRAL
+  accumulation:
+    min: 60
+    max: 79
+    label: ACCUMULATION
+  strong_accumulation:
+    min: 80
+    max: 100
+    label: STRONG_ACCUMULATION
+
+insider_cluster:
+  window_days: 30
+  min_insiders: 3
+  executive_roles:
+    - CEO
+    - CFO
+    - COO
+    - President
+    - Director
+
+institutional_weighting:
+  # Multipliers applied to base institutional_signal weights.
+  # Documented heuristics — not hard-coded "smart money" rankings.
+  manager_size_large: 1.2
+  manager_size_small: 0.8
+  position_size_large_pct: 0.05
+  position_size_large_multiplier: 1.15
+  change_magnitude_large_pct: 0.25
+  change_magnitude_large_multiplier: 1.1
+
+major_holder_thresholds:
+  - 0.05
+  - 0.10
+  - 0.20
+
+signal_labels:
+  institutional: Reported institutional position change
+  insider: Insider transaction filing
+  major_holder: Beneficial ownership disclosure
