@@ -67,7 +67,7 @@ SEC_SCAN_ON_STARTUP=false
 |-------|-----|
 | **502** on API calls through the UI | Backend not reachable on loopback `:8000`. Restart with `scripts/publish-kronos-lan.ps1` (starts API before frontend). Check `runtime-logs/backend.stderr.log`. |
 | Sectors / Top empty or only SPY | Accumulation scan still running — wait for progress banner or call `POST /api/v1/accumulation/scan`. |
-| SEC Records empty | EDGAR sync still running, no filings in the last 6 months, or invalid `SEC_USER_AGENT`. Re-search after sync completes; check API `provider_errors`. |
+| SEC Records empty | EDGAR sync still running, no filings in the last 6 months, or invalid `SEC_USER_AGENT`. Re-search after sync completes; check API `provider_errors`. Analysis card uses rule-based fallback when `RESEARCH_LLM_ENABLED=false`. |
 
 See [docs/SEC_ACCUMULATION.md](./docs/SEC_ACCUMULATION.md#troubleshooting) for SEC-specific detail.
 

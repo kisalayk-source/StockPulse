@@ -142,7 +142,7 @@ Additional dashboard tabs:
 
 - **Sectors** — average accumulation score, % increasing/decreasing by sector, top tickers per sector (populated by market scan)
 - **Top Accumulation** — filterable ranked list across scanned universe
-- **SEC Records** — compact ticker search; browse filings from the last 6 months (EDGAR sync runs on search and when the tab opens)
+- **SEC Records** — compact ticker search; filings from the last 6 months with **filing entity**, **action** (bought/sold/new investment), EDGAR links, AI analysis card (sentiment + gist), and stat chips (syncs on tab open and search)
 - **AI Research** — query box with candidate table, structured filters, and evidence-backed results (optional LLM narration)
 
 Signal columns use human-readable classification labels (e.g. **Strong Accumulation**, **Distribution**) rather than raw enum strings.
@@ -170,7 +170,33 @@ Sector names from Finnhub are normalized to dashboard buckets (e.g. `Financial S
 
 ## SEC Records tab
 
-`GET /stocks/{symbol}/filings?months=6&limit=100` syncs the issuer from EDGAR when needed, then returns filings in the date window plus related Form 4 insider lines and 13D/G beneficial ownership rows. Each filing includes an EDGAR archive URL when CIK mapping is available.
+`GET /stocks/{symbol}/filings?months=6&limit=100` syncs the issuer from EDGAR when needed, then returns filings in the date window plus related Form 4 insider lines and 13D/G beneficial ownership rows. Each filing includes:
+
+| Field | Description |
+|-------|-------------|
+| `filer_name` | Insider, institution, or beneficial owner who filed |
+| `action` | Human-readable activity (e.g. Bought 10,000 shares, New investment, New major holder) |
+| `action_tone` | `positive`, `negative`, or `neutral` for UI coloring |
+| `edgar_url` | SEC archive link when CIK mapping is available |
+
+`GET /stocks/{symbol}/filings/analysis?months=6` reads from SQLite only (no re-sync) and returns an AI-powered or rule-based summary:
+
+```json
+{
+  "ticker": "AAPL",
+  "headline": "Recent SEC activity for AAPL looks mostly positive.",
+  "gist": ["2 Form 4 filings since ...", "Insider activity skews positive."],
+  "sentiment": "good",
+  "sentiment_label": "Good news",
+  "highlights": [{"category": "insider", "text": "1 insider buy", "tone": "positive"}],
+  "source": "rules",
+  "disclaimer": "..."
+}
+```
+
+When `RESEARCH_LLM_ENABLED=true` and `OPENAI_API_KEY` is set, analysis uses the same OpenAI-compatible chat API as `/research/query`; otherwise a deterministic rule-based fallback scores insider buys/sells, institutional changes, and accumulation score.
+
+The dashboard loads filings first, then fetches analysis in a separate request so the table is not blocked by LLM latency.
 
 ## Troubleshooting
 
@@ -191,11 +217,14 @@ backend/app/sec/
     scan.py            Background accumulation scan (universe + progress)
     sectors.py         Finnhub → dashboard sector normalization
     submissions.py     Ticker ↔ CIK mapping
-    service.py         Ingestion orchestrator
+    service.py         Ingestion orchestrator + filing enrichment (entity/action)
     forms/             13F, 13D, 13G, Form 4 parsers
     engines/           Scoring (institutional, insider, major holder, confirmation)
     backtest/          Look-ahead-safe accumulation backtest
     db_models.py       SQLite persistence
+backend/app/services/
+    filings_analysis.py  SEC Records AI/rule-based analysis
+    openai_client.py       Shared OpenAI chat helper (research + filings)
 backend/configs/sec_accumulation.yaml
 backend/scripts/sec_backtest.py
 ```

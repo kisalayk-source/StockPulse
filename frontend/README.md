@@ -32,7 +32,7 @@ The UI is a single-page workstation with top-level tabs:
 | **Market** | Quote, chart, forecasts, news, **SEC & Ownership Intelligence** panel for the active symbol |
 | **Sectors** | Average accumulation score and % increasing/decreasing by sector |
 | **Top Accumulation** | Ranked stocks with institutional, insider, and fundamentals component scores (from market scan) |
-| **SEC Records** | Compact ticker search; filings from the last 6 months with EDGAR links (syncs on tab open and search) |
+| **SEC Records** | Ticker search; filings from the last 6 months with filing entity, action (bought/sold/new investment), AI analysis card, stat chips, and EDGAR links (syncs on tab open and search) |
 | **AI Research** | Natural-language query box; candidate table, filters, and evidence-backed narrative |
 
 On login the UI starts a background market scan (blue-chip + movers) and shows progress on Sectors, Top, and Research tabs until scores populate.
@@ -52,7 +52,8 @@ The typed client in `src/api.ts` models:
 - `GET /stocks/:symbol/institutional` — 13F position changes
 - `GET /stocks/:symbol/insiders` — Form 4 transactions
 - `GET /stocks/:symbol/accumulation` — score, components, history
-- `GET /stocks/:symbol/filings?months=&limit=` — recent SEC filing history
+- `GET /stocks/:symbol/filings?months=&limit=` — recent SEC filing history (`filer_name`, `action`, `action_tone`)
+- `GET /stocks/:symbol/filings/analysis?months=` — AI/rule-based filing summary (sentiment, gist, highlights)
 - `GET /sectors` — sector list with ticker counts
 - `GET /sectors/:sector/accumulation` — sector aggregates
 - `GET /accumulation/top?sector=&min_score=&limit=` — ranked stocks
@@ -84,7 +85,7 @@ that 13F holdings are quarterly reported positions — not real-time trade activ
 
 - **502 Bad Gateway** on `/api/v1/*` — the Vite proxy could not reach the API. Confirm `http://127.0.0.1:8000/api/v1/health` responds; republish with `scripts/publish-kronos-lan.ps1`.
 - **Empty Sectors / Top Accumulation** — wait for the background accumulation scan (progress banner) or hit dashboard Refresh.
-- **SEC Records** — search by ticker; results cover the last 6 months only. If empty for a known issuer, wait for the sync spinner or re-search; check `provider_errors` in the API response.
+- **SEC Records** — search by ticker; results cover the last 6 months with filing entity, action labels, and an AI analysis card (rule-based when LLM is off). If empty for a known issuer, wait for the sync spinner or re-search; check `provider_errors` in the API response.
 - **Signal labels** — tables show readable classifications (e.g. `Strong Accumulation`) instead of raw enum codes.
 
 The interface also blocks risk-rejected previews, disables live mode when the server disallows

@@ -342,6 +342,9 @@ export interface SecFilingRecord {
   description: string
   is_amendment: boolean
   edgar_url: string | null
+  filer_name?: string | null
+  action?: string | null
+  action_tone?: 'positive' | 'negative' | 'neutral'
 }
 
 export interface SecFilingsResponse {
@@ -353,6 +356,24 @@ export interface SecFilingsResponse {
   insider_transactions: Array<Record<string, unknown>>
   beneficial_ownership: Array<Record<string, unknown>>
   provider_errors?: Array<{ provider: string; message: string }>
+}
+
+export interface SecFilingsAnalysisHighlight {
+  category: string
+  text: string
+  tone: 'positive' | 'negative' | 'neutral'
+}
+
+export interface SecFilingsAnalysisResponse {
+  ticker: string
+  months: number
+  headline: string
+  gist: string[]
+  sentiment: 'good' | 'bad' | 'mixed' | 'neutral'
+  sentiment_label: string
+  highlights: SecFilingsAnalysisHighlight[]
+  source: 'llm' | 'rules'
+  disclaimer: string
 }
 
 export interface ResearchCandidate {
@@ -1168,6 +1189,7 @@ export const api = {
       summary: object(payload.summary) as Record<string, number>,
       filings: list(payload.filings).map((row) => {
         const item = object(row)
+        const actionTone = text(item.action_tone) as SecFilingRecord['action_tone']
         return {
           accession_number: text(item.accession_number),
           form_type: text(item.form_type),
@@ -1177,11 +1199,41 @@ export const api = {
           description: text(item.description),
           is_amendment: Boolean(item.is_amendment),
           edgar_url: item.edgar_url as string | null,
+          filer_name: item.filer_name as string | null | undefined,
+          action: item.action as string | null | undefined,
+          action_tone: ['positive', 'negative', 'neutral'].includes(actionTone || '') ? actionTone : 'neutral',
         }
       }),
       insider_transactions: list(payload.insider_transactions) as Array<Record<string, unknown>>,
       beneficial_ownership: list(payload.beneficial_ownership) as Array<Record<string, unknown>>,
       provider_errors: payload.provider_errors as SecFilingsResponse['provider_errors'],
+    }
+  },
+  secFilingsAnalysis: async (symbol: string, params?: { months?: number }): Promise<SecFilingsAnalysisResponse> => {
+    const query = new URLSearchParams()
+    if (params?.months != null) query.set('months', String(params.months))
+    const suffix = query.toString() ? `?${query.toString()}` : ''
+    const payload = object(await request<unknown>(`/stocks/${encodeURIComponent(symbol)}/filings/analysis${suffix}`))
+    const sentiment = text(payload.sentiment) as SecFilingsAnalysisResponse['sentiment']
+    const source = text(payload.source) as SecFilingsAnalysisResponse['source']
+    return {
+      ticker: text(payload.ticker, symbol.toUpperCase()),
+      months: number(payload.months) ?? 6,
+      headline: text(payload.headline),
+      gist: list(payload.gist).map((item) => String(item)),
+      sentiment: ['good', 'bad', 'mixed', 'neutral'].includes(sentiment) ? sentiment : 'neutral',
+      sentiment_label: text(payload.sentiment_label, 'Neutral'),
+      highlights: list(payload.highlights).map((row) => {
+        const item = object(row)
+        const tone = text(item.tone) as SecFilingsAnalysisHighlight['tone']
+        return {
+          category: text(item.category),
+          text: text(item.text),
+          tone: ['positive', 'negative', 'neutral'].includes(tone) ? tone : 'neutral',
+        }
+      }),
+      source: source === 'llm' ? 'llm' : 'rules',
+      disclaimer: text(payload.disclaimer),
     }
   },
   topAccumulation: async (params?: { sector?: string; minScore?: number; limit?: number }): Promise<TopAccumulationResponse> => {

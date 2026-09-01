@@ -30,10 +30,16 @@ from app.sec.forms.form_13g import parse_13g
 from app.sec.forms.form_4 import parse_form4
 from app.sec.models import NormalizedEvent
 from app.sec.normalization import (
+    action_tone_for_insider,
+    action_tone_for_institutional,
+    action_tone_for_ownership,
     classify_beneficial_ownership_event,
     classify_institutional_change,
     classify_insider_transaction,
+    insider_action_label,
+    institutional_action_label,
     institutional_change_pct,
+    ownership_action_label,
     polarity_for_institutional,
     polarity_for_insider,
     polarity_for_major_holder,
@@ -689,6 +695,127 @@ class SecService:
             "stocks": sorted(stocks, key=lambda item: item["score"], reverse=True),
         }
 
+    def _build_filing_enrichment(
+        self,
+        session: Session,
+        symbol: str,
+        accession_numbers: list[str],
+    ) -> dict[str, dict[str, Any]]:
+        if not accession_numbers:
+            return {}
+        insiders = (
+            session.query(InsiderTransaction)
+            .filter(
+                InsiderTransaction.issuer_ticker == symbol,
+                InsiderTransaction.accession_number.in_(accession_numbers),
+            )
+            .all()
+        )
+        ownership = (
+            session.query(BeneficialOwnership)
+            .filter(
+                BeneficialOwnership.issuer_ticker == symbol,
+                BeneficialOwnership.accession_number.in_(accession_numbers),
+            )
+            .all()
+        )
+        institutional = (
+            session.query(InstitutionalPositionChange)
+            .filter(
+                InstitutionalPositionChange.issuer_ticker == symbol,
+                InstitutionalPositionChange.accession_number.in_(accession_numbers),
+            )
+            .all()
+        )
+        holdings = (
+            session.query(InstitutionalHolding)
+            .filter(
+                InstitutionalHolding.issuer_ticker == symbol,
+                InstitutionalHolding.accession_number.in_(accession_numbers),
+            )
+            .all()
+        )
+
+        by_accession: dict[str, dict[str, Any]] = {}
+
+        for row in insiders:
+            bucket = by_accession.setdefault(row.accession_number, {"insiders": [], "ownership": [], "institutional": [], "holdings": []})
+            bucket["insiders"].append(row)
+        for row in ownership:
+            bucket = by_accession.setdefault(row.accession_number, {"insiders": [], "ownership": [], "institutional": [], "holdings": []})
+            bucket["ownership"].append(row)
+        for row in institutional:
+            bucket = by_accession.setdefault(row.accession_number, {"insiders": [], "ownership": [], "institutional": [], "holdings": []})
+            bucket["institutional"].append(row)
+        for row in holdings:
+            bucket = by_accession.setdefault(row.accession_number, {"insiders": [], "ownership": [], "institutional": [], "holdings": []})
+            bucket["holdings"].append(row)
+
+        enriched: dict[str, dict[str, Any]] = {}
+        for accession, bucket in by_accession.items():
+            enriched[accession] = self._summarize_filing_details(bucket)
+        return enriched
+
+    def _summarize_filing_details(self, bucket: dict[str, list[Any]]) -> dict[str, Any]:
+        insiders: list[InsiderTransaction] = bucket.get("insiders", [])
+        ownership: list[BeneficialOwnership] = bucket.get("ownership", [])
+        institutional: list[InstitutionalPositionChange] = bucket.get("institutional", [])
+        holdings: list[InstitutionalHolding] = bucket.get("holdings", [])
+
+        if insiders:
+            names = list(dict.fromkeys(row.insider_name for row in insiders))
+            filer_name = names[0] if len(names) == 1 else f"{names[0]} (+{len(names) - 1} more)"
+            actions: list[str] = []
+            tone = "neutral"
+            for row in insiders:
+                label = insider_action_label(row.normalized_type)
+                if row.shares:
+                    label = f"{label} {row.shares:,.0f} shares".replace(".0 shares", " shares")
+                actions.append(label)
+                row_tone = action_tone_for_insider(row.normalized_type)
+                if row_tone == "positive":
+                    tone = "positive"
+                elif row_tone == "negative" and tone != "positive":
+                    tone = "negative"
+            action = "; ".join(dict.fromkeys(actions))
+            return {"filer_name": filer_name, "action": action, "action_tone": tone}
+
+        if institutional:
+            row = institutional[0]
+            action = institutional_action_label(row.classification)
+            if row.change_shares:
+                direction = "added" if row.change_shares > 0 else "removed"
+                action = f"{action} ({direction} {abs(row.change_shares):,.0f} shares)".replace(".0 shares", " shares")
+            return {
+                "filer_name": row.manager_name,
+                "action": action,
+                "action_tone": action_tone_for_institutional(row.classification),
+            }
+
+        if ownership:
+            row = ownership[0]
+            action = ownership_action_label(row.event_type)
+            if row.ownership_pct is not None:
+                action = f"{action} ({row.ownership_pct:.2f}% ownership)"
+            return {
+                "filer_name": row.reporter_name,
+                "action": action,
+                "action_tone": action_tone_for_ownership(row.event_type),
+            }
+
+        if holdings:
+            row = holdings[0]
+            action = "Quarterly holdings report"
+            if row.shares:
+                action = f"Holds {row.shares:,.0f} shares".replace(".0 shares", " shares")
+            return {
+                "filer_name": row.manager_name,
+                "action": action,
+                "action_tone": "neutral",
+            }
+
+        return {"filer_name": None, "action": None, "action_tone": "neutral"}
+
     async def recent_filings_payload(
         self,
         session: Session,
@@ -719,6 +846,8 @@ class SecService:
         cik = mapping.cik if mapping else None
         records: list[dict[str, Any]] = []
         summary: dict[str, int] = {"13F": 0, "13D": 0, "13G": 0, "4": 0}
+        accession_numbers = [filing.accession_number for filing in filings]
+        enrichment = self._build_filing_enrichment(session, symbol, accession_numbers)
         for filing in filings:
             family = filing.form_family
             if family in summary:
@@ -727,6 +856,7 @@ class SecService:
             if filing.is_amendment:
                 description = f"{description} (amendment)"
             url = edgar_filing_url(cik, filing.accession_number) if cik else None
+            details = enrichment.get(filing.accession_number, {})
             records.append(
                 {
                     "accession_number": filing.accession_number,
@@ -737,6 +867,9 @@ class SecService:
                     "description": description,
                     "is_amendment": filing.is_amendment,
                     "edgar_url": url,
+                    "filer_name": details.get("filer_name"),
+                    "action": details.get("action"),
+                    "action_tone": details.get("action_tone", "neutral"),
                 }
             )
 
@@ -756,6 +889,8 @@ class SecService:
                 "filing_date": row.filing_date.isoformat() if row.filing_date else None,
                 "code": row.transaction_code,
                 "normalized_type": row.normalized_type,
+                "action": insider_action_label(row.normalized_type),
+                "action_tone": action_tone_for_insider(row.normalized_type),
                 "shares": row.shares,
                 "price": row.price,
                 "value": row.value,
@@ -778,6 +913,8 @@ class SecService:
                 "filing_date": row.filing_date.isoformat() if row.filing_date else None,
                 "ownership_pct": row.ownership_pct,
                 "event_type": row.event_type,
+                "action": ownership_action_label(row.event_type),
+                "action_tone": action_tone_for_ownership(row.event_type),
                 "passive": row.passive_flag,
                 "accession_number": row.accession_number,
             }
