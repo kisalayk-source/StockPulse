@@ -25,7 +25,7 @@ from app.sec.edgar import edgar_filing_url, form_family, iter_recent_filings, no
 from app.sec.engines.accumulation import compute_accumulation_score, persist_score_snapshot
 from app.sec.evidence import build_evidence_list
 from app.sec.forms.form_13d import parse_13d
-from app.sec.forms.form_13f import match_ticker_from_issuer, parse_13f_infotable, parse_13f_primary
+from app.sec.forms.form_13f import issuer_matches_target, match_ticker_from_issuer, parse_13f_infotable, parse_13f_primary
 from app.sec.forms.form_13g import parse_13g
 from app.sec.forms.form_4 import parse_form4
 from app.sec.models import NormalizedEvent
@@ -122,6 +122,36 @@ class SecService:
     async def aclose(self) -> None:
         await self.client.aclose()
 
+    def _recover_session(self, session: Session) -> None:
+        try:
+            session.rollback()
+        except Exception:
+            pass
+
+    async def _iter_filing_documents(
+        self,
+        cik: str,
+        accession: str,
+        form_type: str,
+        filing_meta: dict[str, Any],
+    ) -> list[tuple[str, str]]:
+        documents: list[tuple[str, str]] = []
+        seen: set[str] = set()
+        primary = filing_meta.get("primary_document")
+        if primary:
+            try:
+                text = await self.client.fetch_document(cik, accession, str(primary))
+                documents.append((str(primary), text))
+                seen.add(str(primary).lower())
+            except ProviderUnavailable:
+                pass
+        for name, text in await self.client.fetch_ranked_filing_documents(cik, accession, form_type):
+            if name.lower() in seen:
+                continue
+            documents.append((name, text))
+            seen.add(name.lower())
+        return documents
+
     async def sync_ticker(self, session: Session, ticker: str, finnhub: Any = None) -> None:
         mapping = await self.mapper.resolve_cik(ticker, session)
         if not mapping:
@@ -144,10 +174,18 @@ class SecService:
         for filing in filings[:40]:
             accession = filing["accession_number"]
             existing = session.query(SecFiling).filter(SecFiling.accession_number == accession).one_or_none()
-            if existing is not None:
-                await self.ensure_filing_parsed(session, cik, ticker.upper(), existing)
-                continue
-            await self.ingest_filing(session, cik, ticker.upper(), filing)
+            try:
+                if existing is not None:
+                    await self.ensure_filing_parsed(session, cik, ticker.upper(), existing)
+                else:
+                    await self.ingest_filing(session, cik, ticker.upper(), filing)
+                session.commit()
+            except Exception as exc:
+                self._recover_session(session)
+                logger.warning(
+                    "sec_filing_sync_failed",
+                    extra={"ticker": ticker.upper(), "accession": accession, "error_type": type(exc).__name__},
+                )
 
     def _has_parsed_children(self, session: Session, accession_number: str) -> bool:
         if session.query(InsiderTransaction).filter(InsiderTransaction.accession_number == accession_number).first():
@@ -227,21 +265,21 @@ class SecService:
                 documents = await self.client.fetch_filing_documents(cik, accession, form_type)
                 await self._ingest_13f(session, filing, documents, cik)
             elif family == "4":
-                ranked_docs = await self.client.fetch_ranked_filing_documents(cik, accession, form_type)
-                for _name, xml_text in ranked_docs:
-                    if parse_form4(xml_text):
+                for _name, xml_text in await self._iter_filing_documents(cik, accession, form_type, filing_meta):
+                    parsed = parse_form4(xml_text)
+                    if parsed:
                         await self._ingest_form4(session, filing, xml_text, ticker)
                         return
             elif family == "13D":
-                ranked_docs = await self.client.fetch_ranked_filing_documents(cik, accession, form_type)
-                for _name, xml_text in ranked_docs:
-                    if parse_13d(xml_text, form_type=form_type, is_amendment=filing.is_amendment):
+                for _name, xml_text in await self._iter_filing_documents(cik, accession, form_type, filing_meta):
+                    parsed = parse_13d(xml_text, form_type=form_type, is_amendment=filing.is_amendment)
+                    if parsed:
                         await self._ingest_13d(session, filing, xml_text, ticker, form_type)
                         return
             elif family == "13G":
-                ranked_docs = await self.client.fetch_ranked_filing_documents(cik, accession, form_type)
-                for _name, xml_text in ranked_docs:
-                    if parse_13g(xml_text, form_type=form_type, is_amendment=filing.is_amendment):
+                for _name, xml_text in await self._iter_filing_documents(cik, accession, form_type, filing_meta):
+                    parsed = parse_13g(xml_text, form_type=form_type, is_amendment=filing.is_amendment)
+                    if parsed:
                         await self._ingest_13g(session, filing, xml_text, ticker, form_type)
                         return
         except ProviderUnavailable:
@@ -280,11 +318,15 @@ class SecService:
         if report_period and not filing.report_period:
             filing.report_period = report_period
         target = filing.ticker
+        company_name = None
+        if target:
+            mapping = session.query(SecCompanyMapping).filter(SecCompanyMapping.ticker == target).one_or_none()
+            company_name = mapping.company_name if mapping else None
         for holding in holdings:
-            issuer_ticker = match_ticker_from_issuer(holding.issuer_name, target)
-            if target and issuer_ticker and issuer_ticker != target:
+            if target and not issuer_matches_target(holding.issuer_name, target, company_name):
                 continue
-            holding.issuer_ticker = issuer_ticker or target
+            issuer_ticker = match_ticker_from_issuer(holding.issuer_name, target) or target
+            holding.issuer_ticker = issuer_ticker
             holding.report_period = filing.report_period
             session.add(
                 InstitutionalHolding(
@@ -570,9 +612,11 @@ class SecService:
                 await self.sync_ticker(session, symbol, finnhub)
             except ProviderUnavailable as exc:
                 provider_errors.append({"provider": exc.provider, "message": str(exc)})
+                self._recover_session(session)
             except Exception as exc:
                 logger.error("sec_sync_failed", extra={"ticker": symbol, "error_type": type(exc).__name__})
                 provider_errors.append({"provider": "sec", "message": "SEC sync failed"})
+                self._recover_session(session)
 
         events = self.load_normalized_events(session, symbol)
         bars: list[dict[str, Any]] = []
@@ -967,8 +1011,10 @@ class SecService:
             await self.sync_ticker(session, symbol, finnhub)
         except ProviderUnavailable as exc:
             provider_errors.append({"provider": exc.provider, "message": str(exc)})
+            self._recover_session(session)
         except Exception:
             provider_errors.append({"provider": "sec", "message": "SEC sync failed"})
+            self._recover_session(session)
 
         cutoff = date.today() - timedelta(days=max(1, months) * 30)
         filings = (
@@ -982,7 +1028,15 @@ class SecService:
         cik = mapping.cik if mapping else None
         if cik:
             for filing in filings:
-                await self.ensure_filing_parsed(session, cik, symbol, filing)
+                try:
+                    await self.ensure_filing_parsed(session, cik, symbol, filing)
+                    session.commit()
+                except Exception as exc:
+                    self._recover_session(session)
+                    logger.warning(
+                        "sec_filing_backfill_failed",
+                        extra={"ticker": symbol, "accession": filing.accession_number, "error_type": type(exc).__name__},
+                    )
         records: list[dict[str, Any]] = []
         summary: dict[str, int] = {"13F": 0, "13D": 0, "13G": 0, "4": 0}
         accession_numbers = [filing.accession_number for filing in filings]

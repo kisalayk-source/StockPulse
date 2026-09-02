@@ -50,4 +50,5 @@ def test_parse_form4() -> None:
     assert purchase.shares == 10000
 
 
-import pytest
+def test_parse_form4_ignores_html() -> None:
+    assert parse_form4("<html><body>not xml</body></html>") == []

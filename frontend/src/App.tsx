@@ -1161,6 +1161,9 @@ function App() {
           onUpdated={(user) => {
             setAuthUser(user)
             api.config().then(setConfig).catch(() => undefined)
+            if (dashboardView === 'records' && symbol) {
+              void loadRecords(symbol)
+            }
           }}
         />
       )}

@@ -217,6 +217,8 @@ export interface AppConfig {
   dataFeed?: string
   liveTradingEnabled?: boolean
   userEmail?: string
+  researchLlmAvailable?: boolean
+  researchLlmEnabled?: boolean
 }
 
 export interface AuthUser {
@@ -226,6 +228,8 @@ export interface AuthUser {
     paper: { configured: boolean; keyPreview: string | null }
     live: { configured: boolean; keyPreview: string | null }
   }
+  researchLlmEnabled?: boolean
+  researchLlmAvailable?: boolean
 }
 
 export interface AuthResponse {
@@ -407,6 +411,8 @@ export interface SecFilingsAnalysisResponse {
   sentiment_label: string
   highlights: SecFilingsAnalysisHighlight[]
   source: 'llm' | 'rules'
+  llm_available?: boolean
+  llm_enabled?: boolean
   disclaimer: string
 }
 
@@ -703,6 +709,8 @@ function mapAuthUser(value: unknown): AuthUser {
         keyPreview: text(live.key_preview) || null,
       },
     },
+    researchLlmEnabled: Boolean(payload.research_llm_enabled),
+    researchLlmAvailable: Boolean(payload.research_llm_available),
   }
 }
 
@@ -770,6 +778,12 @@ export const api = {
   deleteAlpacaCredentials: async (mode: TradingMode): Promise<AuthUser> => mapAuthUser(
     await request<unknown>(`/auth/alpaca?${query({ mode })}`, { method: 'DELETE' }),
   ),
+  savePreferences: async (preferences: { researchLlmEnabled: boolean }): Promise<AuthUser> => mapAuthUser(
+    await request<unknown>('/auth/preferences', {
+      method: 'PUT',
+      body: JSON.stringify({ research_llm_enabled: preferences.researchLlmEnabled }),
+    }),
+  ),
   logout: () => { setAccessToken(null) },
   config: async (): Promise<AppConfig> => {
     const payload = object(await request<unknown>('/config/status'))
@@ -784,6 +798,8 @@ export const api = {
       liveTradingEnabled: Boolean(payload.live_trading_allowed),
       dataFeed: text(payload.data_feed),
       userEmail: text(user.email) || undefined,
+      researchLlmAvailable: Boolean(payload.research_llm_available),
+      researchLlmEnabled: Boolean(payload.research_llm_enabled),
     }
   },
   clock: async (): Promise<MarketClock> => {
@@ -1303,6 +1319,8 @@ export const api = {
         }
       }),
       source: source === 'llm' ? 'llm' : 'rules',
+      llm_available: Boolean(payload.llm_available),
+      llm_enabled: Boolean(payload.llm_enabled),
       disclaimer: text(payload.disclaimer),
     }
   },

@@ -297,7 +297,7 @@ def _parse_llm_json(content: str) -> dict[str, Any] | None:
     }
 
 
-async def _llm_analysis(settings: Any, context: dict[str, Any]) -> dict[str, Any] | None:
+async def _llm_analysis(settings: Any, context: dict[str, Any], user: Any | None = None) -> dict[str, Any] | None:
     from app.services.openai_client import call_openai_chat
 
     system_prompt = (
@@ -316,6 +316,7 @@ async def _llm_analysis(settings: Any, context: dict[str, Any]) -> dict[str, Any
         user_content=f"Analyze SEC filings for {context['ticker']}:\n{json.dumps(context, indent=2)}",
         temperature=0.2,
         log_key="filings_analysis_llm_failed",
+        user=user,
     )
     if not content:
         return None
@@ -328,9 +329,12 @@ async def analyze_filings(
     services: Services,
     *,
     months: int = 6,
+    user: Any | None = None,
 ) -> dict[str, Any]:
+    from app.services.openai_client import research_llm_active, research_llm_available
+
     context = _build_context(session, ticker, months)
-    analysis = await _llm_analysis(services.settings, context)
+    analysis = await _llm_analysis(services.settings, context, user=user)
     source = "llm"
     if not analysis:
         analysis = _rule_based_analysis(context)
@@ -346,5 +350,7 @@ async def analyze_filings(
         "sentiment_label": SENTIMENT_LABELS.get(sentiment, "Neutral"),
         "highlights": analysis.get("highlights", []),
         "source": source,
+        "llm_available": research_llm_available(services.settings),
+        "llm_enabled": research_llm_active(services.settings, user),
         "disclaimer": DISCLAIMER,
     }

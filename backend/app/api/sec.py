@@ -6,8 +6,10 @@ from typing import Any
 from fastapi import APIRouter, Depends, Path, Query, Request
 from sqlalchemy.orm import Session
 
+from app.auth import get_current_user
 from app.db import get_session
 from app.dependencies import Services, enforce_rate_limit, get_services
+from app.models import User
 from app.sec.schemas import ResearchQueryRequest, ResearchQueryResponse
 from app.services.providers import ProviderUnavailable
 
@@ -103,13 +105,14 @@ async def stock_filings(
 @router.get("/stocks/{symbol}/filings/analysis")
 async def stock_filings_analysis(
     symbol: str,
+    user: User = Depends(get_current_user),
     services: Services = Depends(get_services),
     session: Session = Depends(get_session),
     months: int = Query(default=6, ge=1, le=24),
 ) -> dict[str, Any]:
     from app.services.filings_analysis import analyze_filings
 
-    return await analyze_filings(session, symbol, services, months=months)
+    return await analyze_filings(session, symbol, services, months=months, user=user)
 
 
 @router.get("/sectors")
@@ -163,6 +166,7 @@ async def accumulation_scan_status(
 async def research_query(
     request: Request,
     body: ResearchQueryRequest,
+    user: User = Depends(get_current_user),
     services: Services = Depends(get_services),
     session: Session = Depends(get_session),
 ) -> ResearchQueryResponse:
@@ -173,6 +177,7 @@ async def research_query(
         body.query,
         session=session,
         services=services,
+        user=user,
     )
     return ResearchQueryResponse(**result)
-
+

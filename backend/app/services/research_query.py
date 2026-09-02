@@ -89,7 +89,7 @@ def _template_narrative(
     return "\n".join(lines)
 
 
-async def _llm_narrative(settings, structured: dict[str, Any]) -> str | None:
+async def _llm_narrative(settings, structured: dict[str, Any], user: Any | None = None) -> str | None:
     from app.services.openai_client import call_openai_chat
 
     system_prompt = (
@@ -103,6 +103,7 @@ async def _llm_narrative(settings, structured: dict[str, Any]) -> str | None:
         user_content=f"Query: {structured['query']}\nContext:\n{json.dumps(structured, indent=2)}",
         temperature=0.2,
         log_key="research_llm_failed",
+        user=user,
     )
 
 
@@ -134,7 +135,13 @@ def _build_candidates(
     return candidates
 
 
-async def run_research_query(query: str, session: Session, services: Services) -> dict[str, Any]:
+async def run_research_query(
+    query: str,
+    session: Session,
+    services: Services,
+    *,
+    user: Any | None = None,
+) -> dict[str, Any]:
     parsed = parse_research_query(query)
     filters = parsed["filters"]
     sector = parsed.get("sector")
@@ -163,7 +170,7 @@ async def run_research_query(query: str, session: Session, services: Services) -
         candidates = _build_candidates(rows, {k: v for k, v in filters.items() if k != "insider_accumulation"})
 
     structured = {"query": query, "filters": filters, "candidates": candidates, "fallback": fallback}
-    narrative = await _llm_narrative(services.settings, structured)
+    narrative = await _llm_narrative(services.settings, structured, user=user)
     if not narrative:
         narrative = _template_narrative(query, candidates, filters, fallback=fallback)
     return {

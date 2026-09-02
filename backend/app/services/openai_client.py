@@ -8,6 +8,18 @@ import httpx
 logger = logging.getLogger("app.services.openai_client")
 
 
+def research_llm_available(settings: Any) -> bool:
+    return bool(settings.research_llm_enabled and settings.openai_api_key)
+
+
+def research_llm_active(settings: Any, user: Any | None) -> bool:
+    if not research_llm_available(settings):
+        return False
+    if user is None:
+        return False
+    return bool(getattr(user, "research_llm_enabled", False))
+
+
 async def call_openai_chat(
     settings: Any,
     *,
@@ -15,8 +27,9 @@ async def call_openai_chat(
     user_content: str,
     temperature: float = 0.2,
     log_key: str = "openai_chat_failed",
+    user: Any | None = None,
 ) -> str | None:
-    if not settings.research_llm_enabled or not settings.openai_api_key:
+    if not research_llm_active(settings, user):
         return None
     base_url = (settings.openai_base_url or "https://api.openai.com/v1").rstrip("/")
     payload = {

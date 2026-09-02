@@ -46,12 +46,18 @@ class AuthResponse(BaseModel):
     user: dict[str, Any]
 
 
-def _user_payload(user: User) -> dict[str, Any]:
-    return {
+def _user_payload(user: User, services: Services | None = None) -> dict[str, Any]:
+    payload = {
         "id": user.id,
         "email": user.email,
         "alpaca": credential_status(user),
+        "research_llm_enabled": bool(user.research_llm_enabled),
     }
+    if services is not None:
+        from app.services.openai_client import research_llm_available
+
+        payload["research_llm_available"] = research_llm_available(services.settings)
+    return payload
 
 
 def _token_response(services: Services, user: User) -> dict[str, Any]:
@@ -60,7 +66,7 @@ def _token_response(services: Services, user: User) -> dict[str, Any]:
             services.settings, subject=user.email, user_id=user.id
         ),
         "token_type": "bearer",
-        "user": _user_payload(user),
+        "user": _user_payload(user, services),
     }
 
 
@@ -94,8 +100,32 @@ def login(
 
 
 @router.get("/me")
-def me(user: UserDep) -> dict[str, Any]:
-    return _user_payload(user)
+def me(user: UserDep, services: ServiceDep) -> dict[str, Any]:
+    return _user_payload(user, services)
+
+
+class UserPreferencesBody(BaseModel):
+    research_llm_enabled: bool
+
+
+@router.put("/preferences")
+def update_preferences(
+    body: UserPreferencesBody,
+    user: UserDep,
+    session: SessionDep,
+    services: ServiceDep,
+) -> dict[str, Any]:
+    from app.services.openai_client import research_llm_available
+
+    if body.research_llm_enabled and not research_llm_available(services.settings):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="AI analysis is not available on this server",
+        )
+    user.research_llm_enabled = body.research_llm_enabled
+    session.flush()
+    session.refresh(user)
+    return _user_payload(user, services)
 
 
 def _validate_alpaca_keys(services: Services, mode: str, key_id: str, secret: str) -> None:
@@ -145,7 +175,7 @@ async def save_alpaca(
         row.secret_encrypted = encrypted
     session.flush()
     session.refresh(user)
-    return _user_payload(user)
+    return _user_payload(user, services)
 
 
 @router.delete("/alpaca")
@@ -163,4 +193,4 @@ def delete_alpaca(
         session.delete(row)
         session.flush()
     session.refresh(user)
-    return _user_payload(user)
+    return _user_payload(user, services)

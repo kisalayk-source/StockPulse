@@ -26,6 +26,7 @@ from app.schemas import (
     OrderReplaceRequest,
     TradingMode,
 )
+from app.services.openai_client import research_llm_available
 from app.services.providers import (
     SEARCH_RESULT_LIMIT,
     ProviderUnavailable,
@@ -134,7 +135,8 @@ def config_status(services: ServiceDep, user: UserDep) -> dict[str, Any]:
         },
         "finnhub_configured": bool(settings.finnhub_api_key),
         "sec_enabled": settings.sec_enabled,
-        "research_llm_enabled": settings.research_llm_enabled,
+        "research_llm_available": research_llm_available(settings),
+        "research_llm_enabled": bool(user.research_llm_enabled),
         "data_feed": settings.alpaca_data_feed,
         "data_credentials_mode": settings.alpaca_data_credentials_mode,
         "live_trading_allowed": settings.allow_live_trading,
