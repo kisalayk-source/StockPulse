@@ -1,7 +1,8 @@
 # StockPulse API
 
 FastAPI backend for manual Alpaca equity/options trading, Finnhub fundamentals, SEC EDGAR
-accumulation intelligence, and lazy-loaded Kronos forecasts. Python 3.12 is recommended.
+accumulation intelligence, lazy-loaded Kronos **path** forecasts, and hybrid directional
+prediction (`ml/`). Python 3.12 is recommended.
 
 ## Setup
 
@@ -120,6 +121,11 @@ All routes use the `/api/v1` prefix.
 - `POST /forecast`
 - `POST /forecast/movers`
 - `GET /forecast/movers/status`
+- `GET /stocks/{ticker}/prediction?horizon=5d` — hybrid directional signal (MVP-1)
+- `GET /stocks/{ticker}/features`
+- `GET /stocks/{ticker}/signals`
+- `GET /stocks/{ticker}/risk`
+- `GET /stocks/{ticker}/explanation`
 
 Trading/account requests require an explicit `paper` or `live` mode. Orders are
 manual only; this backend contains no scheduler, signal executor, or automatic order

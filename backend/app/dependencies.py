@@ -9,6 +9,7 @@ from fastapi import Header, HTTPException, Request, status
 
 from app.config import Settings
 from app.services.kronos import KronosService
+from app.services.prediction import PredictionService
 from app.services.providers import AlpacaService, FinnhubService
 from app.sec.service import SecService
 
@@ -20,6 +21,7 @@ class Services:
     finnhub: Any
     kronos: Any
     sec: Any
+    prediction: Any = None
 
 
 class RateLimiter:
@@ -55,6 +57,7 @@ def build_services(settings: Settings) -> Services:
         finnhub=FinnhubService(settings),
         kronos=KronosService(settings, alpaca),
         sec=SecService(settings),
+        prediction=PredictionService(settings, alpaca),
     )
 
 

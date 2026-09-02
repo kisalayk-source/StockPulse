@@ -1,6 +1,6 @@
 # StockPulse Frontend
 
-Responsive React/TypeScript dashboard for personal Alpaca trading, Kronos forecast research, and SEC accumulation intelligence.
+Responsive React/TypeScript dashboard for personal Alpaca trading, Kronos path-forecast research, hybrid BUY/HOLD/SELL signals, and SEC accumulation intelligence.
 
 ## Setup
 
@@ -29,7 +29,7 @@ The UI is a single-page workstation with top-level tabs:
 
 | Tab | Contents |
 |-----|----------|
-| **Market** | Quote, chart, forecasts, news, **SEC & Ownership Intelligence** panel for the active symbol |
+| **Market** | Quote, chart, path forecasts, hybrid signal panel, news, **SEC & Ownership Intelligence** panel for the active symbol |
 | **Sectors** | Average accumulation score and % increasing/decreasing by sector |
 | **Top Accumulation** | Ranked stocks with institutional, insider, and fundamentals component scores (from market scan) |
 | **SEC Records** | Ticker search; filings from the last 6 months with filing entity, action (bought/sold/new investment), expandable parsed XML details (**+**), AI analysis card, stat chips, and EDGAR links (syncs on tab open and search) |

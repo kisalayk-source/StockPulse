@@ -76,6 +76,24 @@ export interface ForecastPathSegment {
   endTimestamp?: string
 }
 
+export type PredictionHorizon = '1d' | '5d' | '20d'
+export type TradingSignalLabel = 'BUY' | 'STRONG BUY' | 'HOLD' | 'SELL' | 'STRONG SELL' | string
+
+export interface HybridPrediction {
+  ticker: string
+  timestamp?: string
+  horizon: PredictionHorizon | string
+  signal: TradingSignalLabel
+  probability: number | null
+  expectedReturn?: number | null
+  riskScore: number | null
+  confidence: number | null
+  modelPredictions?: Record<string, number>
+  modelAgreement?: number | null
+  explanationText?: string
+  marketRegime?: string
+}
+
 export type ChartInterval = '1Min' | '5Min' | '15Min' | '1Hour' | '1Day'
 
 export interface ForecastResponse {
@@ -967,6 +985,36 @@ export const api = {
         ic: number(object(payload.evaluation).ic),
         evalHorizon: number(object(payload.evaluation).eval_horizon),
       },
+    }
+  },
+  prediction: async (
+    symbol: string,
+    horizon: PredictionHorizon = '5d',
+  ): Promise<HybridPrediction> => {
+    const payload = object(await requestWithRetry<unknown>(
+      `/stocks/${encodeURIComponent(symbol)}/prediction?${query({ horizon })}`,
+    ))
+    const explanation = object(payload.explanation)
+    const regime = object(payload.market_regime)
+    const modelPredictionsRaw = object(payload.model_predictions)
+    const modelPredictions: Record<string, number> = {}
+    for (const [key, value] of Object.entries(modelPredictionsRaw)) {
+      const parsed = number(value)
+      if (parsed != null) modelPredictions[key] = parsed
+    }
+    return {
+      ticker: text(payload.ticker, symbol).toUpperCase(),
+      timestamp: text(payload.timestamp) || undefined,
+      horizon: text(payload.horizon, horizon),
+      signal: text(payload.signal, 'HOLD'),
+      probability: number(payload.probability),
+      expectedReturn: number(payload.expected_return),
+      riskScore: number(payload.risk_score),
+      confidence: number(payload.confidence),
+      modelPredictions: Object.keys(modelPredictions).length ? modelPredictions : undefined,
+      modelAgreement: number(payload.model_agreement),
+      explanationText: text(explanation.text) || undefined,
+      marketRegime: text(regime.regime) || undefined,
     }
   },
   movers: async (refresh = false): Promise<MoversResponse> => {

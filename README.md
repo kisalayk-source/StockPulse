@@ -1,13 +1,15 @@
 # StockPulse
 
-Paper-first trading workstation for US equities and single-leg options. Forecasts, charts, news, SEC ownership intelligence, portfolio, and manual order tickets in one dashboard — wired to Alpaca and powered by Kronos path forecasts.
+Paper-first trading workstation for US equities and single-leg options. Forecasts, charts, news, SEC ownership intelligence, portfolio, and manual order tickets in one dashboard — wired to Alpaca and powered by Kronos path forecasts plus a hybrid directional prediction engine.
 
-**Not investment advice.** Forecasts and accumulation scores are research overlays only. Orders are always manual and never placed by the model.
+**Not investment advice.** Path forecasts, hybrid signals, and accumulation scores are research overlays only. Orders are always manual and never placed by the model.
 
 ## Features
 
 - **Market workspace** — symbol search, session clock, quote, fundamentals, OHLC chart
-- **Forecasts** — Kronos (single model) or ensemble overlay; short / long horizons; path turns and decision context
+- **Path forecasts** — Kronos (single model) or ensemble overlay; short / long horizons; path turns and decision context
+- **Hybrid prediction** — technical features → XGBoost probability → configurable BUY/HOLD/SELL (MVP-1); see [docs/stock-prediction-architecture.md](./docs/stock-prediction-architecture.md)
+- **How forecasts work (non-tech)** — step-by-step plain-language guide: [docs/how-forecast-works.md](./docs/how-forecast-works.md)
 - **Sentiment & news** — public news sentiment plus investor/regime cues; merged news feed
 - **SEC & ownership** — EDGAR 13F / 13D / 13G / Form 4 XML ingestion, explainable **Accumulation Score (0–100)**, background market scan (blue-chip + movers), **Sectors**, **Top Accumulation**, **SEC Records** (6-month filing search with parsed entity/action columns, expandable XML details, and AI analysis), and **AI Research** queries
 - **Movers scan** — background scan of blue-chip names for predicted gainers and losers (display-only)
@@ -23,6 +25,7 @@ Paper-first trading workstation for US equities and single-leg options. Forecast
 | Backend | FastAPI, uvicorn (`backend/`) |
 | Broker / data | Alpaca (bars + trading), Finnhub (fundamentals, news, public sentiment), SEC EDGAR (filings, accumulation) |
 | Forecasts | Kronos (`NeoQuasar/Kronos-small`) and optional ensemble under `forecasting/` |
+| Hybrid prediction | `ml/` feature engine + XGBoost (MVP-1); API under `/stocks/{ticker}/prediction` |
 
 ## Quick start
 
@@ -100,7 +103,7 @@ Same ports: UI `5173`, API `8000`.
 
 ## Safety
 
-- Forecasts never submit orders; the ticket is the only path to the broker
+- Forecasts and hybrid signals never submit orders; the ticket is the only path to the broker
 - Every order goes through a review dialog
 - Live mode needs live Alpaca credentials, `ALLOW_LIVE_TRADING=true`, and typing **`LIVE`** when switching modes and confirming orders
 - Short selling and uncovered option writes stay off unless enabled server-side
@@ -109,13 +112,14 @@ Same ports: UI `5173`, API `8000`.
 ## Repository layout
 
 ```text
-backend/           FastAPI service (Alpaca, Finnhub, SEC, Kronos, risk)
+backend/           FastAPI service (Alpaca, Finnhub, SEC, Kronos, risk, prediction API)
 frontend/          React dashboard
+ml/                Hybrid directional prediction (features, models, decision, registry)
 backend/app/sec/   SEC EDGAR client, parsers, accumulation scoring
 backend/configs/   sec_accumulation.yaml (score weights)
-forecasting/       Optional multi-model forecast adapters
+forecasting/       Optional multi-model path-forecast adapters
 scripts/           Start / LAN publish helpers
-docs/              Product & development guides
+docs/              Product & development guides (incl. stock-prediction-architecture.md)
 model/             Kronos model / tokenizer implementation
 kronos_backtest/   Historical backtester (not used by the live dashboard)
 ```

@@ -23,6 +23,8 @@ class Settings(BaseSettings):
     forecast_rate_limit_per_minute: int = Field(default=30, ge=0, le=10_000)
     forecast_scan_rate_limit_per_minute: int = Field(default=10, ge=0, le=10_000)
     order_rate_limit_per_minute: int = Field(default=30, ge=0, le=10_000)
+    prediction_enabled: bool = True
+    prediction_rate_limit_per_minute: int = Field(default=30, ge=0, le=10_000)
 
     database_url: str = "sqlite:///./data/kronos.db"
     jwt_secret: str = Field(default="dev-only-change-me-jwt-secret-32b", repr=False)

@@ -54,6 +54,11 @@ chart trajectories.
 The optional research API on `:8001` remains for offline/eval tooling only.
 Enable/disable models in `forecasting/config/models.yaml`.
 
+**Path forecast vs hybrid prediction:** `POST /forecast` returns an OHLCV path for
+the chart. Hybrid directional signals live under `ml/` and
+`GET /api/v1/stocks/{ticker}/prediction` (technical features → XGBoost in MVP-1).
+See [stock-prediction-architecture.md](./stock-prediction-architecture.md).
+
 ```bash
 # from repo root, with the core-model venv
 pip install -r forecasting/requirements.txt
@@ -89,6 +94,20 @@ uvicorn app.main:app --reload
 
 Copy `backend/.env.example` to `backend/.env` only for local use. Tests use
 fakes; do not put real credentials in fixtures or commits.
+
+### Hybrid directional prediction (MVP-1)
+
+- Code: `ml/` (features, XGBoost adapter, decision engine, registry)
+- Config: `ml/config/prediction.yaml`
+- API: `GET /api/v1/stocks/{ticker}/prediction` (also `/features`, `/signals`, `/risk`, `/explanation`)
+- Docs: [stock-prediction-architecture.md](./stock-prediction-architecture.md), [api.md](./api.md)
+
+```bash
+# from repo root
+pytest -q ml/tests
+cd backend
+pytest -q tests/test_prediction_api.py
+```
 
 ### SEC accumulation
 

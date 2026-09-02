@@ -9,7 +9,7 @@ import {
   api,
   getAccessToken,
   onAuthChange,
-  type Account, type AppConfig, type AuthUser, type ChartInterval, type ChartResponse, type ForecastResponse, type MarketClock, type NewsItem,
+  type Account, type AppConfig, type AuthUser, type ChartInterval, type ChartResponse, type ForecastResponse, type HybridPrediction, type MarketClock, type NewsItem,
   type ResearchQueryResponse, type SecFilingsAnalysisResponse, type SecFilingsResponse, type SecIntelligenceResponse, type SectorAccumulationResponse, type TopAccumulationResponse,
   type AccumulationScanStatus,
   type OptionChain, type OptionContract, type OptionPositionIntent, type Order, type OrderSide, type OrderType,
@@ -148,30 +148,34 @@ function describePathSegments(segments: NonNullable<ForecastResponse['pathSegmen
 
 function DecisionPanel({
   forecast,
+  prediction,
   news,
   publicSentiment,
   interval,
 }: {
   forecast: ForecastResponse | null
+  prediction: HybridPrediction | null
   news: NewsItem[]
   publicSentiment: PublicSentiment | null
   interval: ChartInterval
 }) {
-  if (!forecast) {
+  if (!forecast && !prediction) {
     return (
       <div className="decision-panel">
-        <EmptyState>Load a forecast to see path turns and decision context.</EmptyState>
+        <EmptyState>Load a forecast to see path turns and hybrid signal context.</EmptyState>
       </div>
     )
   }
-  const target = forecast.points.at(-1)
+  const target = forecast?.points.at(-1)
   const bullishNews = news.filter((item) => item.sentiment === 'positive').slice(0, 3)
   const bearishNews = news.filter((item) => item.sentiment === 'negative').slice(0, 3)
-  const regime = forecast.regime || ''
-  const regimeUp = regime.includes('_up')
-  const regimeDown = regime.includes('_down') || regime.includes('high_vol')
+  const regime = forecast?.regime || prediction?.marketRegime || ''
+  const regimeUp = regime.includes('_up') || regime === 'BULL'
+  const regimeDown = regime.includes('_down') || regime.includes('high_vol') || regime === 'BEAR' || regime === 'HIGH_VOLATILITY'
   const publicUp = publicSentiment?.label === 'bullish'
   const publicDown = publicSentiment?.label === 'bearish'
+  const signal = prediction?.signal || '—'
+  const signalTone = signal.includes('BUY') ? 'positive' : signal.includes('SELL') ? 'negative' : undefined
   const upDrivers = [
     ...(publicUp ? [`Public news sentiment is ${publicSentiment?.label}`] : []),
     ...(regimeUp ? [`Price regime looks supportive (${regime.replaceAll('_', ' ')})`] : []),
@@ -180,10 +184,10 @@ function DecisionPanel({
   const downDrivers = [
     ...(publicDown ? [`Public news sentiment is ${publicSentiment?.label}`] : []),
     ...(regimeDown ? [`Regime caution (${regime.replaceAll('_', ' ')})`] : []),
-    ...(forecast.edgeReliable === false ? ['Out-of-sample edge is not reliable in the current regime'] : []),
+    ...(forecast?.edgeReliable === false ? ['Out-of-sample edge is not reliable in the current regime'] : []),
     ...bearishNews.map((item) => item.headline),
   ]
-  const resolvedInterval = forecast.timeframe || interval
+  const resolvedInterval = forecast?.timeframe || interval
 
   return (
     <div className="decision-panel">
@@ -194,40 +198,64 @@ function DecisionPanel({
         </div>
         <div>
           <span>Projected move</span>
-          <strong className={(forecast.netForecastChange ?? forecast.forecastChange ?? 0) >= 0 ? 'positive' : 'negative'}>
-            {formatPercent(forecast.netForecastChange ?? forecast.forecastChange, false)}
+          <strong className={(forecast?.netForecastChange ?? forecast?.forecastChange ?? 0) >= 0 ? 'positive' : 'negative'}>
+            {formatPercent(forecast?.netForecastChange ?? forecast?.forecastChange, false)}
           </strong>
         </div>
         <div>
-          <span>Horizon</span>
-          <strong>{barUnitLabel(resolvedInterval, forecast.bars)}</strong>
+          <span>Path horizon</span>
+          <strong>{forecast ? barUnitLabel(resolvedInterval, forecast.bars) : '—'}</strong>
         </div>
         <div>
-          <span>Direction</span>
-          <strong className={forecast.sentiment === 'bullish' ? 'positive' : forecast.sentiment === 'bearish' ? 'negative' : undefined}>
-            {forecast.sentiment ?? '—'}
+          <span>Path direction</span>
+          <strong className={forecast?.sentiment === 'bullish' ? 'positive' : forecast?.sentiment === 'bearish' ? 'negative' : undefined}>
+            {forecast?.sentiment ?? '—'}
           </strong>
+        </div>
+        <div>
+          <span>Hybrid signal</span>
+          <strong className={signalTone}>{signal}</strong>
+        </div>
+        <div>
+          <span>P(up)</span>
+          <strong>{prediction?.probability == null ? '—' : formatPercent(prediction.probability, false)}</strong>
+        </div>
+        <div>
+          <span>Risk score</span>
+          <strong>{prediction?.riskScore == null ? '—' : prediction.riskScore.toFixed(2)}</strong>
+        </div>
+        <div>
+          <span>Signal horizon</span>
+          <strong>{prediction?.horizon ?? '—'}</strong>
         </div>
       </div>
-      <p className="decision-path">
-        <strong>Path:</strong> Forecast {describePathSegments(forecast.pathSegments || [])}.
-      </p>
+      {forecast ? (
+        <p className="decision-path">
+          <strong>Path:</strong> Forecast {describePathSegments(forecast.pathSegments || [])}.
+        </p>
+      ) : null}
+      {prediction?.explanationText ? (
+        <p className="decision-path">
+          <strong>Hybrid:</strong> {prediction.explanationText.split('\n')[0]}
+        </p>
+      ) : null}
       <div className="decision-columns">
         <div>
           <h3>Why it may go up</h3>
           {upDrivers.length
             ? <ul>{upDrivers.map((item) => <li key={item}>{item}</li>)}</ul>
-            : <p>No strong bullish news or regime cue right now — lean on the path alone.</p>}
+            : <p>No strong bullish news or regime cue right now — lean on the path and hybrid probability.</p>}
         </div>
         <div>
           <h3>Why it may go down</h3>
           {downDrivers.length
             ? <ul>{downDrivers.map((item) => <li key={item}>{item}</li>)}</ul>
-            : <p>No strong bearish news or regime cue right now — lean on the path alone.</p>}
+            : <p>No strong bearish news or regime cue right now — lean on the path and hybrid probability.</p>}
         </div>
       </div>
       <p className="decision-note">
-        Path turns come from the Kronos close path. News and regime are context for judgment, not a causal model explanation.
+        Path turns come from the Kronos/ensemble close path. The hybrid signal is a separate quantitative probability
+        (technical features → XGBoost in MVP-1). Neither places orders.
       </p>
     </div>
   )
@@ -259,6 +287,7 @@ function App() {
   const [news, setNews] = useState<NewsItem[]>([])
   const [chart, setChart] = useState<ChartResponse | null>(null)
   const [forecast, setForecast] = useState<ForecastResponse | null>(null)
+  const [prediction, setPrediction] = useState<HybridPrediction | null>(null)
   const [horizon, setHorizon] = useState<ForecastPreset>('short')
   const [chartInterval, setChartInterval] = useState<ChartInterval>(DEFAULT_INTERVAL.short)
   const [forecastEngine, setForecastEngine] = useState<ForecastEngine>('kronos')
@@ -444,6 +473,7 @@ function App() {
     setQuote(null)
     setChart(null)
     setForecast(null)
+    setPrediction(null)
     setNews([])
     setPublicSentiment(null)
     try {
@@ -456,18 +486,22 @@ function App() {
         return overview
       })
       const forecastBars = DEFAULT_BARS[horizon]
-      const [overviewResult, chartResult, forecastResult] = await Promise.allSettled([
+      const predictionHorizon = chartInterval === '1Day' && horizon === 'long' ? '20d' : '5d'
+      const [overviewResult, chartResult, forecastResult, predictionResult] = await Promise.allSettled([
         overviewPromise,
         api.chart(symbol, chartInterval),
         api.forecast(symbol, horizon, forecastBars, forecastEngine, chartInterval),
+        api.prediction(symbol, predictionHorizon),
       ])
       if (requestId !== marketRequest.current) return
       if (overviewResult.status === 'rejected') throw overviewResult.reason
       setChart(chartResult.status === 'fulfilled' ? chartResult.value : null)
       setForecast(forecastResult.status === 'fulfilled' ? forecastResult.value : null)
+      setPrediction(predictionResult.status === 'fulfilled' ? predictionResult.value : null)
       const unavailable = [
         unavailableLabel(chartResult, 'chart'),
         unavailableLabel(forecastResult, 'forecast'),
+        unavailableLabel(predictionResult, 'hybrid prediction'),
       ].filter(Boolean)
       if (unavailable.length) {
         setMarketWarning(`${unavailable.join('. ')}.`)
@@ -478,6 +512,7 @@ function App() {
       setQuote(null)
       setChart(null)
       setForecast(null)
+      setPrediction(null)
       setMarketError(error instanceof Error ? error.message : 'Unable to load market data')
       setMarketState('error')
     }
@@ -999,8 +1034,8 @@ function App() {
                   {' → '}{formatDateTime(forecast?.predictionEnd)} · data through {formatDateTime(forecast?.generatedAt)}
                 </span>
               </div>
-              <DecisionPanel forecast={forecast} news={news} publicSentiment={publicSentiment} interval={chartInterval} />
-              <p className="disclaimer">Forecasts are probabilistic research outputs, not investment advice or trade signals. They never trigger orders.</p>
+              <DecisionPanel forecast={forecast} prediction={prediction} news={news} publicSentiment={publicSentiment} interval={chartInterval} />
+              <p className="disclaimer">Path forecasts and hybrid signals are probabilistic research outputs, not investment advice. They never trigger orders.</p>
             </section>
 
             <section className="card">

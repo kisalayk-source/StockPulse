@@ -10,6 +10,7 @@ from fastapi import Depends, FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.auth import router as auth_router
+from app.api.prediction import router as prediction_router
 from app.api.routes import router
 from app.api.sec import router as sec_router
 from app.auth import require_user
@@ -109,6 +110,11 @@ def create_app(settings: Settings | None = None, services: Services | None = Non
     )
     app.include_router(
         sec_router,
+        prefix=settings.api_prefix,
+        dependencies=[Depends(require_api_key), Depends(require_user)],
+    )
+    app.include_router(
+        prediction_router,
         prefix=settings.api_prefix,
         dependencies=[Depends(require_api_key), Depends(require_user)],
     )
