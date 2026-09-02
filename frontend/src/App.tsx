@@ -162,7 +162,7 @@ function DecisionPanel({
   if (!forecast && !prediction) {
     return (
       <div className="decision-panel">
-        <EmptyState>Load a forecast to see path turns and hybrid signal context.</EmptyState>
+        <EmptyState>Load a forecast to see chart-path turns and model-stance context.</EmptyState>
       </div>
     )
   }
@@ -191,52 +191,56 @@ function DecisionPanel({
 
   return (
     <div className="decision-panel">
+      <p className="decision-lens-note">
+        Two separate research views: <strong>chart path</strong> (where the forecast line goes) and{' '}
+        <strong>model stance</strong> (probability call for a holding window). Disagreement is normal.
+      </p>
       <div className="decision-summary">
         <div>
-          <span>Selected target</span>
+          <span>Chart path target</span>
           <strong>{formatCurrency(target?.value)}</strong>
         </div>
         <div>
-          <span>Projected move</span>
+          <span>Chart path move</span>
           <strong className={(forecast?.netForecastChange ?? forecast?.forecastChange ?? 0) >= 0 ? 'positive' : 'negative'}>
             {formatPercent(forecast?.netForecastChange ?? forecast?.forecastChange, false)}
           </strong>
         </div>
         <div>
-          <span>Path horizon</span>
+          <span>Chart path window</span>
           <strong>{forecast ? barUnitLabel(resolvedInterval, forecast.bars) : '—'}</strong>
         </div>
         <div>
-          <span>Path direction</span>
+          <span>Chart path bias</span>
           <strong className={forecast?.sentiment === 'bullish' ? 'positive' : forecast?.sentiment === 'bearish' ? 'negative' : undefined}>
             {forecast?.sentiment ?? '—'}
           </strong>
         </div>
         <div>
-          <span>Hybrid signal</span>
+          <span>Model stance</span>
           <strong className={signalTone}>{signal}</strong>
         </div>
         <div>
-          <span>P(up)</span>
+          <span>Model P(up)</span>
           <strong>{prediction?.probability == null ? '—' : formatPercent(prediction.probability, false)}</strong>
         </div>
         <div>
-          <span>Risk score</span>
+          <span>Model risk</span>
           <strong>{prediction?.riskScore == null ? '—' : prediction.riskScore.toFixed(2)}</strong>
         </div>
         <div>
-          <span>Signal horizon</span>
+          <span>Model window</span>
           <strong>{prediction?.horizon ?? '—'}</strong>
         </div>
       </div>
       {forecast ? (
         <p className="decision-path">
-          <strong>Path:</strong> Forecast {describePathSegments(forecast.pathSegments || [])}.
+          <strong>Chart path:</strong> Forecast {describePathSegments(forecast.pathSegments || [])}.
         </p>
       ) : null}
       {prediction?.explanationText ? (
         <p className="decision-path">
-          <strong>Hybrid:</strong> {prediction.explanationText.split('\n')[0]}
+          <strong>Model stance:</strong> {prediction.explanationText.split('\n')[0]}
         </p>
       ) : null}
       <div className="decision-columns">
@@ -244,17 +248,17 @@ function DecisionPanel({
           <h3>Why it may go up</h3>
           {upDrivers.length
             ? <ul>{upDrivers.map((item) => <li key={item}>{item}</li>)}</ul>
-            : <p>No strong bullish news or regime cue right now — lean on the path and hybrid probability.</p>}
+            : <p>No strong bullish news or regime cue right now — lean on the chart path and model probability.</p>}
         </div>
         <div>
           <h3>Why it may go down</h3>
           {downDrivers.length
             ? <ul>{downDrivers.map((item) => <li key={item}>{item}</li>)}</ul>
-            : <p>No strong bearish news or regime cue right now — lean on the path and hybrid probability.</p>}
+            : <p>No strong bearish news or regime cue right now — lean on the chart path and model probability.</p>}
         </div>
       </div>
       <p className="decision-note">
-        Path turns come from the Kronos/ensemble close path. The hybrid signal is a separate quantitative probability
+        Chart path bias comes from the Kronos/ensemble close path. Model stance is a separate probability call
         (technical features → XGBoost in MVP-1). Neither places orders.
       </p>
     </div>
@@ -1035,7 +1039,7 @@ function App() {
                 </span>
               </div>
               <DecisionPanel forecast={forecast} prediction={prediction} news={news} publicSentiment={publicSentiment} interval={chartInterval} />
-              <p className="disclaimer">Path forecasts and hybrid signals are probabilistic research outputs, not investment advice. They never trigger orders.</p>
+              <p className="disclaimer">Chart-path forecasts and model-stance calls are probabilistic research outputs, not investment advice. They never trigger orders.</p>
             </section>
 
             <section className="card">

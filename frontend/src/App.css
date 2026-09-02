@@ -97,6 +97,8 @@ main { width: 100%; max-width: none; margin: 0; padding: 24px 28px 40px; }
 .forecast-controls { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 8px; }
 .interval-chips button { min-width: 34px; }
 .decision-panel { border-top: 1px solid var(--border); padding: 14px 20px 8px; background: #0a0f16; }
+.decision-lens-note { margin: 0 0 12px; color: #9aa8bc; font-size: 11px; line-height: 1.45; }
+.decision-lens-note strong { color: var(--text); font-weight: 700; }
 .decision-summary { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; margin-bottom: 12px; }
 .decision-summary div { border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; background: #0c121b; }
 .decision-summary span { display: block; color: var(--muted); font-size: 9px; letter-spacing: .06em; text-transform: uppercase; margin-bottom: 4px; }

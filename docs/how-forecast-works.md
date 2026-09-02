@@ -14,10 +14,10 @@ Think of two helpers sitting next to the chart:
 
 | Tool | Everyday meaning | Where you see it |
 |------|------------------|------------------|
-| **Path forecast** | “Where might the price line go next?” | The projected line on the chart, under **Price & prediction** |
-| **Hybrid signal** | “How likely does an upward move look over the next few trading days?” | The decision panel under the chart (BUY / HOLD / SELL, P(up), risk) |
+| **Chart path** | “Where might the price line go next?” | The projected line on the chart, under **Price & prediction** |
+| **Model stance** | “How likely does an upward move look over the next few trading days?” | The decision panel under the chart (BUY / HOLD / SELL, model P(up), model risk) |
 
-They answer different questions. A path can look gently up while the hybrid signal says HOLD (or the reverse). That is normal — treat them as complementary context, not a single “answer.”
+They answer different questions. A chart path can look **bullish** while the model stance says **SELL** (or the reverse). That is normal — complementary research views, not one conflicting “order.”
 
 ---
 
@@ -27,7 +27,7 @@ They answer different questions. A path can look gently up while the hybrid sign
 2. **StockPulse loads recent prices** as candles on the chart — that is history, not a prediction.
 3. **The path forecast** looks at that recent history and draws a projected path **ahead** of the last known price (what the line might do next).
 4. **The hybrid engine** looks at price patterns — things like trend, momentum, volatility, and volume — and estimates a probability that the stock moves up over a chosen time window. That probability is turned into a research signal such as BUY, HOLD, or SELL using fixed rules.
-5. **The decision panel** shows both: path summary (target, projected move, direction) and hybrid summary (signal, P(up), risk, horizon), plus news and market-mood cues that can help you judge context.
+5. **The decision panel** shows both: chart-path summary (target, move, bias) and model-stance summary (BUY/HOLD/SELL, P(up), risk, window), plus news and market-mood cues that can help you judge context.
 
 Nothing in steps 3–5 sends an order to your broker.
 
@@ -45,14 +45,14 @@ Nothing in steps 3–5 sends an order to your broker.
 
 | Label | What it means in plain English |
 |-------|--------------------------------|
-| **Selected target** | The end price the path forecast is pointing toward |
-| **Projected move** | How much that path implies the price might change (often shown after rough trading costs) |
-| **Path horizon** | How far ahead that path is looking |
-| **Path direction** | A simple read of the path: bullish, bearish, or in between |
-| **Hybrid signal** | Research label: BUY, STRONG BUY, HOLD, SELL, or STRONG SELL |
-| **P(up)** | Estimated chance of a positive move over the signal’s time window (for example ~5 trading days) |
-| **Risk score** | A caution meter for the signal (higher usually means more uncertainty or stress in the inputs) |
-| **Signal horizon** | The window the hybrid signal is aiming at (for example `5d` ≈ about a week of trading days, `20d` ≈ about a month) |
+| **Chart path target** | The end price the chart forecast line is pointing toward |
+| **Chart path move** | How much that path implies the price might change (often shown after rough trading costs) |
+| **Chart path window** | How far ahead that path is looking |
+| **Chart path bias** | Simple read of the forecast line: bullish, bearish, or in between |
+| **Model stance** | Separate probability call: BUY, STRONG BUY, HOLD, SELL, or STRONG SELL |
+| **Model P(up)** | Estimated chance of a positive move over the model’s time window (for example ~5 trading days) |
+| **Model risk** | Caution meter for the model call (higher usually means more uncertainty or stress in the inputs) |
+| **Model window** | The holding window the model stance is aiming at (for example `5d` ≈ about a week of trading days, `20d` ≈ about a month) |
 | **Why it may go up / down** | Headlines, public sentiment, and “market mood” cues — context for judgment, not a full causal model |
 
 ---
@@ -61,7 +61,7 @@ Nothing in steps 3–5 sends an order to your broker.
 
 - **Short path** — nearer-term path on the chart (often using shorter candles).
 - **Long path** — farther-ahead path (often daily candles).
-- **Hybrid signal horizon** — usually about **5 trading days**; longer chart setups can use about **20 trading days**. These are research windows, not promises of when something will happen.
+- **Model window** — usually about **5 trading days**; longer chart setups can use about **20 trading days**. These are research windows, not promises of when something will happen.
 
 If the chart interval or horizon feels wrong for how you think about a stock, change it and reload — the path and signal will refresh for that setting.
 
