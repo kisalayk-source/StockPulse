@@ -10,7 +10,7 @@ import {
   getAccessToken,
   onAuthChange,
   type Account, type AppConfig, type AuthUser, type ChartInterval, type ChartResponse, type ForecastResponse, type MarketClock, type NewsItem,
-  type ResearchQueryResponse, type SecFilingsResponse, type SecIntelligenceResponse, type SectorAccumulationResponse, type TopAccumulationResponse,
+  type ResearchQueryResponse, type SecFilingsAnalysisResponse, type SecFilingsResponse, type SecIntelligenceResponse, type SectorAccumulationResponse, type TopAccumulationResponse,
   type AccumulationScanStatus,
   type OptionChain, type OptionContract, type OptionPositionIntent, type Order, type OrderSide, type OrderType,
   type Position, type PublicSentiment, type Quote, type SearchResult, type SentimentLabel,
@@ -314,6 +314,9 @@ function App() {
   const [recordsData, setRecordsData] = useState<SecFilingsResponse | null>(null)
   const [recordsState, setRecordsState] = useState<LoadState>('idle')
   const [recordsError, setRecordsError] = useState('')
+  const [recordsAnalysis, setRecordsAnalysis] = useState<SecFilingsAnalysisResponse | null>(null)
+  const [recordsAnalysisState, setRecordsAnalysisState] = useState<LoadState>('idle')
+  const [recordsAnalysisError, setRecordsAnalysisError] = useState('')
 
   const loadSec = useCallback(async () => {
     setSecState('loading')
@@ -394,14 +397,28 @@ function App() {
   const loadRecords = useCallback(async (ticker: string) => {
     setRecordsState('loading')
     setRecordsError('')
+    setRecordsAnalysis(null)
+    setRecordsAnalysisState('loading')
+    setRecordsAnalysisError('')
     try {
       const payload = await api.secFilings(ticker, { months: 6, limit: 100 })
       setRecordsData(payload)
       setRecordsState('ready')
+      try {
+        const analysis = await api.secFilingsAnalysis(ticker, { months: 6 })
+        setRecordsAnalysis(analysis)
+        setRecordsAnalysisState('ready')
+      } catch (error) {
+        setRecordsAnalysis(null)
+        setRecordsAnalysisError(error instanceof Error ? error.message : 'SEC analysis unavailable')
+        setRecordsAnalysisState('error')
+      }
     } catch (error) {
       setRecordsData(null)
+      setRecordsAnalysis(null)
       setRecordsError(error instanceof Error ? error.message : 'SEC records unavailable')
       setRecordsState('error')
+      setRecordsAnalysisState('idle')
     }
   }, [])
 
@@ -1076,6 +1093,9 @@ function App() {
             data={recordsData}
             loading={recordsState === 'loading'}
             error={recordsState === 'error' ? recordsError : undefined}
+            analysis={recordsAnalysis}
+            analysisLoading={recordsAnalysisState === 'loading'}
+            analysisError={recordsAnalysisState === 'error' ? recordsAnalysisError : undefined}
             onSearch={(ticker) => { setSymbol(ticker); void loadRecords(ticker) }}
           />
         )}

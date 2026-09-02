@@ -99,7 +99,8 @@ All routes use the `/api/v1` prefix.
 - `GET /stocks/{symbol}/institutional` — 13F position changes
 - `GET /stocks/{symbol}/insiders` — classified Form 4 transactions
 - `GET /stocks/{symbol}/accumulation` — Accumulation Score, history, evidence
-- `GET /stocks/{symbol}/filings?months=6&limit=` — recent SEC filing history
+- `GET /stocks/{symbol}/filings?months=6&limit=` — recent SEC filing history with `filer_name`, `action`, `action_tone`, and `details[]` (parsed XML records) per row
+- `GET /stocks/{symbol}/filings/analysis?months=6` — AI or rule-based SEC filing summary (sentiment, gist, highlights)
 - `GET /sectors` — normalized sector list
 - `GET /sectors/{sector}/accumulation` — sector aggregates
 - `GET /accumulation/top?sector=&min_score=&limit=` — ranked accumulation stocks
@@ -206,7 +207,7 @@ pytest -q tests/test_sec_*.py tests/test_research_query.py
 9. Run a short Kronos forecast; allow time for the first model download/load.
 10. Open `GET /stocks/AAPL/sec` or the SEC Intelligence panel in the dashboard.
 11. Wait for `GET /accumulation/scan/status` to reach `ready`; confirm Sectors and Top Accumulation list multiple tickers.
-12. Open the **SEC Records** tab, search `AAPL`, and confirm filings from the last 6 months (or empty state with caveats).
+12. Open the **SEC Records** tab, search `AAPL`, and confirm filings show filing entity/action columns, expandable parsed details (**+**), and the AI analysis card (or rule-based fallback when LLM is disabled).
 13. Confirm a live request returns 403 while live trading is disabled.
 
 This application is for personal tooling, not investment advice. Broker acceptance

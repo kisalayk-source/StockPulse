@@ -1,8 +1,10 @@
-import { useEffect, useState } from 'react'
+import { Fragment, useEffect, useState } from 'react'
 import { ExternalLink } from 'lucide-react'
 import type {
   AccumulationScanStatus,
   ResearchQueryResponse,
+  SecFilingsAnalysisResponse,
+  SecFilingDetail,
   SecFilingsResponse,
   SecIntelligenceResponse,
   SectorAccumulationResponse,
@@ -321,25 +323,199 @@ export function ResearchPanel({
   )
 }
 
+function insiderTypeLabel(normalizedType: string): string {
+  return normalizedType.replaceAll('_', ' ').toLowerCase().replace(/\b\w/g, (c) => c.toUpperCase())
+}
+
+function insiderToneClass(normalizedType: string): string {
+  if (normalizedType === 'DISCRETIONARY_BUY') return 'positive'
+  if (normalizedType === 'DISCRETIONARY_SELL') return 'negative'
+  return 'neutral'
+}
+
+function actionToneClass(tone: string | undefined): string {
+  if (tone === 'positive') return 'positive'
+  if (tone === 'negative') return 'negative'
+  return 'neutral'
+}
+
+function detailFieldRows(detail: SecFilingDetail): Array<{ label: string; value: string }> {
+  const rows: Array<{ label: string; value: string }> = []
+  const add = (label: string, value: unknown) => {
+    if (value == null || value === '' || value === false) return
+    if (typeof value === 'number' && !Number.isFinite(value)) return
+    rows.push({ label, value: String(value) })
+  }
+  add('Role', detail.title)
+  add('Transaction date', detail.transaction_date)
+  add('Transaction code', detail.transaction_code)
+  if (detail.type === 'insider') {
+    add('Shares', detail.shares != null ? formatNumber(Math.round(detail.shares)) : null)
+    add('Price', detail.price != null ? `$${formatNumber(detail.price)}` : null)
+    add('Value', detail.value != null ? `$${formatNumber(Math.round(detail.value))}` : null)
+    add('Shares after', detail.shares_owned_after != null ? formatNumber(Math.round(detail.shares_owned_after)) : null)
+    add('Ownership', detail.ownership_type)
+    add('Derivative', detail.is_derivative ? 'Yes' : null)
+  }
+  if (detail.type === 'institutional') {
+    add('Classification', detail.classification?.replaceAll('_', ' '))
+    add('Previous shares', detail.previous_shares != null ? formatNumber(Math.round(detail.previous_shares)) : null)
+    add('Current shares', detail.current_shares != null ? formatNumber(Math.round(detail.current_shares)) : null)
+    add('Change', detail.change_shares != null ? formatNumber(Math.round(detail.change_shares)) : null)
+    add('Change %', detail.change_pct != null ? `${formatNumber(detail.change_pct)}%` : null)
+    add('Report period', detail.report_period)
+  }
+  if (detail.type === 'ownership') {
+    add('Issuer', detail.issuer_name)
+    add('Ownership %', detail.ownership_pct != null ? `${formatNumber(detail.ownership_pct)}%` : null)
+    add('Shares', detail.shares != null ? formatNumber(Math.round(detail.shares)) : null)
+    add('Stance', detail.passive === true ? 'Passive' : detail.passive === false ? 'Active' : null)
+    add('Purpose', detail.purpose)
+  }
+  if (detail.type === 'holding') {
+    add('Issuer', detail.issuer_name)
+    add('Shares held', detail.shares != null ? formatNumber(Math.round(detail.shares)) : null)
+    add('Market value', detail.market_value != null ? `$${formatNumber(Math.round(detail.market_value))}` : null)
+    add('CUSIP', detail.issuer_cusip)
+    add('Security type', detail.security_type)
+    add('Put/Call', detail.put_call)
+    add('Report period', detail.report_period)
+  }
+  return rows
+}
+
+function FilingDetailsPanel({ details }: { details: SecFilingDetail[] }) {
+  if (!details.length) return null
+  return (
+    <div className="sec-filing-details">
+      {details.map((detail, idx) => (
+        <div key={idx} className="sec-filing-detail-card">
+          <div className="sec-filing-detail-header">
+            <strong>{detail.entity}</strong>
+            <span className={`sec-band ${actionToneClass(detail.action_tone)}`}>{detail.action}</span>
+          </div>
+          <dl className="sec-filing-detail-grid">
+            {detailFieldRows(detail).map((field) => (
+              <div key={field.label} className="sec-filing-detail-item">
+                <dt>{field.label}</dt>
+                <dd>{field.value}</dd>
+              </div>
+            ))}
+          </dl>
+        </div>
+      ))}
+    </div>
+  )
+}
+
+function sentimentClass(sentiment: SecFilingsAnalysisResponse['sentiment']): string {
+  return sentiment
+}
+
+function formatInsiderShares(value: unknown): string {
+  const num = typeof value === 'number' ? value : Number(value)
+  if (!Number.isFinite(num) || num === 0) return '—'
+  return formatNumber(Math.round(num))
+}
+
+function formatInsiderValue(value: unknown): string {
+  const num = typeof value === 'number' ? value : Number(value)
+  if (!Number.isFinite(num) || num === 0) return '—'
+  return formatNumber(Math.round(num))
+}
+
+function SecRecordsAnalysisCard({
+  analysis,
+  loading,
+  error,
+}: {
+  analysis: SecFilingsAnalysisResponse | null
+  loading: boolean
+  error?: string
+}) {
+  if (loading) {
+    return (
+      <div className="sec-records-analysis">
+        <div className="empty-state">Analyzing filings…</div>
+      </div>
+    )
+  }
+  if (error) {
+    return (
+      <div className="sec-records-analysis muted-card">
+        <div className="empty-state">{error}</div>
+      </div>
+    )
+  }
+  if (!analysis) return null
+  return (
+    <div className="sec-records-analysis">
+      <div className="sec-records-analysis-header">
+        <div>
+          <span className="label">AI Analysis</span>
+          <h3>{analysis.headline}</h3>
+        </div>
+        <span className={`sec-sentiment ${sentimentClass(analysis.sentiment)}`}>{analysis.sentiment_label}</span>
+      </div>
+      <ul className="sec-records-gist">
+        {analysis.gist.map((line, idx) => (
+          <li key={idx}>{line}</li>
+        ))}
+      </ul>
+      {analysis.highlights.length > 0 && (
+        <div className="sec-records-highlights">
+          {analysis.highlights.map((item, idx) => (
+            <span key={idx} className={`sec-highlight ${item.tone}`}>{item.text}</span>
+          ))}
+        </div>
+      )}
+      <div className="sec-records-analysis-meta">
+        {analysis.source === 'rules' && <span className="muted">Rule-based analysis (enable AI in settings for LLM summaries)</span>}
+        <p className="disclaimer">{analysis.disclaimer}</p>
+      </div>
+    </div>
+  )
+}
+
 export function SecRecordsPanel({
   symbol,
   data,
   loading,
   error,
+  analysis,
+  analysisLoading,
+  analysisError,
   onSearch,
 }: {
   symbol: string
   data: SecFilingsResponse | null
   loading: boolean
   error?: string
+  analysis?: SecFilingsAnalysisResponse | null
+  analysisLoading?: boolean
+  analysisError?: string
   onSearch: (ticker: string) => void
 }) {
   const [query, setQuery] = useState(symbol)
+  const [expanded, setExpanded] = useState<string | null>(null)
   useEffect(() => { setQuery(symbol) }, [symbol])
+  useEffect(() => { setExpanded(null) }, [data?.ticker])
+
+  const statItems = [
+    { label: '13F', key: '13F', hint: 'Institutional' },
+    { label: '13D', key: '13D', hint: 'Active ownership' },
+    { label: '13G', key: '13G', hint: 'Passive ownership' },
+    { label: 'Form 4', key: '4', hint: 'Insider trades' },
+  ]
 
   return (
     <section className="card sec-card">
-      <div className="card-heading"><div><span className="eyebrow">SEC RECORDS</span><h2>Filing history (last 6 months)</h2></div></div>
+      <div className="card-heading">
+        <div>
+          <span className="eyebrow">SEC RECORDS</span>
+          <h2>Filing history (last 6 months)</h2>
+        </div>
+      </div>
       <form
         className="research-form sec-records-form"
         onSubmit={(event) => {
@@ -355,60 +531,163 @@ export function SecRecordsPanel({
       {loading && <div className="empty-state">Loading SEC records…</div>}
       {!loading && data && (
         <>
-          <div className="sec-records-summary">
-            <span>13F: {data.summary['13F'] ?? 0}</span>
-            <span>13D: {data.summary['13D'] ?? 0}</span>
-            <span>13G: {data.summary['13G'] ?? 0}</span>
-            <span>Form 4: {data.summary['4'] ?? 0}</span>
-            <span>Since {data.cutoff_date}</span>
+          {(analysisLoading || analysis || analysisError) && (
+            <SecRecordsAnalysisCard
+              analysis={analysis ?? null}
+              loading={Boolean(analysisLoading)}
+              error={analysisError}
+            />
+          )}
+          {data.provider_errors && data.provider_errors.length > 0 && (
+            <div className="sec-records-warnings">
+              {data.provider_errors.map((item, idx) => (
+                <div key={idx} className="empty-state">{item.provider}: {item.message}</div>
+              ))}
+            </div>
+          )}
+          <div className="sec-stat-grid">
+            {statItems.map((item) => (
+              <div key={item.key} className="sec-stat-chip">
+                <span className="sec-stat-value">{data.summary[item.key] ?? 0}</span>
+                <span className="sec-stat-label">{item.label}</span>
+                <span className="sec-stat-hint">{item.hint}</span>
+              </div>
+            ))}
+            <div className="sec-stat-chip muted">
+              <span className="sec-stat-label">Since</span>
+              <span className="sec-stat-value">{data.cutoff_date}</span>
+            </div>
           </div>
           {!data.filings.length ? (
             <div className="empty-state">No SEC filings in the last {data.months} months for {data.ticker}.</div>
           ) : (
-            <table className="sec-table">
+            <table className="sec-table sec-records-filings-table">
               <thead>
-                <tr><th>Filing date</th><th>Form</th><th>Description</th><th>EDGAR</th></tr>
+                <tr><th aria-hidden="true" /><th>Filing date</th><th>Form</th><th>Filing entity</th><th>Action</th><th>EDGAR</th></tr>
               </thead>
               <tbody>
-                {data.filings.map((row) => (
-                  <tr key={row.accession_number}>
-                    <td>{row.filing_date || '—'}</td>
-                    <td>{row.form_type}</td>
-                    <td>{row.description}</td>
-                    <td>
-                      {row.edgar_url ? (
-                        <a href={row.edgar_url} target="_blank" rel="noreferrer" className="sec-edgar-link">
-                          View <ExternalLink size={14} />
-                        </a>
-                      ) : '—'}
-                    </td>
-                  </tr>
-                ))}
+                {data.filings.map((row) => {
+                  const isOpen = expanded === row.accession_number
+                  const hasDetails = Boolean(row.details?.length)
+                  return (
+                    <Fragment key={row.accession_number}>
+                      <tr
+                        key={row.accession_number}
+                        className={hasDetails ? 'sec-filing-row expandable' : 'sec-filing-row'}
+                        onClick={() => {
+                          if (!hasDetails) return
+                          setExpanded(isOpen ? null : row.accession_number)
+                        }}
+                      >
+                        <td className="sec-filing-expand">
+                          {hasDetails ? (
+                            <button
+                              type="button"
+                              className="sec-filing-expand-btn"
+                              aria-expanded={isOpen}
+                              aria-label={isOpen ? 'Hide parsed filing details' : 'Show parsed filing details'}
+                              onClick={(event) => {
+                                event.stopPropagation()
+                                setExpanded(isOpen ? null : row.accession_number)
+                              }}
+                            >
+                              {isOpen ? '−' : '+'}
+                            </button>
+                          ) : null}
+                        </td>
+                        <td>{row.filing_date ? formatDateTime(row.filing_date) : '—'}</td>
+                        <td>
+                          <span className={`sec-type-badge ${row.form_family.toLowerCase().replace(/\s/g, '')}`}>
+                            {row.form_type}
+                          </span>
+                          {row.is_amendment && <span className="sec-amendment-badge">Amendment</span>}
+                          {row.report_period && <span className="sec-report-period">Period {row.report_period}</span>}
+                        </td>
+                        <td className="sec-filer-cell">{row.filer_name || '—'}</td>
+                        <td>
+                          {row.action ? (
+                            <span className={`sec-band ${actionToneClass(row.action_tone)}`}>{row.action}</span>
+                          ) : '—'}
+                        </td>
+                        <td>
+                          {row.edgar_url ? (
+                            <a href={row.edgar_url} target="_blank" rel="noreferrer" className="sec-edgar-link" onClick={(event) => event.stopPropagation()}>
+                              View <ExternalLink size={14} />
+                            </a>
+                          ) : '—'}
+                        </td>
+                      </tr>
+                      {isOpen && hasDetails && (
+                        <tr key={`${row.accession_number}-details`} className="sec-filing-details-row">
+                          <td colSpan={6}>
+                            <FilingDetailsPanel details={row.details || []} />
+                          </td>
+                        </tr>
+                      )}
+                    </Fragment>
+                  )
+                })}
               </tbody>
             </table>
           )}
           {data.insider_transactions.length > 0 && (
             <div className="sec-records-section">
               <h3>Insider transactions</h3>
-              <ul>
-                {data.insider_transactions.slice(0, 10).map((row, idx) => (
-                  <li key={idx}>
-                    {String(row.insider)} — {String(row.normalized_type)} ({String(row.transaction_date || row.filing_date || 'n/a')})
-                  </li>
-                ))}
-              </ul>
+              <table className="sec-table sec-records-mini-table">
+                <thead>
+                  <tr><th>Insider</th><th>Role</th><th>Action</th><th>Date</th><th>Shares</th><th>Value</th></tr>
+                </thead>
+                <tbody>
+                  {data.insider_transactions.slice(0, 10).map((row, idx) => {
+                    const actionTone = String(row.action_tone || insiderToneClass(String(row.normalized_type || '')))
+                    const actionLabel = String(row.action || insiderTypeLabel(String(row.normalized_type || '')))
+                    return (
+                      <tr key={idx}>
+                        <td>{String(row.insider)}</td>
+                        <td>{String(row.title || '—')}</td>
+                        <td>
+                          <span className={`sec-band ${actionToneClass(actionTone)}`}>
+                            {actionLabel}
+                          </span>
+                        </td>
+                        <td>{String(row.transaction_date || row.filing_date || '—')}</td>
+                        <td>{formatInsiderShares(row.shares)}</td>
+                        <td>{formatInsiderValue(row.value)}</td>
+                      </tr>
+                    )
+                  })}
+                </tbody>
+              </table>
             </div>
           )}
           {data.beneficial_ownership.length > 0 && (
             <div className="sec-records-section">
               <h3>Beneficial ownership</h3>
-              <ul>
-                {data.beneficial_ownership.slice(0, 10).map((row, idx) => (
-                  <li key={idx}>
-                    {String(row.reporter)} — {String(row.form_type)} ({String(row.filing_date || 'n/a')})
-                  </li>
-                ))}
-              </ul>
+              <table className="sec-table sec-records-mini-table">
+                <thead>
+                  <tr><th>Reporter</th><th>Form</th><th>Action</th><th>Ownership</th><th>Stance</th><th>Filed</th></tr>
+                </thead>
+                <tbody>
+                  {data.beneficial_ownership.slice(0, 10).map((row, idx) => (
+                    <tr key={idx}>
+                      <td>{String(row.reporter)}</td>
+                      <td><span className="sec-type-badge">{String(row.form_type)}</span></td>
+                      <td>
+                        <span className={`sec-band ${actionToneClass(String(row.action_tone || 'neutral'))}`}>
+                          {String(row.action || row.event_type || 'Ownership filing')}
+                        </span>
+                      </td>
+                      <td>{row.ownership_pct != null ? `${formatNumber(Number(row.ownership_pct))}%` : '—'}</td>
+                      <td>
+                        <span className={`sec-band ${row.passive ? 'neutral' : 'positive'}`}>
+                          {row.passive ? 'Passive' : 'Active'}
+                        </span>
+                      </td>
+                      <td>{String(row.filing_date || '—')}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
             </div>
           )}
         </>

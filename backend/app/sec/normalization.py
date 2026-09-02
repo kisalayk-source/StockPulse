@@ -87,5 +87,69 @@ def polarity_for_major_holder(event_type: str) -> float:
     return 0.0
 
 
+INSIDER_ACTION_LABELS = {
+    "DISCRETIONARY_BUY": "Bought",
+    "DISCRETIONARY_SELL": "Sold",
+    "COMPENSATION": "Award / compensation",
+    "OPTION_EXERCISE": "Option exercise",
+    "TAX_WITHHOLDING": "Tax withholding",
+    "OTHER": "Other transaction",
+}
+
+INSTITUTIONAL_ACTION_LABELS = {
+    "NEW_POSITION": "New investment",
+    "INCREASED": "Increased position",
+    "DECREASED": "Reduced position",
+    "EXITED": "Sold entire position",
+    "UNCHANGED": "Unchanged position",
+}
+
+OWNERSHIP_ACTION_LABELS = {
+    "NEW_MAJOR_HOLDER": "New major holder",
+    "OWNERSHIP_INCREASE": "Increased stake",
+    "OWNERSHIP_DECREASE": "Reduced stake",
+    "OWNERSHIP_EXIT": "Exited position",
+    "OWNERSHIP_UNCHANGED": "Ownership update",
+}
+
+
+def insider_action_label(normalized_type: str) -> str:
+    return INSIDER_ACTION_LABELS.get(normalized_type, normalized_type.replace("_", " ").title())
+
+
+def institutional_action_label(classification: str) -> str:
+    return INSTITUTIONAL_ACTION_LABELS.get(classification, classification.replace("_", " ").title())
+
+
+def ownership_action_label(event_type: str | None) -> str:
+    if not event_type:
+        return "Ownership filing"
+    return OWNERSHIP_ACTION_LABELS.get(event_type, event_type.replace("_", " ").title())
+
+
+def action_tone_for_insider(normalized_type: str) -> str:
+    if normalized_type == "DISCRETIONARY_BUY":
+        return "positive"
+    if normalized_type == "DISCRETIONARY_SELL":
+        return "negative"
+    return "neutral"
+
+
+def action_tone_for_institutional(classification: str) -> str:
+    if classification in {"NEW_POSITION", "INCREASED"}:
+        return "positive"
+    if classification in {"DECREASED", "EXITED"}:
+        return "negative"
+    return "neutral"
+
+
+def action_tone_for_ownership(event_type: str | None) -> str:
+    if event_type in {"NEW_MAJOR_HOLDER", "OWNERSHIP_INCREASE"}:
+        return "positive"
+    if event_type in {"OWNERSHIP_DECREASE", "OWNERSHIP_EXIT"}:
+        return "negative"
+    return "neutral"
+
+
 def utc_now() -> datetime:
     return datetime.now(timezone.utc)

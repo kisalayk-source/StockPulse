@@ -9,7 +9,7 @@ Paper-first trading workstation for US equities and single-leg options. Forecast
 - **Market workspace** — symbol search, session clock, quote, fundamentals, OHLC chart
 - **Forecasts** — Kronos (single model) or ensemble overlay; short / long horizons; path turns and decision context
 - **Sentiment & news** — public news sentiment plus investor/regime cues; merged news feed
-- **SEC & ownership** — EDGAR 13F / 13D / 13G / Form 4 ingestion, explainable **Accumulation Score (0–100)**, background market scan (blue-chip + movers), **Sectors**, **Top Accumulation**, **SEC Records** (6-month filing search), and **AI Research** queries
+- **SEC & ownership** — EDGAR 13F / 13D / 13G / Form 4 XML ingestion, explainable **Accumulation Score (0–100)**, background market scan (blue-chip + movers), **Sectors**, **Top Accumulation**, **SEC Records** (6-month filing search with parsed entity/action columns, expandable XML details, and AI analysis), and **AI Research** queries
 - **Movers scan** — background scan of blue-chip names for predicted gainers and losers (display-only)
 - **Portfolio** — open positions, open/realized P/L, hold ideas from the movers scan
 - **Manual trading** — equity and single-leg options tickets with risk preview and review-before-send

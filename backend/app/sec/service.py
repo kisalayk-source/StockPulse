@@ -30,10 +30,16 @@ from app.sec.forms.form_13g import parse_13g
 from app.sec.forms.form_4 import parse_form4
 from app.sec.models import NormalizedEvent
 from app.sec.normalization import (
+    action_tone_for_insider,
+    action_tone_for_institutional,
+    action_tone_for_ownership,
     classify_beneficial_ownership_event,
     classify_institutional_change,
     classify_insider_transaction,
+    insider_action_label,
+    institutional_action_label,
     institutional_change_pct,
+    ownership_action_label,
     polarity_for_institutional,
     polarity_for_insider,
     polarity_for_major_holder,
@@ -139,8 +145,44 @@ class SecService:
             accession = filing["accession_number"]
             existing = session.query(SecFiling).filter(SecFiling.accession_number == accession).one_or_none()
             if existing is not None:
+                await self.ensure_filing_parsed(session, cik, ticker.upper(), existing)
                 continue
             await self.ingest_filing(session, cik, ticker.upper(), filing)
+
+    def _has_parsed_children(self, session: Session, accession_number: str) -> bool:
+        if session.query(InsiderTransaction).filter(InsiderTransaction.accession_number == accession_number).first():
+            return True
+        if session.query(BeneficialOwnership).filter(BeneficialOwnership.accession_number == accession_number).first():
+            return True
+        if session.query(InstitutionalHolding).filter(InstitutionalHolding.accession_number == accession_number).first():
+            return True
+        if session.query(InstitutionalPositionChange).filter(
+            InstitutionalPositionChange.accession_number == accession_number
+        ).first():
+            return True
+        return False
+
+    def _filing_meta_from_row(self, filing: SecFiling) -> dict[str, Any]:
+        if filing.raw_metadata:
+            try:
+                payload = json.loads(filing.raw_metadata)
+                if isinstance(payload, dict):
+                    return payload
+            except json.JSONDecodeError:
+                pass
+        return {
+            "accession_number": filing.accession_number,
+            "form_type": filing.form_type,
+            "form_family": filing.form_family,
+            "filing_date": filing.filing_date,
+            "report_period": filing.report_period,
+            "is_amendment": filing.is_amendment,
+        }
+
+    async def ensure_filing_parsed(self, session: Session, cik: str, ticker: str, filing: SecFiling) -> None:
+        if self._has_parsed_children(session, filing.accession_number):
+            return
+        await self._parse_filing_xml(session, cik, ticker, filing, self._filing_meta_from_row(filing))
 
     async def ingest_filing(
         self,
@@ -167,18 +209,48 @@ class SecService:
         session.flush()
         if filing_meta.get("is_amendment"):
             self._supersede_prior(session, ticker, family, accession)
+        await self._parse_filing_xml(session, cik, ticker, row, filing_meta)
+
+    async def _parse_filing_xml(
+        self,
+        session: Session,
+        cik: str,
+        ticker: str,
+        filing: SecFiling,
+        filing_meta: dict[str, Any],
+    ) -> None:
+        family = filing.form_family
+        form_type = filing.form_type
+        accession = filing.accession_number
         try:
-            xml_text = await self.client.fetch_filing_document(cik, accession, form_type)
+            if family == "13F":
+                documents = await self.client.fetch_filing_documents(cik, accession, form_type)
+                await self._ingest_13f(session, filing, documents, cik)
+            elif family == "4":
+                ranked_docs = await self.client.fetch_ranked_filing_documents(cik, accession, form_type)
+                for _name, xml_text in ranked_docs:
+                    if parse_form4(xml_text):
+                        await self._ingest_form4(session, filing, xml_text, ticker)
+                        return
+            elif family == "13D":
+                ranked_docs = await self.client.fetch_ranked_filing_documents(cik, accession, form_type)
+                for _name, xml_text in ranked_docs:
+                    if parse_13d(xml_text, form_type=form_type, is_amendment=filing.is_amendment):
+                        await self._ingest_13d(session, filing, xml_text, ticker, form_type)
+                        return
+            elif family == "13G":
+                ranked_docs = await self.client.fetch_ranked_filing_documents(cik, accession, form_type)
+                for _name, xml_text in ranked_docs:
+                    if parse_13g(xml_text, form_type=form_type, is_amendment=filing.is_amendment):
+                        await self._ingest_13g(session, filing, xml_text, ticker, form_type)
+                        return
         except ProviderUnavailable:
-            return
-        if family == "13F":
-            await self._ingest_13f(session, row, xml_text, cik)
-        elif family == "13D":
-            await self._ingest_13d(session, row, xml_text, ticker, form_type)
-        elif family == "13G":
-            await self._ingest_13g(session, row, xml_text, ticker, form_type)
-        elif family == "4":
-            await self._ingest_form4(session, row, xml_text, ticker)
+            logger.debug("sec_filing_parse_unavailable", extra={"accession": accession, "family": family})
+        except Exception as exc:
+            logger.warning(
+                "sec_filing_parse_failed",
+                extra={"accession": accession, "family": family, "error_type": type(exc).__name__},
+            )
 
     def _supersede_prior(self, session: Session, ticker: str, family: str, accession: str) -> None:
         prior = (
@@ -196,9 +268,15 @@ class SecService:
             prior.superseded = True
             prior.replaces_accession = accession
 
-    async def _ingest_13f(self, session: Session, filing: SecFiling, xml_text: str, cik: str) -> None:
-        manager_name, report_period = parse_13f_primary(xml_text)
-        holdings = parse_13f_infotable(xml_text, manager_name or "Unknown", cik)
+    async def _ingest_13f(self, session: Session, filing: SecFiling, documents: dict[str, str] | str, cik: str) -> None:
+        if isinstance(documents, str):
+            primary_text = documents
+            infotable_text = documents
+        else:
+            primary_text = documents.get("primary") or documents.get("main") or ""
+            infotable_text = documents.get("infotable") or documents.get("main") or primary_text
+        manager_name, report_period = parse_13f_primary(primary_text)
+        holdings = parse_13f_infotable(infotable_text, manager_name or "Unknown", cik)
         if report_period and not filing.report_period:
             filing.report_period = report_period
         target = filing.ticker
@@ -689,6 +767,191 @@ class SecService:
             "stocks": sorted(stocks, key=lambda item: item["score"], reverse=True),
         }
 
+    @staticmethod
+    def _format_pct(value: float | None) -> float | None:
+        if value is None:
+            return None
+        return round(value * 100, 2) if value <= 1 else round(value, 2)
+
+    def _serialize_insider_detail(self, row: InsiderTransaction) -> dict[str, Any]:
+        action = insider_action_label(row.normalized_type)
+        if row.shares:
+            action = f"{action} {row.shares:,.0f} shares".replace(".0 shares", " shares")
+        return {
+            "type": "insider",
+            "entity": row.insider_name,
+            "title": row.insider_title,
+            "action": action,
+            "action_tone": action_tone_for_insider(row.normalized_type),
+            "transaction_code": row.transaction_code,
+            "normalized_type": row.normalized_type,
+            "transaction_date": row.transaction_date.isoformat() if row.transaction_date else None,
+            "shares": row.shares,
+            "price": row.price,
+            "value": row.value,
+            "shares_owned_after": row.shares_owned_after,
+            "ownership_type": row.ownership_type,
+            "is_derivative": row.is_derivative,
+        }
+
+    def _serialize_institutional_detail(self, row: InstitutionalPositionChange) -> dict[str, Any]:
+        action = institutional_action_label(row.classification)
+        if row.change_shares:
+            direction = "added" if row.change_shares > 0 else "removed"
+            action = f"{action} ({direction} {abs(row.change_shares):,.0f} shares)".replace(".0 shares", " shares")
+        return {
+            "type": "institutional",
+            "entity": row.manager_name,
+            "action": action,
+            "action_tone": action_tone_for_institutional(row.classification),
+            "classification": row.classification,
+            "previous_shares": row.previous_shares,
+            "current_shares": row.current_shares,
+            "change_shares": row.change_shares,
+            "change_pct": row.change_pct,
+            "report_period": row.report_period.isoformat() if row.report_period else None,
+        }
+
+    def _serialize_ownership_detail(self, row: BeneficialOwnership) -> dict[str, Any]:
+        action = ownership_action_label(row.event_type)
+        pct = self._format_pct(row.ownership_pct)
+        if pct is not None:
+            action = f"{action} ({pct:.2f}% ownership)"
+        return {
+            "type": "ownership",
+            "entity": row.reporter_name,
+            "issuer_name": row.issuer_name,
+            "action": action,
+            "action_tone": action_tone_for_ownership(row.event_type),
+            "event_type": row.event_type,
+            "shares": row.shares,
+            "ownership_pct": pct,
+            "purpose": row.purpose,
+            "passive": row.passive_flag,
+            "form_type": row.form_type,
+        }
+
+    def _serialize_holding_detail(self, row: InstitutionalHolding) -> dict[str, Any]:
+        action = "Quarterly holdings report"
+        if row.shares:
+            action = f"Holds {row.shares:,.0f} shares".replace(".0 shares", " shares")
+        if row.market_value:
+            action = f"{action} (${row.market_value:,.0f})".replace(".0)", ")")
+        return {
+            "type": "holding",
+            "entity": row.manager_name,
+            "issuer_name": row.issuer_name,
+            "action": action,
+            "action_tone": "neutral",
+            "shares": row.shares,
+            "market_value": row.market_value,
+            "issuer_cusip": row.issuer_cusip,
+            "security_type": row.security_type,
+            "put_call": row.put_call,
+            "report_period": row.report_period.isoformat() if row.report_period else None,
+        }
+
+    def _build_filing_enrichment(
+        self,
+        session: Session,
+        symbol: str,
+        accession_numbers: list[str],
+    ) -> dict[str, dict[str, Any]]:
+        if not accession_numbers:
+            return {}
+        insiders = (
+            session.query(InsiderTransaction)
+            .filter(
+                InsiderTransaction.issuer_ticker == symbol,
+                InsiderTransaction.accession_number.in_(accession_numbers),
+            )
+            .all()
+        )
+        ownership = (
+            session.query(BeneficialOwnership)
+            .filter(
+                BeneficialOwnership.issuer_ticker == symbol,
+                BeneficialOwnership.accession_number.in_(accession_numbers),
+            )
+            .all()
+        )
+        institutional = (
+            session.query(InstitutionalPositionChange)
+            .filter(
+                InstitutionalPositionChange.issuer_ticker == symbol,
+                InstitutionalPositionChange.accession_number.in_(accession_numbers),
+            )
+            .all()
+        )
+        holdings = (
+            session.query(InstitutionalHolding)
+            .filter(
+                InstitutionalHolding.issuer_ticker == symbol,
+                InstitutionalHolding.accession_number.in_(accession_numbers),
+            )
+            .all()
+        )
+
+        by_accession: dict[str, dict[str, Any]] = {}
+
+        for row in insiders:
+            bucket = by_accession.setdefault(row.accession_number, {"insiders": [], "ownership": [], "institutional": [], "holdings": []})
+            bucket["insiders"].append(row)
+        for row in ownership:
+            bucket = by_accession.setdefault(row.accession_number, {"insiders": [], "ownership": [], "institutional": [], "holdings": []})
+            bucket["ownership"].append(row)
+        for row in institutional:
+            bucket = by_accession.setdefault(row.accession_number, {"insiders": [], "ownership": [], "institutional": [], "holdings": []})
+            bucket["institutional"].append(row)
+        for row in holdings:
+            bucket = by_accession.setdefault(row.accession_number, {"insiders": [], "ownership": [], "institutional": [], "holdings": []})
+            bucket["holdings"].append(row)
+
+        enriched: dict[str, dict[str, Any]] = {}
+        for accession, bucket in by_accession.items():
+            enriched[accession] = self._summarize_filing_details(bucket)
+        return enriched
+
+    def _summarize_filing_details(self, bucket: dict[str, list[Any]]) -> dict[str, Any]:
+        insiders: list[InsiderTransaction] = bucket.get("insiders", [])
+        ownership: list[BeneficialOwnership] = bucket.get("ownership", [])
+        institutional: list[InstitutionalPositionChange] = bucket.get("institutional", [])
+        holdings: list[InstitutionalHolding] = bucket.get("holdings", [])
+
+        details: list[dict[str, Any]] = []
+        for row in insiders:
+            details.append(self._serialize_insider_detail(row))
+        for row in institutional:
+            details.append(self._serialize_institutional_detail(row))
+        for row in ownership:
+            details.append(self._serialize_ownership_detail(row))
+        for row in holdings:
+            details.append(self._serialize_holding_detail(row))
+
+        if not details:
+            return {"filer_name": None, "action": None, "action_tone": "neutral", "details": []}
+
+        primary = details[0]
+        entities = list(dict.fromkeys(item["entity"] for item in details if item.get("entity")))
+        filer_name = entities[0] if len(entities) == 1 else f"{entities[0]} (+{len(entities) - 1} more)"
+        actions = list(dict.fromkeys(item["action"] for item in details if item.get("action")))
+        action = "; ".join(actions[:3])
+        if len(actions) > 3:
+            action = f"{action}; +{len(actions) - 3} more"
+        tones = [item.get("action_tone", "neutral") for item in details]
+        if "positive" in tones:
+            tone = "positive"
+        elif "negative" in tones:
+            tone = "negative"
+        else:
+            tone = primary.get("action_tone", "neutral")
+        return {
+            "filer_name": filer_name,
+            "action": action,
+            "action_tone": tone,
+            "details": details,
+        }
+
     async def recent_filings_payload(
         self,
         session: Session,
@@ -717,8 +980,13 @@ class SecService:
         )
         mapping = session.query(SecCompanyMapping).filter(SecCompanyMapping.ticker == symbol).one_or_none()
         cik = mapping.cik if mapping else None
+        if cik:
+            for filing in filings:
+                await self.ensure_filing_parsed(session, cik, symbol, filing)
         records: list[dict[str, Any]] = []
         summary: dict[str, int] = {"13F": 0, "13D": 0, "13G": 0, "4": 0}
+        accession_numbers = [filing.accession_number for filing in filings]
+        enrichment = self._build_filing_enrichment(session, symbol, accession_numbers)
         for filing in filings:
             family = filing.form_family
             if family in summary:
@@ -727,6 +995,7 @@ class SecService:
             if filing.is_amendment:
                 description = f"{description} (amendment)"
             url = edgar_filing_url(cik, filing.accession_number) if cik else None
+            details = enrichment.get(filing.accession_number, {})
             records.append(
                 {
                     "accession_number": filing.accession_number,
@@ -737,6 +1006,10 @@ class SecService:
                     "description": description,
                     "is_amendment": filing.is_amendment,
                     "edgar_url": url,
+                    "filer_name": details.get("filer_name"),
+                    "action": details.get("action"),
+                    "action_tone": details.get("action_tone", "neutral"),
+                    "details": details.get("details", []),
                 }
             )
 
@@ -756,9 +1029,14 @@ class SecService:
                 "filing_date": row.filing_date.isoformat() if row.filing_date else None,
                 "code": row.transaction_code,
                 "normalized_type": row.normalized_type,
+                "action": insider_action_label(row.normalized_type),
+                "action_tone": action_tone_for_insider(row.normalized_type),
                 "shares": row.shares,
                 "price": row.price,
                 "value": row.value,
+                "shares_owned_after": row.shares_owned_after,
+                "ownership_type": row.ownership_type,
+                "is_derivative": row.is_derivative,
                 "accession_number": row.accession_number,
             }
             for row in insider_rows
@@ -776,8 +1054,12 @@ class SecService:
                 "reporter": row.reporter_name,
                 "form_type": row.form_type,
                 "filing_date": row.filing_date.isoformat() if row.filing_date else None,
-                "ownership_pct": row.ownership_pct,
+                "ownership_pct": self._format_pct(row.ownership_pct),
                 "event_type": row.event_type,
+                "action": ownership_action_label(row.event_type),
+                "action_tone": action_tone_for_ownership(row.event_type),
+                "shares": row.shares,
+                "purpose": row.purpose,
                 "passive": row.passive_flag,
                 "accession_number": row.accession_number,
             }
@@ -892,6 +1174,9 @@ class SecService:
                         shares=txn.shares,
                         price=txn.price,
                         value=txn.value,
+                        shares_owned_after=txn.shares_owned_after,
+                        ownership_type=txn.ownership_type,
+                        is_derivative=txn.is_derivative,
                     )
                 )
         session.flush()
