@@ -1,7 +1,7 @@
 from collections.abc import Generator
 from pathlib import Path
 
-from sqlalchemy import create_engine, event
+from sqlalchemy import create_engine, event, text
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
 from sqlalchemy.pool import StaticPool
@@ -51,13 +51,26 @@ def init_db(settings: Settings) -> Engine:
             cursor = dbapi_connection.cursor()
             cursor.execute("PRAGMA foreign_keys=ON")
             cursor.execute("PRAGMA journal_mode=WAL")
+            cursor.execute("PRAGMA busy_timeout=10000")
             cursor.close()
 
     _SessionLocal = sessionmaker(bind=_engine, autoflush=False, autocommit=False, expire_on_commit=False)
     from app import models  # noqa: F401
 
     Base.metadata.create_all(_engine)
+    _migrate_sqlite(_engine)
     return _engine
+
+
+def _migrate_sqlite(engine: Engine) -> None:
+    if not str(engine.url).startswith("sqlite"):
+        return
+    with engine.begin() as conn:
+        columns = {row[1] for row in conn.execute(text("PRAGMA table_info(users)"))}
+        if "research_llm_enabled" not in columns:
+            conn.execute(
+                text("ALTER TABLE users ADD COLUMN research_llm_enabled BOOLEAN NOT NULL DEFAULT 0")
+            )
 
 
 def get_session() -> Generator[Session, None, None]:

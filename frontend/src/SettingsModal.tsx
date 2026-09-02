@@ -16,11 +16,13 @@ export function SettingsModal({
   const [mode, setMode] = useState<TradingMode>('paper')
   const [keyId, setKeyId] = useState('')
   const [secret, setSecret] = useState('')
+  const [aiEnabled, setAiEnabled] = useState(Boolean(user.researchLlmEnabled))
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
   const [notice, setNotice] = useState('')
 
   const status = user.alpaca[mode]
+  const aiAvailable = Boolean(user.researchLlmAvailable)
 
   async function save(event: FormEvent) {
     event.preventDefault()
@@ -55,6 +57,23 @@ export function SettingsModal({
     }
   }
 
+  async function saveAiPreference(enabled: boolean) {
+    setBusy(true)
+    setError('')
+    setNotice('')
+    try {
+      const updated = await api.savePreferences({ researchLlmEnabled: enabled })
+      setAiEnabled(enabled)
+      onUpdated(updated)
+      setNotice(enabled ? 'AI analysis enabled' : 'AI analysis disabled')
+    } catch (err) {
+      setAiEnabled(Boolean(user.researchLlmEnabled))
+      setError(err instanceof ApiError ? err.message : 'Unable to update AI preference')
+    } finally {
+      setBusy(false)
+    }
+  }
+
   return (
     <div className="modal-backdrop" role="presentation" onClick={onClose}>
       <div
@@ -75,6 +94,30 @@ export function SettingsModal({
         </header>
 
         <section>
+          <h3>AI analysis</h3>
+          <p className="settings-copy">
+            When enabled, SEC Records and AI Research use an LLM to summarize structured filing data.
+            Rule-based analysis is used when this is off.
+          </p>
+          <label className="settings-toggle">
+            <input
+              type="checkbox"
+              checked={aiEnabled}
+              disabled={busy || !aiAvailable}
+              onChange={(event) => void saveAiPreference(event.target.checked)}
+            />
+            <span>Use AI summaries</span>
+          </label>
+          <p className={`settings-status ${aiEnabled ? 'ok' : ''}`}>
+            {aiAvailable
+              ? aiEnabled
+                ? 'AI summaries are on for your account'
+                : 'Using rule-based analysis'
+              : 'AI is not configured on this server (admin must set OPENAI_API_KEY and RESEARCH_LLM_ENABLED)'}
+          </p>
+        </section>
+
+        <section>
           <h3>Alpaca API keys</h3>
           <p className="settings-copy">
             Trading uses your own Alpaca key and secret. Market data still uses the shared server feed.
@@ -86,7 +129,7 @@ export function SettingsModal({
             <button
               type="button"
               aria-pressed={mode === 'live'}
-              className={mode === 'live' ? 'active live' : ''}
+              className={mode === 'live' ? 'active' : ''}
               disabled={!liveTradingEnabled}
               title={!liveTradingEnabled ? 'Live trading is disabled by the server' : undefined}
               onClick={() => setMode('live')}

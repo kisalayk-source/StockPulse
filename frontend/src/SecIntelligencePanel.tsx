@@ -470,7 +470,15 @@ function SecRecordsAnalysisCard({
         </div>
       )}
       <div className="sec-records-analysis-meta">
-        {analysis.source === 'rules' && <span className="muted">Rule-based analysis (enable AI in settings for LLM summaries)</span>}
+        {analysis.source === 'rules' && analysis.llm_available && !analysis.llm_enabled && (
+          <span className="muted">Rule-based analysis — enable <strong>Use AI summaries</strong> in Account settings for LLM summaries</span>
+        )}
+        {analysis.source === 'rules' && !analysis.llm_available && (
+          <span className="muted">Rule-based analysis — AI summaries require server OpenAI configuration</span>
+        )}
+        {analysis.source === 'rules' && analysis.llm_available && analysis.llm_enabled && (
+          <span className="muted">Rule-based analysis — LLM summary unavailable for this filing set</span>
+        )}
         <p className="disclaimer">{analysis.disclaimer}</p>
       </div>
     </div>

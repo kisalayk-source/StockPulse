@@ -76,6 +76,24 @@ export interface ForecastPathSegment {
   endTimestamp?: string
 }
 
+export type PredictionHorizon = '1d' | '5d' | '20d'
+export type TradingSignalLabel = 'BUY' | 'STRONG BUY' | 'HOLD' | 'SELL' | 'STRONG SELL' | string
+
+export interface HybridPrediction {
+  ticker: string
+  timestamp?: string
+  horizon: PredictionHorizon | string
+  signal: TradingSignalLabel
+  probability: number | null
+  expectedReturn?: number | null
+  riskScore: number | null
+  confidence: number | null
+  modelPredictions?: Record<string, number>
+  modelAgreement?: number | null
+  explanationText?: string
+  marketRegime?: string
+}
+
 export type ChartInterval = '1Min' | '5Min' | '15Min' | '1Hour' | '1Day'
 
 export interface ForecastResponse {
@@ -217,6 +235,8 @@ export interface AppConfig {
   dataFeed?: string
   liveTradingEnabled?: boolean
   userEmail?: string
+  researchLlmAvailable?: boolean
+  researchLlmEnabled?: boolean
 }
 
 export interface AuthUser {
@@ -226,6 +246,8 @@ export interface AuthUser {
     paper: { configured: boolean; keyPreview: string | null }
     live: { configured: boolean; keyPreview: string | null }
   }
+  researchLlmEnabled?: boolean
+  researchLlmAvailable?: boolean
 }
 
 export interface AuthResponse {
@@ -407,6 +429,8 @@ export interface SecFilingsAnalysisResponse {
   sentiment_label: string
   highlights: SecFilingsAnalysisHighlight[]
   source: 'llm' | 'rules'
+  llm_available?: boolean
+  llm_enabled?: boolean
   disclaimer: string
 }
 
@@ -703,6 +727,8 @@ function mapAuthUser(value: unknown): AuthUser {
         keyPreview: text(live.key_preview) || null,
       },
     },
+    researchLlmEnabled: Boolean(payload.research_llm_enabled),
+    researchLlmAvailable: Boolean(payload.research_llm_available),
   }
 }
 
@@ -770,6 +796,12 @@ export const api = {
   deleteAlpacaCredentials: async (mode: TradingMode): Promise<AuthUser> => mapAuthUser(
     await request<unknown>(`/auth/alpaca?${query({ mode })}`, { method: 'DELETE' }),
   ),
+  savePreferences: async (preferences: { researchLlmEnabled: boolean }): Promise<AuthUser> => mapAuthUser(
+    await request<unknown>('/auth/preferences', {
+      method: 'PUT',
+      body: JSON.stringify({ research_llm_enabled: preferences.researchLlmEnabled }),
+    }),
+  ),
   logout: () => { setAccessToken(null) },
   config: async (): Promise<AppConfig> => {
     const payload = object(await request<unknown>('/config/status'))
@@ -784,6 +816,8 @@ export const api = {
       liveTradingEnabled: Boolean(payload.live_trading_allowed),
       dataFeed: text(payload.data_feed),
       userEmail: text(user.email) || undefined,
+      researchLlmAvailable: Boolean(payload.research_llm_available),
+      researchLlmEnabled: Boolean(payload.research_llm_enabled),
     }
   },
   clock: async (): Promise<MarketClock> => {
@@ -951,6 +985,36 @@ export const api = {
         ic: number(object(payload.evaluation).ic),
         evalHorizon: number(object(payload.evaluation).eval_horizon),
       },
+    }
+  },
+  prediction: async (
+    symbol: string,
+    horizon: PredictionHorizon = '5d',
+  ): Promise<HybridPrediction> => {
+    const payload = object(await requestWithRetry<unknown>(
+      `/stocks/${encodeURIComponent(symbol)}/prediction?${query({ horizon })}`,
+    ))
+    const explanation = object(payload.explanation)
+    const regime = object(payload.market_regime)
+    const modelPredictionsRaw = object(payload.model_predictions)
+    const modelPredictions: Record<string, number> = {}
+    for (const [key, value] of Object.entries(modelPredictionsRaw)) {
+      const parsed = number(value)
+      if (parsed != null) modelPredictions[key] = parsed
+    }
+    return {
+      ticker: text(payload.ticker, symbol).toUpperCase(),
+      timestamp: text(payload.timestamp) || undefined,
+      horizon: text(payload.horizon, horizon),
+      signal: text(payload.signal, 'HOLD'),
+      probability: number(payload.probability),
+      expectedReturn: number(payload.expected_return),
+      riskScore: number(payload.risk_score),
+      confidence: number(payload.confidence),
+      modelPredictions: Object.keys(modelPredictions).length ? modelPredictions : undefined,
+      modelAgreement: number(payload.model_agreement),
+      explanationText: text(explanation.text) || undefined,
+      marketRegime: text(regime.regime) || undefined,
     }
   },
   movers: async (refresh = false): Promise<MoversResponse> => {
@@ -1303,6 +1367,8 @@ export const api = {
         }
       }),
       source: source === 'llm' ? 'llm' : 'rules',
+      llm_available: Boolean(payload.llm_available),
+      llm_enabled: Boolean(payload.llm_enabled),
       disclaimer: text(payload.disclaimer),
     }
   },

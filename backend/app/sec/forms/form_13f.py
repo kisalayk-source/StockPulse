@@ -70,9 +70,25 @@ def parse_13f_primary(xml_text: str) -> tuple[str | None, date | None]:
     return manager_name, report_period
 
 
+def issuer_matches_target(issuer_name: str, ticker: str, company_name: str | None = None) -> bool:
+    issuer_upper = issuer_name.upper().strip()
+    ticker_upper = ticker.upper().strip()
+    if re.search(rf"\b{re.escape(ticker_upper)}\b", issuer_upper):
+        return True
+    if company_name:
+        company_upper = company_name.upper().strip()
+        if company_upper and (company_upper in issuer_upper or issuer_upper in company_upper):
+            return True
+        company_words = [word for word in re.split(r"[^A-Z0-9]+", company_upper) if len(word) > 2]
+        issuer_words = set(re.split(r"[^A-Z0-9]+", issuer_upper))
+        if company_words and all(word in issuer_words for word in company_words[:2]):
+            return True
+    return False
+
+
 def match_ticker_from_issuer(issuer_name: str, ticker_hint: str | None = None) -> str | None:
-    if ticker_hint:
-        return ticker_hint.upper()
-    # Simple heuristic: uppercase tokens that look like tickers
     tokens = re.findall(r"\b[A-Z]{1,5}\b", issuer_name.upper())
-    return tokens[0] if tokens else None
+    guessed = tokens[0] if tokens else None
+    if ticker_hint:
+        return ticker_hint.upper() if issuer_matches_target(issuer_name, ticker_hint) else None
+    return guessed

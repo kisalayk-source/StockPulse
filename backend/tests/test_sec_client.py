@@ -66,6 +66,7 @@ def test_sec_disabled_raises(settings: Settings) -> None:
 
 def test_fetch_filing_documents_selects_primary_and_infotable(settings: Settings) -> None:
     async def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.host == "www.sec.gov"
         if request.url.path.endswith("/index.json"):
             return httpx.Response(
                 200,

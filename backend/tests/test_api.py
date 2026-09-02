@@ -360,6 +360,36 @@ def test_register_login_and_me() -> None:
         assert login.json()["access_token"]
 
 
+def test_research_llm_preferences() -> None:
+    with make_client(Settings(research_llm_enabled=True, openai_api_key="test-key")) as client:
+        email = f"ai-user-{uuid4().hex[:8]}@example.com"
+        created = client.post(
+            "/api/v1/auth/register",
+            json={"email": email, "password": "password123"},
+        )
+        token = created.json()["access_token"]
+        headers = {"Authorization": f"Bearer {token}"}
+        me = client.get("/api/v1/auth/me", headers=headers)
+        assert me.json()["research_llm_enabled"] is False
+        assert me.json()["research_llm_available"] is True
+        enabled = client.put("/api/v1/auth/preferences", headers=headers, json={"research_llm_enabled": True})
+        assert enabled.status_code == 200
+        assert enabled.json()["research_llm_enabled"] is True
+        config = client.get("/api/v1/config/status", headers=headers)
+        assert config.json()["research_llm_enabled"] is True
+        assert config.json()["research_llm_available"] is True
+
+    with make_client(Settings(research_llm_enabled=False)) as client:
+        email = f"ai-off-{uuid4().hex[:8]}@example.com"
+        created = client.post(
+            "/api/v1/auth/register",
+            json={"email": email, "password": "password123"},
+        )
+        headers = {"Authorization": f"Bearer {created.json()['access_token']}"}
+        denied = client.put("/api/v1/auth/preferences", headers=headers, json={"research_llm_enabled": True})
+        assert denied.status_code == 400
+
+
 def test_unauthenticated_trading_is_rejected() -> None:
     with make_client() as client:
         response = client.get("/api/v1/account", params={"mode": "paper"})

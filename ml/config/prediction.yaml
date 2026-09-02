@@ -1,0 +1,59 @@
+prediction:
+  horizons:
+    - 1d
+    - 5d
+    - 20d
+  return_threshold: 0.0
+  lookback_bars: 400
+  min_train_rows: 80
+  timeframe: 1Day
+  feature_version: "1.0.0"
+
+models:
+  kronos:
+    enabled: false
+    weight: 0.40
+  xgboost:
+    enabled: true
+    weight: 1.0
+    params:
+      n_estimators: 80
+      max_depth: 4
+      learning_rate: 0.08
+      subsample: 0.9
+      colsample_bytree: 0.9
+      reg_lambda: 1.0
+      min_child_weight: 2
+  lightgbm:
+    enabled: false
+    weight: 0.30
+    params: {}
+
+ensemble:
+  strategy: equal_weight
+
+calibration:
+  method: identity  # identity | platt | isotonic
+
+decision:
+  buy_probability: 0.65
+  strong_buy_probability: 0.80
+  sell_probability: 0.35
+  strong_sell_probability: 0.20
+  minimum_model_agreement: 0.60
+
+risk:
+  max_risk_score: 0.70
+  enabled: false
+
+llm:
+  enabled: false
+
+features:
+  technical: true
+  sec: false
+  fundamentals: false
+  market_regime: false
+
+registry:
+  store_dir: backend/data/model_registry

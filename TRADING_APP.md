@@ -2,8 +2,9 @@
 
 The trading app is split into:
 
-- `backend/`: FastAPI, Alpaca market/trading APIs, Finnhub fundamentals, SEC EDGAR accumulation, and Kronos forecasts
+- `backend/`: FastAPI, Alpaca market/trading APIs, Finnhub fundamentals, SEC EDGAR accumulation, Kronos path forecasts, and hybrid prediction API
 - `frontend/`: React/TypeScript dashboard
+- `ml/`: Hybrid directional prediction engine (features → models → decision)
 
 The legacy Flask demo in `webui/` remains unchanged.
 

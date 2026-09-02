@@ -26,6 +26,8 @@ def rank_filing_documents(names: list[str], form_type: str, form_family: str) ->
         lower = name.lower()
         if not lower.endswith((".xml", ".htm", ".html")):
             return -1
+        if lower.endswith((".htm", ".html")) and "index" in lower:
+            return -1
         points = 0
         if lower.endswith(".xml"):
             points += 5
@@ -107,9 +109,15 @@ class SecClient:
                 return text
             except httpx.HTTPError as exc:
                 last_error = exc
+                status = getattr(getattr(exc, "response", None), "status_code", None)
                 logger.warning(
                     "sec_request_failed",
-                    extra={"attempt": attempt + 1, "error_type": type(exc).__name__},
+                    extra={
+                        "attempt": attempt + 1,
+                        "error_type": type(exc).__name__,
+                        "status_code": status,
+                        "url": url,
+                    },
                 )
                 await asyncio.sleep(0.5 * (attempt + 1))
         raise ProviderUnavailable("sec", "SEC request failed") from last_error
@@ -133,9 +141,15 @@ class SecClient:
                 return payload
             except httpx.HTTPError as exc:
                 last_error = exc
+                status = getattr(getattr(exc, "response", None), "status_code", None)
                 logger.warning(
                     "sec_request_failed",
-                    extra={"attempt": attempt + 1, "error_type": type(exc).__name__},
+                    extra={
+                        "attempt": attempt + 1,
+                        "error_type": type(exc).__name__,
+                        "status_code": status,
+                        "url": url,
+                    },
                 )
                 await asyncio.sleep(0.5 * (attempt + 1))
         raise ProviderUnavailable("sec", "SEC request failed") from last_error
@@ -152,14 +166,15 @@ class SecClient:
     async def filing_index(self, cik: str, accession: str) -> str:
         accession_no_dash = accession.replace("-", "")
         cik_int = str(int(cik))
-        url = f"{SEC_DATA_BASE}/Archives/edgar/data/{cik_int}/{accession_no_dash}/index.json"
+        # Archive documents live on www.sec.gov; data.sec.gov returns 404 for /Archives/edgar/.
+        url = f"{SEC_WWW_BASE}/Archives/edgar/data/{cik_int}/{accession_no_dash}/index.json"
         payload = await self._get_json(url, f"index:{accession_no_dash}")
         return payload
 
     async def fetch_document(self, cik: str, accession: str, filename: str) -> str:
         accession_no_dash = accession.replace("-", "")
         cik_int = str(int(cik))
-        url = f"{SEC_DATA_BASE}/Archives/edgar/data/{cik_int}/{accession_no_dash}/{filename}"
+        url = f"{SEC_WWW_BASE}/Archives/edgar/data/{cik_int}/{accession_no_dash}/{filename}"
         return await self._get_text(url, f"doc:{accession_no_dash}:{filename}")
 
     async def fetch_filing_document(self, cik: str, accession: str, form_type: str) -> str:

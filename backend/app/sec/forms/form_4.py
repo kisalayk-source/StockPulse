@@ -26,7 +26,10 @@ def _float(value: str | None) -> float | None:
 
 
 def parse_form4(xml_text: str) -> list[ParsedInsiderTransaction]:
-    root = ET.fromstring(xml_text)
+    try:
+        root = ET.fromstring(xml_text)
+    except ET.ParseError:
+        return []
     insider_name = None
     insider_title = None
     issuer_ticker = None

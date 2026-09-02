@@ -40,6 +40,21 @@ function withAuth(
         user: { id: 1, email: 'test@example.com' },
       })
     }
+    if (url.includes('/prediction')) {
+      return jsonResponse({
+        ticker: 'SPY',
+        timestamp: '2026-08-12T18:00:00+00:00',
+        horizon: '5d',
+        signal: 'HOLD',
+        probability: 0.52,
+        risk_score: 0.4,
+        confidence: 0.55,
+        model_predictions: { xgboost: 0.52 },
+        model_agreement: 1,
+        market_regime: { regime: 'SIDEWAYS' },
+        explanation: { text: 'SPY is rated HOLD with a 52% estimated probability of positive movement over the 5d horizon.', provider: 'template' },
+      })
+    }
     return handler(url, init)
   })
 }
