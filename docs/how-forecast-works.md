@@ -2,7 +2,7 @@
 
 A plain-language guide for people who use StockPulse and want to understand what the Market tab is showing — without needing to know how the software is built.
 
-**Short version:** StockPulse can draw a possible future price path on the chart and show a separate research signal (BUY / HOLD / SELL with a probability). Neither of these places a trade. You always decide and submit orders yourself.
+**Short version:** StockPulse can draw a possible future **chart path** on the chart and show a separate **model stance** (BUY / HOLD / SELL with a probability). Neither of these places a trade. You always decide and submit orders yourself. When the two disagree, that is expected — they answer different questions.
 
 This is **not investment advice**. Forecasts and signals are research tools. Markets can move differently than any model expects.
 
@@ -21,12 +21,62 @@ They answer different questions. A chart path can look **bullish** while the mod
 
 ---
 
+## How the chart path is determined
+
+**Question it answers:** “Where might the price line go next?”
+
+1. StockPulse loads recent prices (candles) for the ticker.
+2. Those prices are sent to a **path forecasting** model — **Kronos** by default, or **Forecast** (several path models combined).
+3. The model draws a **projected close path** ahead of the last known price — the line you see on the chart.
+4. **Chart path bias** (bullish / bearish / flat) is a simple read of that line: roughly, is the end of the path higher or lower than today’s last close?
+5. The sentence that starts with **Chart path:** (for example “falls … then rises …”) describes turns along that same line. It is still the path forecast, not the model stance.
+
+Think of this as a **sketch of a possible route**, not a BUY or SELL button.
+
+---
+
+## How the model stance is determined
+
+**Question it answers:** “How likely does an upward move look over the next few trading days?”
+
+1. StockPulse loads a longer stretch of **daily** prices.
+2. It measures familiar market patterns (trend, momentum, volatility, volume, and similar). These are **inputs**, not automatic trade rules like “RSI is low so buy.”
+3. A separate **classifier model** (XGBoost in the current version) estimates **Model P(up)** — the chance of a positive move over a fixed window such as about 5 or 20 trading days.
+4. That probability is mapped to a **Model stance** label (BUY, HOLD, SELL, and strong variants) using fixed research thresholds.
+5. **Model risk** is a separate caution meter; it is not the same as broker order-risk checks in the trading ticket.
+
+Think of this as a **probability call for a holding window**, not a drawing of the price line.
+
+---
+
+## Why chart path and model stance can disagree
+
+They are built differently on purpose. Seeing **chart path bias: bullish** next to **model stance: SELL** (or the reverse) does **not** mean the app is broken.
+
+| | Chart path | Model stance |
+|--|------------|--------------|
+| **Main question** | What shape might prices take next? | What’s the chance of an up move over this window? |
+| **Main output** | Future price line + bullish/bearish bias | BUY / HOLD / SELL + Model P(up) |
+| **Kind of model** | Path / time-series forecast (Kronos or ensemble) | Probability classifier on price patterns |
+| **Time feel** | Short or long path bars (can be minutes or days) | Fixed trading-day window (`5d` or `20d`) |
+
+**Everyday example:** The path line can end higher overall (bullish bias) while dipping and chopping along the way, and the classifier may still judge that a clean up-move over the next week is not likely enough for a BUY — so stance stays HOLD or SELL. The opposite can happen too.
+
+Use them as **two research views**:
+
+- Chart path → “What route is the forecast sketching?”
+- Model stance → “How strong is the up-move probability for this window?”
+
+Neither one places a trade. You decide.
+
+---
+
 ## Step by step: what happens when you open a stock
 
 1. **You choose a ticker** on the Market tab (for example SPY or AAPL).
 2. **StockPulse loads recent prices** as candles on the chart — that is history, not a prediction.
-3. **The path forecast** looks at that recent history and draws a projected path **ahead** of the last known price (what the line might do next).
-4. **The hybrid engine** looks at price patterns — things like trend, momentum, volatility, and volume — and estimates a probability that the stock moves up over a chosen time window. That probability is turned into a research signal such as BUY, HOLD, or SELL using fixed rules.
+3. **The chart path** looks at that recent history and draws a projected path **ahead** of the last known price (what the line might do next).
+4. **The model stance engine** looks at price patterns — things like trend, momentum, volatility, and volume — and estimates a probability that the stock moves up over a chosen time window. That probability becomes a research stance such as BUY, HOLD, or SELL.
 5. **The decision panel** shows both: chart-path summary (target, move, bias) and model-stance summary (BUY/HOLD/SELL, P(up), risk, window), plus news and market-mood cues that can help you judge context.
 
 Nothing in steps 3–5 sends an order to your broker.
@@ -100,7 +150,7 @@ Both are still research overlays. Switching modes can change the shape of the li
 
 - Prefer **paper** mode until you are comfortable with the workflow.
 - Live trading requires extra confirmation on purpose.
-- Read the on-screen disclaimer: path forecasts and hybrid signals are probabilistic research outputs. They never trigger orders.
+- Read the on-screen disclaimer: chart-path forecasts and model-stance calls are probabilistic research outputs. They never trigger orders.
 
 ---
 
