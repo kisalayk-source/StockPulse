@@ -1,8 +1,8 @@
 # Lag-Llama — install in an isolated env; GluonTS stack can conflict with other TS libs.
 # See https://github.com/time-series-foundation-models/lag-llama for current install notes.
-torch>=2.2.0
-gluonts>=0.14.0
-numpy>=1.24
-pandas>=2.0
+torch>=2.13.0
+gluonts>=0.17.0
+numpy>=2.5.2
+pandas>=3.0.5
 # lag-llama is typically installed from git:
 #   pip install git+https://github.com/time-series-foundation-models/lag-llama.git
