@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } fro
 import {
   Activity, AlertCircle, AlertTriangle, ArrowDownRight, ArrowUpRight, BarChart3,
   BriefcaseBusiness, CheckCircle2, ChevronDown, Clock3, ExternalLink, LoaderCircle,
-  LogOut, RefreshCw, Search, Settings, ShieldCheck, WalletCards, XCircle,
+  LogOut, RefreshCw, Search, Settings, ShieldCheck, Star, WalletCards, XCircle,
 } from 'lucide-react'
 import {
   ApiError,
@@ -26,7 +26,7 @@ import { MoversPanel } from './MoversPanel'
 import { PortfolioPanel, type HoldSuggestion } from './PortfolioPanel'
 import { OrderReview, type ReviewOrder } from './OrderReview'
 import { SettingsModal } from './SettingsModal'
-import { ResearchPanel, SecIntelligencePanel, SecRecordsPanel, SectorsPanel, TopAccumulationPanel } from './SecIntelligencePanel'
+import { FavoritesPanel, ResearchPanel, SecIntelligencePanel, SecRecordsPanel, SectorsPanel, TopAccumulationPanel } from './SecIntelligencePanel'
 import './App.css'
 
 type LoadState = 'idle' | 'loading' | 'ready' | 'error'
@@ -265,7 +265,7 @@ function DecisionPanel({
   )
 }
 
-type DashboardView = 'market' | 'sectors' | 'top' | 'research' | 'records'
+type DashboardView = 'market' | 'favorites' | 'sectors' | 'top' | 'research' | 'records'
 
 const FALLBACK_SECTORS = ['Energy', 'Technology', 'Healthcare', 'Financials', 'Industrials']
 
@@ -350,6 +350,10 @@ function App() {
   const [recordsAnalysis, setRecordsAnalysis] = useState<SecFilingsAnalysisResponse | null>(null)
   const [recordsAnalysisState, setRecordsAnalysisState] = useState<LoadState>('idle')
   const [recordsAnalysisError, setRecordsAnalysisError] = useState('')
+  const [favorites, setFavorites] = useState<Array<{ ticker: string; createdAt?: string }>>([])
+  const [favoritesState, setFavoritesState] = useState<LoadState>('idle')
+  const [favoritesError, setFavoritesError] = useState('')
+  const [favoriteBusy, setFavoriteBusy] = useState(false)
 
   const loadSec = useCallback(async () => {
     setSecState('loading')
@@ -468,6 +472,66 @@ function App() {
       setResearchState('error')
     }
   }, [])
+
+  const loadFavorites = useCallback(async () => {
+    setFavoritesState('loading')
+    setFavoritesError('')
+    try {
+      const rows = await api.listFavorites()
+      setFavorites(rows)
+      setFavoritesState('ready')
+    } catch (error) {
+      setFavorites([])
+      setFavoritesError(error instanceof Error ? error.message : 'Favorites unavailable')
+      setFavoritesState('error')
+    }
+  }, [])
+
+  const isFavorite = useMemo(
+    () => favorites.some((row) => row.ticker === symbol.toUpperCase()),
+    [favorites, symbol],
+  )
+
+  const toggleFavorite = useCallback(async () => {
+    const ticker = symbol.toUpperCase()
+    if (!ticker || favoriteBusy) return
+    const previous = favorites
+    setFavoriteBusy(true)
+    if (isFavorite) {
+      setFavorites((rows) => rows.filter((row) => row.ticker !== ticker))
+      try {
+        await api.removeFavorite(ticker)
+      } catch {
+        setFavorites(previous)
+      } finally {
+        setFavoriteBusy(false)
+      }
+      return
+    }
+    setFavorites((rows) => [{ ticker, createdAt: new Date().toISOString() }, ...rows.filter((row) => row.ticker !== ticker)])
+    try {
+      const saved = await api.addFavorite(ticker)
+      setFavorites((rows) => {
+        const without = rows.filter((row) => row.ticker !== ticker)
+        return [saved, ...without]
+      })
+    } catch {
+      setFavorites(previous)
+    } finally {
+      setFavoriteBusy(false)
+    }
+  }, [favoriteBusy, favorites, isFavorite, symbol])
+
+  const removeFavorite = useCallback(async (ticker: string) => {
+    const symbolKey = ticker.toUpperCase()
+    const previous = favorites
+    setFavorites((rows) => rows.filter((row) => row.ticker !== symbolKey))
+    try {
+      await api.removeFavorite(symbolKey)
+    } catch {
+      setFavorites(previous)
+    }
+  }, [favorites])
 
   const loadMarket = useCallback(async () => {
     const requestId = ++marketRequest.current
@@ -616,6 +680,10 @@ function App() {
     if (!authUser) return
     void loadPortfolio()
   }, [loadPortfolio, authUser])
+  useEffect(() => {
+    if (!authUser) return
+    void loadFavorites()
+  }, [authUser, loadFavorites])
   useEffect(() => {
     if (!authUser) return
     api.config().then(setConfig).catch(() => setConfig(null))
@@ -903,6 +971,17 @@ function App() {
             <span className="eyebrow">US EQUITY</span>
             <div className="symbol-line">
               <h1>{symbol}</h1><span>{quote?.name || 'Loading security…'}</span>
+              <button
+                type="button"
+                className={`icon-button favorite-toggle${isFavorite ? ' active' : ''}`}
+                aria-label={isFavorite ? 'Remove from favorites' : 'Add to favorites'}
+                aria-pressed={isFavorite}
+                title={isFavorite ? 'Remove from favorites' : 'Add to favorites'}
+                disabled={favoriteBusy}
+                onClick={() => void toggleFavorite()}
+              >
+                <Star size={18} fill={isFavorite ? 'currentColor' : 'none'} />
+              </button>
               <div className="sentiment-pills">
                 <SentimentBadge kind="Public" label={publicSentiment?.label} />
                 <SentimentBadge kind="Investors" label={forecast?.sentiment} muted={forecast != null && forecast.edgeReliable === false} />
@@ -915,6 +994,7 @@ function App() {
 
         <div className="dashboard-tabs" role="tablist" aria-label="Dashboard views">
           <button role="tab" aria-selected={dashboardView === 'market'} className={dashboardView === 'market' ? 'active' : ''} onClick={() => setDashboardView('market')}>Market</button>
+          <button role="tab" aria-selected={dashboardView === 'favorites'} className={dashboardView === 'favorites' ? 'active' : ''} onClick={() => setDashboardView('favorites')}>Favorites</button>
           <button role="tab" aria-selected={dashboardView === 'sectors'} className={dashboardView === 'sectors' ? 'active' : ''} onClick={() => setDashboardView('sectors')}>Sectors</button>
           <button role="tab" aria-selected={dashboardView === 'top'} className={dashboardView === 'top' ? 'active' : ''} onClick={() => setDashboardView('top')}>Top Accumulation</button>
           <button role="tab" aria-selected={dashboardView === 'records'} className={dashboardView === 'records' ? 'active' : ''} onClick={() => setDashboardView('records')}>SEC Records</button>
@@ -1103,6 +1183,20 @@ function App() {
         </section>
 
         </>}
+
+        {dashboardView === 'favorites' && (
+          <FavoritesPanel
+            favorites={favorites}
+            loading={favoritesState === 'loading'}
+            error={favoritesState === 'error' ? favoritesError : undefined}
+            onOpen={(ticker) => {
+              setSymbol(ticker.toUpperCase())
+              setSelectedContract(null)
+              setDashboardView('market')
+            }}
+            onRemove={(ticker) => void removeFavorite(ticker)}
+          />
+        )}
 
         {dashboardView === 'sectors' && (
           <SectorsPanel

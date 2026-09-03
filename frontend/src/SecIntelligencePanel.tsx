@@ -10,7 +10,7 @@ import type {
   SectorAccumulationResponse,
   TopAccumulationResponse,
 } from './api'
-import { formatDateTime, formatNumber } from './format'
+import { formatDateTime, formatNumber, formatPercent } from './format'
 
 function scoreBarClass(score: number | undefined): string {
   if (score == null) return 'neutral'
@@ -271,6 +271,67 @@ export function TopAccumulationPanel({
   )
 }
 
+export function FavoritesPanel({
+  favorites,
+  loading,
+  error,
+  onOpen,
+  onRemove,
+}: {
+  favorites: Array<{ ticker: string; createdAt?: string }>
+  loading: boolean
+  error?: string
+  onOpen: (ticker: string) => void
+  onRemove: (ticker: string) => void
+}) {
+  return (
+    <section className="card sec-card">
+      <div className="card-heading">
+        <div>
+          <span className="eyebrow">WATCHLIST</span>
+          <h2>Favorites</h2>
+        </div>
+      </div>
+      {loading && <div className="empty-state">Loading favorites…</div>}
+      {error && <div className="empty-state">{error}</div>}
+      {!loading && !error && favorites.length === 0 && (
+        <div className="empty-state">No favorites yet. Star a symbol on the Market tab to save it here.</div>
+      )}
+      {!loading && favorites.length > 0 && (
+        <table className="sec-table">
+          <thead>
+            <tr>
+              <th>Ticker</th>
+              <th>Saved</th>
+              <th />
+            </tr>
+          </thead>
+          <tbody>
+            {favorites.map((row) => (
+              <tr key={row.ticker} className="clickable" onClick={() => onOpen(row.ticker)}>
+                <td><strong>{row.ticker}</strong></td>
+                <td>{row.createdAt ? formatDateTime(row.createdAt) : '—'}</td>
+                <td>
+                  <button
+                    type="button"
+                    className="text-button"
+                    onClick={(event) => {
+                      event.stopPropagation()
+                      onRemove(row.ticker)
+                    }}
+                  >
+                    Remove
+                  </button>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+    </section>
+  )
+}
+
 export function ResearchPanel({
   response,
   loading,
@@ -287,10 +348,10 @@ export function ResearchPanel({
   const [query, setQuery] = useState('')
   return (
     <section className="card sec-card">
-      <div className="card-heading"><div><span className="eyebrow">AI RESEARCH</span><h2>SEC-aware research query</h2></div></div>
+      <div className="card-heading"><div><span className="eyebrow">AI RESEARCH</span><h2>Forecast-aware research query</h2></div></div>
       <ScanProgressBanner progress={scanProgress || null} />
       <form className="research-form" onSubmit={(event) => { event.preventDefault(); onSubmit(query) }}>
-        <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Which energy stocks have strong institutional accumulation?" />
+        <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Which energy stocks look strong on forecast model stance?" />
         <button type="submit" disabled={loading || query.trim().length < 3}>{loading ? 'Searching…' : 'Research'}</button>
       </form>
       {error && <div className="empty-state">{error}</div>}
@@ -299,21 +360,28 @@ export function ResearchPanel({
           {response.candidates.length > 0 ? (
             <table className="sec-table research-candidates">
               <thead>
-                <tr><th>Ticker</th><th>Accumulation score</th><th>Signal</th><th>Why</th></tr>
+                <tr>
+                  <th>Ticker</th>
+                  <th>Model stance</th>
+                  <th>P(up)</th>
+                  <th>Chart path bias</th>
+                  <th>Why</th>
+                </tr>
               </thead>
               <tbody>
                 {response.candidates.map((row) => (
                   <tr key={row.ticker}>
                     <td>{row.ticker}</td>
-                    <td>{formatNumber(Math.round(row.accumulation_score))}</td>
-                    <td>{row.signal?.replaceAll('_', ' ') || '—'}</td>
+                    <td>{row.modelStance?.replaceAll('_', ' ') || '—'}</td>
+                    <td>{row.modelProbability == null ? '—' : formatPercent(row.modelProbability, false)}</td>
+                    <td>{row.chartPathBias || '—'}</td>
                     <td>{row.why || '—'}</td>
                   </tr>
                 ))}
               </tbody>
             </table>
           ) : (
-            <div className="empty-state">No matching candidates in the current score cache.</div>
+            <div className="empty-state">No matching forecast candidates for this query.</div>
           )}
           <div className="research-narrative">{response.narrative}</div>
           <p className="disclaimer">{response.disclaimer}</p>

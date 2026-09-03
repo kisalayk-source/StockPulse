@@ -167,7 +167,7 @@ Sector names from Finnhub are normalized to dashboard buckets (e.g. `Financial S
 
 ## AI research
 
-`POST /research/query` parses sector and accumulation keywords into structured filters, runs a short mini-scan when needed, ranks candidates from the score cache, and returns a **candidate table** plus template narrative. Thresholds are adaptive (with fallback to best available matches when filters are strict). When `RESEARCH_LLM_ENABLED=true`, an OpenAI-compatible model may narrate over the injected JSON context only — it must not invent tickers, scores, or filings.
+`POST /research/query` parses sector and keyword filters (including “favorites” / watchlist), builds a small candidate universe, then enriches up to **five** tickers with hybrid **model stance** / P(up) and a lightweight **chart path** bias. Candidates are ranked by model probability (path change and SEC accumulation as tie-breakers), then returned as a table plus template (or optional LLM) narrative. When `RESEARCH_LLM_ENABLED=true`, an OpenAI-compatible model may narrate over the injected JSON context only — it must not invent tickers, scores, or filings.
 
 ## SEC Records tab
 

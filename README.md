@@ -11,7 +11,8 @@ Paper-first trading workstation for US equities and single-leg options. Forecast
 - **Hybrid prediction** — technical features → XGBoost probability → configurable BUY/HOLD/SELL (MVP-1); see [docs/stock-prediction-architecture.md](./docs/stock-prediction-architecture.md)
 - **How forecasts work (non-tech)** — step-by-step plain-language guide: [docs/how-forecast-works.md](./docs/how-forecast-works.md)
 - **Sentiment & news** — public news sentiment plus investor/regime cues; merged news feed
-- **SEC & ownership** — EDGAR 13F / 13D / 13G / Form 4 XML ingestion, explainable **Accumulation Score (0–100)**, background market scan (blue-chip + movers), **Sectors**, **Top Accumulation**, **SEC Records** (6-month filing search with parsed entity/action columns, expandable XML details, and AI analysis), and **AI Research** queries
+- **SEC & ownership** — EDGAR 13F / 13D / 13G / Form 4 XML ingestion, explainable **Accumulation Score (0–100)**, background market scan (blue-chip + movers), **Sectors**, **Top Accumulation**, **SEC Records** (6-month filing search with parsed entity/action columns, expandable XML details, and AI analysis), and **AI Research** queries ranked by model stance / chart path (SEC as secondary context)
+- **Favorites** — per-user starred tickers with a Favorites tab; star toggle on the Market quote header
 - **Movers scan** — background scan of blue-chip names for predicted gainers and losers (display-only)
 - **Portfolio** — open positions, open/realized P/L, hold ideas from the movers scan
 - **Manual trading** — equity and single-leg options tickets with risk preview and review-before-send
