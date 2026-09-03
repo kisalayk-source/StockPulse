@@ -84,6 +84,8 @@ main { width: 100%; max-width: none; margin: 0; padding: 24px 28px 40px; }
 .stale { display: inline-flex; align-items: center; gap: 4px; color: #e5ac51 !important; }
 .icon-button { width: 36px; height: 36px; border-radius: 8px; border: 1px solid var(--border); color: var(--muted); background: #101721; display: grid; place-items: center; }
 .icon-button:hover { color: var(--text); border-color: #3b485b; }
+.favorite-toggle.active { color: #f0c14b; border-color: color-mix(in srgb, #f0c14b 45%, var(--border)); }
+.favorite-toggle.active:hover { color: #ffd666; }
 .dashboard-grid { display: grid; grid-template-columns: minmax(0, 1fr) 380px; gap: 18px; align-items: start; }.main-column,.side-column { display: grid; gap: 18px; align-content: start; }.side-column { position: sticky; top: 90px; max-height: calc(100dvh - 110px); overflow: auto; }
 .live-banner ~ .topbar + main .side-column { top: 124px; max-height: calc(100dvh - 144px); }
 .card { border: 1px solid var(--border); border-radius: 13px; background: linear-gradient(145deg,rgba(16,22,32,.96),rgba(11,16,24,.98)); box-shadow: 0 18px 50px rgba(0,0,0,.15); overflow: hidden; }

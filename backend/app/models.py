@@ -23,6 +23,22 @@ class User(Base):
         back_populates="user",
         cascade="all, delete-orphan",
     )
+    favorites: Mapped[list["UserFavorite"]] = relationship(
+        back_populates="user",
+        cascade="all, delete-orphan",
+    )
+
+
+class UserFavorite(Base):
+    __tablename__ = "user_favorites"
+    __table_args__ = (UniqueConstraint("user_id", "ticker", name="uq_user_favorite_ticker"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    ticker: Mapped[str] = mapped_column(String(16), nullable=False, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utc_now, nullable=False)
+
+    user: Mapped[User] = relationship(back_populates="favorites")
 
 
 class AlpacaCredential(Base):

@@ -154,6 +154,13 @@ Both are still research overlays. Switching modes can change the shape of the li
 
 ---
 
+## Favorites and AI Research
+
+- **Favorites** — sign in, then star the active Market symbol. Saved tickers appear on the **Favorites** tab; click a row to open it on Market, or remove it from the list.
+- **AI Research** — natural-language queries rank a small candidate set by **model stance** (P(up)) and **chart path bias**, with SEC accumulation as secondary context. Mentions of “favorites” or “watchlist” limit the universe to your starred tickers.
+
+---
+
 ## Want the technical deep dive?
 
 If you prefer architecture detail (data sources, models, and how path forecast differs from hybrid prediction in the codebase), see [stock-prediction-architecture.md](./stock-prediction-architecture.md).

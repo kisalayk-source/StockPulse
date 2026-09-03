@@ -436,10 +436,14 @@ export interface SecFilingsAnalysisResponse {
 
 export interface ResearchCandidate {
   ticker: string
-  accumulation_score: number
+  accumulation_score?: number | null
   signal?: string
   why?: string
   components?: AccumulationComponents
+  modelStance?: string | null
+  modelProbability?: number | null
+  chartPathBias?: string | null
+  pathChange?: number | null
 }
 
 export interface TopAccumulationResponse {
@@ -1414,9 +1418,13 @@ export const api = {
         const components = object(item.components)
         return {
           ticker: text(item.ticker),
-          accumulation_score: number(item.accumulation_score) ?? 0,
+          accumulation_score: number(item.accumulation_score),
           signal: item.signal as string | undefined,
           why: item.why as string | undefined,
+          modelStance: text(item.model_stance) || null,
+          modelProbability: number(item.model_probability),
+          chartPathBias: text(item.chart_path_bias) || null,
+          pathChange: number(item.path_change),
           components: {
             institutional: number(components.institutional) ?? undefined,
             insider: number(components.insider) ?? undefined,
@@ -1429,5 +1437,27 @@ export const api = {
       narrative: text(payload.narrative),
       disclaimer: text(payload.disclaimer),
     }
+  },
+  listFavorites: async (): Promise<Array<{ ticker: string; createdAt?: string }>> => {
+    const payload = object(await request<unknown>('/favorites'))
+    return list(payload.favorites).map((row) => {
+      const item = object(row)
+      return {
+        ticker: text(item.ticker).toUpperCase(),
+        createdAt: text(item.created_at) || undefined,
+      }
+    })
+  },
+  addFavorite: async (ticker: string): Promise<{ ticker: string; createdAt?: string }> => {
+    const payload = object(await request<unknown>(`/favorites/${encodeURIComponent(ticker)}`, {
+      method: 'PUT',
+    }))
+    return {
+      ticker: text(payload.ticker, ticker).toUpperCase(),
+      createdAt: text(payload.created_at) || undefined,
+    }
+  },
+  removeFavorite: async (ticker: string): Promise<void> => {
+    await request<unknown>(`/favorites/${encodeURIComponent(ticker)}`, { method: 'DELETE' })
   },
 }

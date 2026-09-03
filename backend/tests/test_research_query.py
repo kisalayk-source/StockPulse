@@ -16,7 +16,6 @@ def test_parse_insider_and_institutional() -> None:
     assert parsed["filters"].get("insider_accumulation") == "positive"
 
 
-def test_parse_top_accumulation_query() -> None:
-    parsed = parse_research_query("Show me the top hot accumulation stocks")
-    assert parsed["filters"].get("ranking") == "top"
-    assert parsed["filters"].get("signal") == "ACCUMULATION"
+def test_parse_favorites_query() -> None:
+    parsed = parse_research_query("Which of my favorites look strong?")
+    assert parsed["filters"].get("favorites_only") is True
