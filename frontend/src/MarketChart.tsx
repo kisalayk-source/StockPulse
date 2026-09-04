@@ -71,7 +71,7 @@ export function MarketChart({ candles, forecast, chopper }: MarketChartProps) {
         color: CHOPPER_COLORS.neutral,
         lineWidth: 3,
         priceLineVisible: false,
-        title: 'Fast MA (10)',
+        title: 'SMA 10',
       }).setData(chopper.map((item) => ({
         time: toTime(item.time),
         value: item.fast,
@@ -81,7 +81,7 @@ export function MarketChart({ candles, forecast, chopper }: MarketChartProps) {
         color: '#d7dde8',
         lineWidth: 2,
         priceLineVisible: false,
-        title: 'Slow MA (20)',
+        title: 'SMA 20',
       }).setData(chopper.map((item) => ({ time: toTime(item.time), value: item.slow })))
       const markers: SeriesMarker<Time>[] = chopper.flatMap((item) => item.signal ? [{
         time: toTime(item.time),

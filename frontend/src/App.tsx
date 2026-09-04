@@ -285,8 +285,8 @@ function ChopperPanel({ points }: { points: ChopperPoint[] }) {
     <div className="decision-panel chopper-panel">
       <div className="decision-summary">
         <div><span>Current state</span><strong className={actionable ? 'positive' : undefined}>{latest?.regime ?? 'warming up'}</strong></div>
-        <div><span>Fast SMA (10)</span><strong>{formatCurrency(latest?.fast)}</strong></div>
-        <div><span>Slow SMA (20)</span><strong>{formatCurrency(latest?.slow)}</strong></div>
+        <div><span>SMA 10</span><strong>{formatCurrency(latest?.fast)}</strong></div>
+        <div><span>SMA 20</span><strong>{formatCurrency(latest?.slow)}</strong></div>
         <div><span>Signals shown</span><strong>{entries} enter / {exits} exit</strong></div>
       </div>
       <p className="decision-path">
