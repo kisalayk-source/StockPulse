@@ -3,15 +3,19 @@ import {
   CandlestickSeries,
   ColorType,
   createChart,
+  createSeriesMarkers,
   LineSeries,
+  type SeriesMarker,
   type Time,
   type UTCTimestamp,
 } from 'lightweight-charts'
 import type { Candle, ForecastPoint } from './api'
+import type { ChopperPoint } from './chopper'
 
 interface MarketChartProps {
   candles: Candle[]
   forecast: ForecastPoint[]
+  chopper?: ChopperPoint[]
 }
 
 const toTime = (value: string | number): Time =>
@@ -19,7 +23,14 @@ const toTime = (value: string | number): Time =>
     ? value
     : Math.floor(new Date(value).getTime() / 1000)) as UTCTimestamp
 
-export function MarketChart({ candles, forecast }: MarketChartProps) {
+const CHOPPER_COLORS = {
+  green: '#008f45',
+  lightgreen: '#42d978',
+  yellow: '#e4c84a',
+  neutral: '#768196',
+} as const
+
+export function MarketChart({ candles, forecast, chopper }: MarketChartProps) {
   const containerRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
@@ -55,32 +66,59 @@ export function MarketChart({ candles, forecast }: MarketChartProps) {
     })
     candleSeries.setData(candles.map((item) => ({ ...item, time: toTime(item.time) })))
 
-    const forecastSeries = chart.addSeries(LineSeries, {
-      color: '#b994ff',
-      lineWidth: 3,
-      lineStyle: 2,
-      priceLineVisible: false,
-      lastValueVisible: true,
-      title: 'Kronos forecast',
-    })
-    forecastSeries.setData(forecast.map((item) => ({ time: toTime(item.time), value: item.value })))
+    if (chopper) {
+      chart.addSeries(LineSeries, {
+        color: CHOPPER_COLORS.neutral,
+        lineWidth: 3,
+        priceLineVisible: false,
+        title: 'Fast MA (10)',
+      }).setData(chopper.map((item) => ({
+        time: toTime(item.time),
+        value: item.fast,
+        color: CHOPPER_COLORS[item.regime],
+      })))
+      chart.addSeries(LineSeries, {
+        color: '#d7dde8',
+        lineWidth: 2,
+        priceLineVisible: false,
+        title: 'Slow MA (20)',
+      }).setData(chopper.map((item) => ({ time: toTime(item.time), value: item.slow })))
+      const markers: SeriesMarker<Time>[] = chopper.flatMap((item) => item.signal ? [{
+        time: toTime(item.time),
+        position: item.signal === 'entry' ? 'belowBar' : 'aboveBar',
+        shape: item.signal === 'entry' ? 'arrowUp' : 'arrowDown',
+        color: item.signal === 'entry' ? '#42d978' : '#f2636b',
+        text: item.signal === 'entry' ? 'ENTER' : 'EXIT',
+      }] : [])
+      createSeriesMarkers(candleSeries, markers)
+    } else {
+      const forecastSeries = chart.addSeries(LineSeries, {
+        color: '#b994ff',
+        lineWidth: 3,
+        lineStyle: 2,
+        priceLineVisible: false,
+        lastValueVisible: true,
+        title: 'Kronos forecast',
+      })
+      forecastSeries.setData(forecast.map((item) => ({ time: toTime(item.time), value: item.value })))
 
-    const confidenceOptions = {
-      color: '#76639f',
-      lineWidth: 1 as const,
-      lineStyle: 2 as const,
-      priceLineVisible: false,
-      lastValueVisible: false,
-    }
-    const lower = forecast.filter((item) => item.lower != null)
-    const upper = forecast.filter((item) => item.upper != null)
-    if (lower.length) {
-      chart.addSeries(LineSeries, confidenceOptions)
-        .setData(lower.map((item) => ({ time: toTime(item.time), value: item.lower! })))
-    }
-    if (upper.length) {
-      chart.addSeries(LineSeries, confidenceOptions)
-        .setData(upper.map((item) => ({ time: toTime(item.time), value: item.upper! })))
+      const confidenceOptions = {
+        color: '#76639f',
+        lineWidth: 1 as const,
+        lineStyle: 2 as const,
+        priceLineVisible: false,
+        lastValueVisible: false,
+      }
+      const lower = forecast.filter((item) => item.lower != null)
+      const upper = forecast.filter((item) => item.upper != null)
+      if (lower.length) {
+        chart.addSeries(LineSeries, confidenceOptions)
+          .setData(lower.map((item) => ({ time: toTime(item.time), value: item.lower! })))
+      }
+      if (upper.length) {
+        chart.addSeries(LineSeries, confidenceOptions)
+          .setData(upper.map((item) => ({ time: toTime(item.time), value: item.upper! })))
+      }
     }
     chart.timeScale().fitContent()
 
@@ -95,7 +133,7 @@ export function MarketChart({ candles, forecast }: MarketChartProps) {
       observer.disconnect()
       chart.remove()
     }
-  }, [candles, forecast])
+  }, [candles, forecast, chopper])
 
   const latest = candles.at(-1)
   const predicted = forecast.at(-1)
@@ -105,10 +143,12 @@ export function MarketChart({ candles, forecast }: MarketChartProps) {
         className="market-chart"
         ref={containerRef}
         role="img"
-        aria-label={`Price and Kronos forecast chart. Latest close ${latest?.close ?? 'unavailable'}. Final forecast ${predicted?.value ?? 'unavailable'}.`}
+        aria-label={chopper
+          ? `Price and Chopper signals chart. Latest close ${latest?.close ?? 'unavailable'}. Current regime ${chopper.at(-1)?.regime ?? 'unavailable'}.`
+          : `Price and Kronos forecast chart. Latest close ${latest?.close ?? 'unavailable'}. Final forecast ${predicted?.value ?? 'unavailable'}.`}
       />
       <p className="sr-only">
-        The chart contains {candles.length} historical candles and {forecast.length} forecast points.
+        The chart contains {candles.length} historical candles and {chopper ? `${chopper.length} Chopper points` : `${forecast.length} forecast points`}.
       </p>
     </>
   )

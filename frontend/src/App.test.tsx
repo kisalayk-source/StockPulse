@@ -403,7 +403,7 @@ describe('live trading safeguard', () => {
     })
   })
 
-  it('lets the user switch between Kronos and Forecast engines', async () => {
+  it('lets the user switch between Kronos, Forecast, and Chopper engines', async () => {
     const user = userEvent.setup()
     const fetch = withAuth((url, init) => {
       if (url.includes('/overview')) {
@@ -467,6 +467,15 @@ describe('live trading safeguard', () => {
         .map((call) => JSON.parse(String(call[1]?.body || '{}')))
       expect(bodies.some((body) => body.engine === 'ensemble')).toBe(true)
     })
+
+    await user.click(screen.getByRole('button', { name: 'Chopper' }))
+    expect(await screen.findByRole('button', { name: 'Chopper', pressed: true })).toBeInTheDocument()
+    expect(await screen.findByText('Chopper SMA 10 / 20')).toBeInTheDocument()
+    expect(screen.getByText(/No entry condition is active/i)).toBeInTheDocument()
+    const forecastBodies = fetch.mock.calls
+      .filter((call) => String(call[0]).includes('/forecast') && call[1]?.method === 'POST')
+      .map((call) => JSON.parse(String(call[1]?.body || '{}')))
+    expect(forecastBodies.some((body) => body.engine === 'chopper')).toBe(false)
   })
 
   it('retries a throttled forecast instead of leaving the chart without a prediction', async () => {
