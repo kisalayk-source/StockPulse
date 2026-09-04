@@ -51,13 +51,14 @@ class RateLimiter:
 
 def build_services(settings: Settings) -> Services:
     alpaca = AlpacaService(settings)
+    prediction = PredictionService(settings, alpaca) if settings.prediction_enabled else None
     return Services(
         settings=settings,
         alpaca=alpaca,
         finnhub=FinnhubService(settings),
         kronos=KronosService(settings, alpaca),
         sec=SecService(settings),
-        prediction=PredictionService(settings, alpaca),
+        prediction=prediction,
     )
 
 

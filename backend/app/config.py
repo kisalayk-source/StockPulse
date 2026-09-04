@@ -1,5 +1,6 @@
 from functools import lru_cache
 from pathlib import Path
+from typing import Literal
 
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -16,6 +17,7 @@ class Settings(BaseSettings):
     )
 
     app_name: str = "StockPulse API"
+    app_environment: Literal["development", "production", "test"] = "production"
     api_prefix: str = "/api/v1"
     cors_origin: str = "http://localhost:5173"
     cors_origin_regex: str | None = None
@@ -27,6 +29,8 @@ class Settings(BaseSettings):
     prediction_rate_limit_per_minute: int = Field(default=30, ge=0, le=10_000)
 
     database_url: str = "sqlite:///./data/kronos.db"
+    dev_auth_bypass: bool = False
+    dev_auth_email: str = "dev@stockpulse.local"
     jwt_secret: str = Field(default="dev-only-change-me-jwt-secret-32b", repr=False)
     jwt_expire_minutes: int = Field(default=60 * 24 * 7, ge=5, le=60 * 24 * 365)
     # Valid Fernet key for local/dev; replace in production.

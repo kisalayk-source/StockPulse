@@ -93,6 +93,15 @@ def get_current_user(
     services: Services = Depends(get_services),
 ) -> User:
     if credentials is None or credentials.scheme.lower() != "bearer":
+        if services.settings.app_environment == "development" and services.settings.dev_auth_bypass:
+            email = services.settings.dev_auth_email.lower().strip()
+            user = session.query(User).filter(User.email == email).one_or_none()
+            if user is None:
+                user = User(email=email, password_hash="development-auth-bypass")
+                session.add(user)
+                session.flush()
+            request.state.user = user
+            return user
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Authentication required",
