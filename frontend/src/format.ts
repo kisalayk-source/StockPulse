@@ -34,6 +34,21 @@ export const formatDateTime = (value: string | null | undefined) => {
   }).format(date)
 }
 
+/** US equity session times — always America/New_York (EDT/EST), not browser local. */
+export const formatMarketDateTime = (value: string | null | undefined) => {
+  if (!value) return 'Unavailable'
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return 'Unavailable'
+  return new Intl.DateTimeFormat('en-US', {
+    month: 'short',
+    day: 'numeric',
+    hour: 'numeric',
+    minute: '2-digit',
+    timeZone: 'America/New_York',
+    timeZoneName: 'short',
+  }).format(date)
+}
+
 export type MarketSession = 'regular' | 'pre_market' | 'after_hours' | 'closed' | 'unknown'
 export type MarketTone = 'open' | 'extended' | 'closed' | 'unknown'
 

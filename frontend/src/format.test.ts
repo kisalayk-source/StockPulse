@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
-  formatCurrency, formatNumber, formatPercent,
+  formatCurrency, formatMarketDateTime, formatNumber, formatPercent,
   localMarketClock, marketStatusLabel, marketStatusTone,
 } from './format'
 
@@ -42,5 +42,15 @@ describe('market clock', () => {
       isOpen: false,
       session: 'closed',
     })
+  })
+
+  it('formats open/close hints in Eastern regardless of host timezone', () => {
+    // 13:30 UTC on a summer weekday is 09:30 EDT
+    const formatted = formatMarketDateTime('2026-08-13T13:30:00Z')
+    expect(formatted).toMatch(/Aug 13/)
+    expect(formatted).toMatch(/9:30\s*AM/i)
+    expect(formatted).toMatch(/EDT|EST/)
+    expect(formatMarketDateTime(null)).toBe('Unavailable')
+    expect(formatMarketDateTime('not-a-date')).toBe('Unavailable')
   })
 })
