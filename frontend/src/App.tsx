@@ -43,7 +43,13 @@ function unavailableLabel(result: PromiseSettledResult<unknown>, name: string): 
   if (reason instanceof ApiError && reason.message && reason.message !== `Request failed (${reason.status})`) {
     return `${name}: ${reason.message}`
   }
-  return `${name} data is temporarily unavailable`
+  if (reason instanceof ApiError) {
+    return `${name} request failed (${reason.status})`
+  }
+  if (reason instanceof Error && reason.message) {
+    return `${name} request failed: ${reason.message}`
+  }
+  return `${name} request failed`
 }
 
 function SentimentBadge({ kind, label, muted }: { kind: 'Public' | 'Investors'; label?: SentimentLabel | null; muted?: boolean }) {

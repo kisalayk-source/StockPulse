@@ -52,7 +52,18 @@ class RateLimiter:
 
 def build_services(settings: Settings) -> Services:
     alpaca = AlpacaService(settings)
-    prediction = PredictionService(settings, alpaca) if settings.prediction_enabled else None
+    prediction = None
+    if settings.prediction_enabled:
+        try:
+            prediction = PredictionService(settings, alpaca)
+        except Exception as exc:  # pragma: no cover - keep API up if ML stack is broken
+            import logging
+
+            logging.getLogger(__name__).exception(
+                "Hybrid prediction disabled: PredictionService failed to initialize (%s)",
+                type(exc).__name__,
+            )
+            prediction = None
     services = Services(
         settings=settings,
         alpaca=alpaca,

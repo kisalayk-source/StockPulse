@@ -51,7 +51,14 @@ class XGBoostModel(ForecastModel):
         if aligned.empty or labels.nunique() < 2:
             raise ValueError("insufficient training diversity for xgboost")
 
-        from xgboost import XGBClassifier
+        try:
+            from xgboost import XGBClassifier
+        except ImportError as exc:  # pragma: no cover - exercised when dep missing
+            missing = getattr(exc, "name", None) or "xgboost"
+            raise RuntimeError(
+                f"xgboost is not installed ({missing}); "
+                "install backend/requirements.txt and restart the API"
+            ) from exc
 
         self.feature_names = list(aligned.columns)
         self.training_rows = len(aligned)
