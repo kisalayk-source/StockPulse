@@ -15,6 +15,18 @@ def _ensure_repo_root_on_path() -> None:
         sys.path.insert(0, root)
 
 
+def _xgboost_import_error() -> str | None:
+    try:
+        import xgboost  # noqa: F401
+    except ImportError as exc:
+        missing = getattr(exc, "name", None) or "xgboost"
+        return (
+            f"hybrid prediction requires {missing}; "
+            "install backend/requirements.txt and restart the API"
+        )
+    return None
+
+
 class PredictionService:
     def __init__(self, settings: Settings, alpaca: Any) -> None:
         self.settings = settings
@@ -24,6 +36,13 @@ class PredictionService:
 
         self.engine = PredictionEngine(root_dir=ROOT_DIR)
         self.enabled = bool(getattr(settings, "prediction_enabled", True))
+        self._dependency_error = _xgboost_import_error()
+
+    def _require_ready(self) -> None:
+        if not self.enabled:
+            raise RuntimeError("hybrid prediction is disabled")
+        if self._dependency_error:
+            raise RuntimeError(self._dependency_error)
 
     def _fetch_daily_bars(self, ticker: str, limit: int = 400) -> list[dict[str, Any]]:
         bars = self.alpaca.bars(
@@ -37,8 +56,7 @@ class PredictionService:
         return list(bars or [])
 
     def predict(self, ticker: str, *, horizon: str = "5d", retrain: bool = False) -> dict[str, Any]:
-        if not self.enabled:
-            raise RuntimeError("hybrid prediction is disabled")
+        self._require_ready()
         lookback = int(self.engine.config.get("prediction", {}).get("lookback_bars", 400))
         bars = self._fetch_daily_bars(ticker, limit=lookback)
         return self.engine.predict_from_bars(ticker, bars, horizon=horizon, retrain=retrain)

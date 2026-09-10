@@ -531,6 +531,121 @@ describe('live trading safeguard', () => {
     expect(screen.queryByText(/Partial data/)).not.toBeInTheDocument()
   })
 
+  it('shows hybrid prediction API detail in the Partial data banner', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockImplementation((input: RequestInfo | URL) => {
+      const url = String(input)
+      if (url.includes('/auth/me')) return jsonResponse(AUTH_USER)
+      if (url.includes('/config/status')) {
+        return jsonResponse({
+          alpaca: {
+            paper_configured: true,
+            live_configured: false,
+            paper_key_preview: 'PKTE…3456',
+            live_key_preview: null,
+          },
+          live_trading_allowed: true,
+          data_feed: 'iex',
+          user: { id: 1, email: 'test@example.com' },
+        })
+      }
+      if (url.includes('/prediction')) {
+        return Promise.resolve(new Response(JSON.stringify({
+          detail: 'hybrid prediction requires xgboost; install backend/requirements.txt and restart the API',
+        }), {
+          status: 503,
+          headers: { 'Content-Type': 'application/json' },
+        }))
+      }
+      if (url.includes('/overview')) {
+        return jsonResponse({
+          symbol: 'SPY',
+          name: 'SPDR S&P 500 ETF Trust',
+          current_price: 500,
+          timestamp: '2026-08-12T18:00:00Z',
+          session: 'regular',
+          daily: {},
+          previous_daily: {},
+          fundamentals: {},
+          news: [],
+        })
+      }
+      if (url.includes('/bars')) {
+        return jsonResponse({ symbol: 'SPY', timeframe: '1Day', bars: [] })
+      }
+      if (url.includes('/forecast') && !url.includes('/movers')) {
+        return jsonResponse({
+          symbol: 'SPY',
+          as_of: '2026-08-12T18:00:00Z',
+          model: { id: 'Kronos' },
+          trend: { direction: 'flat', forecast_change: 0 },
+          forecast: [],
+        })
+      }
+      return Promise.reject(new Error('offline'))
+    }))
+
+    render(<App />)
+    expect(await screen.findByText(/Partial data/i)).toBeInTheDocument()
+    expect(screen.getByText(/hybrid prediction:.*xgboost/i)).toBeInTheDocument()
+    expect(screen.queryByText(/temporarily unavailable/i)).not.toBeInTheDocument()
+  })
+
+  it('shows Partial data when hybrid prediction fails without a JSON body', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockImplementation((input: RequestInfo | URL) => {
+      const url = String(input)
+      if (url.includes('/auth/me')) return jsonResponse(AUTH_USER)
+      if (url.includes('/config/status')) {
+        return jsonResponse({
+          alpaca: {
+            paper_configured: true,
+            live_configured: false,
+            paper_key_preview: 'PKTE…3456',
+            live_key_preview: null,
+          },
+          live_trading_allowed: true,
+          data_feed: 'iex',
+          user: { id: 1, email: 'test@example.com' },
+        })
+      }
+      if (url.includes('/prediction')) {
+        return Promise.resolve(new Response('Bad Gateway', {
+          status: 502,
+          headers: { 'Content-Type': 'text/plain' },
+        }))
+      }
+      if (url.includes('/overview')) {
+        return jsonResponse({
+          symbol: 'SPY',
+          name: 'SPDR S&P 500 ETF Trust',
+          current_price: 500,
+          timestamp: '2026-08-12T18:00:00Z',
+          session: 'regular',
+          daily: {},
+          previous_daily: {},
+          fundamentals: {},
+          news: [],
+        })
+      }
+      if (url.includes('/bars')) {
+        return jsonResponse({ symbol: 'SPY', timeframe: '1Day', bars: [] })
+      }
+      if (url.includes('/forecast') && !url.includes('/movers')) {
+        return jsonResponse({
+          symbol: 'SPY',
+          as_of: '2026-08-12T18:00:00Z',
+          model: { id: 'Kronos' },
+          trend: { direction: 'flat', forecast_change: 0 },
+          forecast: [],
+        })
+      }
+      return Promise.reject(new Error('offline'))
+    }))
+
+    render(<App />)
+    expect(await screen.findByText(/Partial data/i)).toBeInTheDocument()
+    expect(screen.getByText(/hybrid prediction request failed \(502\)/i)).toBeInTheDocument()
+  })
+
   it('loads and selects both call and put contracts without losing expirations', async () => {
     const user = userEvent.setup()
     vi.stubGlobal('fetch', withAuth((url) => {

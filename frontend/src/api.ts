@@ -653,7 +653,7 @@ const number = (value: unknown): number | null => {
 function normalizeError(payload: unknown, status: number): string {
   if (payload && typeof payload === 'object') {
     const value = payload as Record<string, unknown>
-    if (typeof value.detail === 'string') return value.detail
+    if (typeof value.detail === 'string' && value.detail.trim()) return value.detail
     if (Array.isArray(value.detail)) {
       const messages = value.detail
         .map((entry) => text(object(entry).msg))
@@ -662,9 +662,12 @@ function normalizeError(payload: unknown, status: number): string {
     }
     if (value.detail && typeof value.detail === 'object') {
       const detail = value.detail as Record<string, unknown>
-      if (typeof detail.message === 'string') return detail.message
+      if (typeof detail.message === 'string' && detail.message.trim()) return detail.message
+      if (typeof detail.provider === 'string' && detail.provider.trim()) {
+        return `${detail.provider} provider unavailable`
+      }
     }
-    if (typeof value.message === 'string') return value.message
+    if (typeof value.message === 'string' && value.message.trim()) return value.message
   }
   return `Request failed (${status})`
 }

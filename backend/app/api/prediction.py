@@ -45,6 +45,20 @@ def _prediction_service(services: Services):
     return service
 
 
+def _safe_exception_detail(exc: BaseException) -> str:
+    """Return a short, non-sensitive detail for API clients."""
+    message = str(exc).strip()
+    if isinstance(exc, (ImportError, ModuleNotFoundError)):
+        missing = getattr(exc, "name", None) or message or type(exc).__name__
+        return (
+            f"Prediction dependency missing ({missing}). "
+            "Install backend/requirements.txt (includes xgboost) and restart the API."
+        )
+    if message and len(message) <= 240:
+        return f"Prediction failed: {type(exc).__name__}: {message}"
+    return f"Prediction failed: {type(exc).__name__}"
+
+
 def _call(fn, *args, **kwargs):
     try:
         return fn(*args, **kwargs)
@@ -58,16 +72,21 @@ def _call(fn, *args, **kwargs):
             ) from exc
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail={"provider": exc.provider, "message": "Provider unavailable"},
+            detail={"provider": exc.provider, "message": message},
         ) from exc
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
     except RuntimeError as exc:
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
+    except (ImportError, ModuleNotFoundError) as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=_safe_exception_detail(exc),
+        ) from exc
     except Exception as exc:  # pragma: no cover - defensive
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
-            detail=f"Prediction failed: {type(exc).__name__}",
+            detail=_safe_exception_detail(exc),
         ) from exc
 
 

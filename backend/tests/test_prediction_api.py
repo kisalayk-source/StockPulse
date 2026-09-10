@@ -337,6 +337,54 @@ def test_prediction_without_saved_keys_returns_settings_guidance() -> None:
     assert "Settings" in response.json()["detail"]
 
 
+def test_prediction_preserves_non_credential_provider_message() -> None:
+    from app.services.providers import ProviderUnavailable
+
+    class FailingBars(FakePrediction):
+        def predict(self, ticker: str, *, horizon: str = "5d", retrain: bool = False) -> dict:
+            raise ProviderUnavailable("alpaca", "Alpaca data feed rate limited")
+
+    with make_client(prediction=FailingBars()) as client:
+        headers = register_and_headers(client)
+        response = client.get("/api/v1/stocks/AAPL/prediction", headers=headers)
+
+    assert response.status_code == 503
+    detail = response.json()["detail"]
+    assert detail["provider"] == "alpaca"
+    assert "rate limited" in detail["message"].casefold()
+
+
+def test_prediction_surfaces_missing_xgboost_dependency() -> None:
+    class MissingXgb(FakePrediction):
+        def predict(self, ticker: str, *, horizon: str = "5d", retrain: bool = False) -> dict:
+            raise RuntimeError(
+                "hybrid prediction requires xgboost; "
+                "install backend/requirements.txt and restart the API"
+            )
+
+    with make_client(prediction=MissingXgb()) as client:
+        headers = register_and_headers(client)
+        response = client.get("/api/v1/stocks/AAPL/prediction", headers=headers)
+
+    assert response.status_code == 503
+    assert "xgboost" in response.json()["detail"].casefold()
+
+
+def test_prediction_import_error_returns_install_guidance() -> None:
+    class BrokenImport(FakePrediction):
+        def predict(self, ticker: str, *, horizon: str = "5d", retrain: bool = False) -> dict:
+            raise ModuleNotFoundError("No module named 'xgboost'", name="xgboost")
+
+    with make_client(prediction=BrokenImport()) as client:
+        headers = register_and_headers(client)
+        response = client.get("/api/v1/stocks/AAPL/prediction", headers=headers)
+
+    assert response.status_code == 503
+    detail = response.json()["detail"].casefold()
+    assert "xgboost" in detail
+    assert "requirements.txt" in detail
+
+
 def test_prediction_service_fetches_bars_with_injected_credentials() -> None:
     """End-to-end: PredictionService.bars path sees ContextVar credentials."""
     from app.auth import use_trading_credentials, BrokerCredentials
