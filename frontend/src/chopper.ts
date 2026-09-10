@@ -1,4 +1,4 @@
-import type { Candle } from './api'
+import type { Candle, ForecastPoint } from './api'
 
 export type ChopperMaType = 'SMA' | 'EMA'
 export type ChopperRegime = 'green' | 'lightgreen' | 'yellow' | 'neutral'
@@ -84,4 +84,38 @@ export function calculateChopper(
   })
 
   return points
+}
+
+function forecastAsCandles(points: ForecastPoint[]): Candle[] {
+  return points.map((point) => ({
+    time: point.time,
+    open: point.value,
+    high: point.value,
+    low: point.value,
+    close: point.value,
+  }))
+}
+
+export function calculateChopperOnForecast(
+  candles: Candle[],
+  forecast: ForecastPoint[],
+  config: ChopperConfig = DEFAULT_CHOPPER_CONFIG,
+): ChopperPoint[] {
+  if (!candles.length || !forecast.length) return []
+  const forecastTimes = new Set(forecast.map((point) => String(point.time)))
+  // SMAs/regimes still warm up on history, but projected markers start flat at the
+  // forecast boundary so an inherited historical long does not paint EXIT first.
+  const projected = calculateChopper([...candles, ...forecastAsCandles(forecast)], config)
+    .filter((point) => forecastTimes.has(String(point.time)))
+  let wasActionable = false
+  return projected.map((point) => {
+    const actionable = point.regime === 'green' || point.regime === 'lightgreen'
+    const signal = actionable && !wasActionable
+      ? 'entry'
+      : !actionable && wasActionable
+        ? 'exit'
+        : undefined
+    wasActionable = actionable
+    return { ...point, signal }
+  })
 }

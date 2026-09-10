@@ -14,12 +14,12 @@ export default defineConfig({
   server: {
     host: true,
     port: 5173,
-    allowedHosts: ['stockapp', 'stockapp.local', 'stockapp.lan', '.lan', '.local'],
+    allowedHosts: ['stockapp', 'stockapp.local', 'stockapp.lan', 'stockpulse.trade', '.lan', '.local'],
     proxy: apiProxy,
   },
   preview: {
     host: true,
-    allowedHosts: ['stockapp', 'stockapp.local', 'stockapp.lan', '.lan', '.local'],
+    allowedHosts: ['stockapp', 'stockapp.local', 'stockapp.lan', 'stockpulse.trade', '.lan', '.local'],
     proxy: apiProxy,
   },
   test: {

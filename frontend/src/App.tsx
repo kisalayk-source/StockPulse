@@ -27,7 +27,7 @@ import { PortfolioPanel, type HoldSuggestion } from './PortfolioPanel'
 import { OrderReview, type ReviewOrder } from './OrderReview'
 import { SettingsModal } from './SettingsModal'
 import { FavoritesPanel, ResearchPanel, SecIntelligencePanel, SecRecordsPanel, SectorsPanel, TopAccumulationPanel } from './SecIntelligencePanel'
-import { calculateChopper, type ChopperPoint } from './chopper'
+import { calculateChopper, calculateChopperOnForecast, type ChopperPoint } from './chopper'
 import './App.css'
 
 type LoadState = 'idle' | 'loading' | 'ready' | 'error'
@@ -276,7 +276,7 @@ function DecisionPanel({
   )
 }
 
-function ChopperPanel({ points }: { points: ChopperPoint[] }) {
+function ChopperPanel({ points, projected = false }: { points: ChopperPoint[]; projected?: boolean }) {
   const latest = points.at(-1)
   const entries = points.filter((point) => point.signal === 'entry').length
   const exits = points.filter((point) => point.signal === 'exit').length
@@ -284,7 +284,7 @@ function ChopperPanel({ points }: { points: ChopperPoint[] }) {
   return (
     <div className="decision-panel chopper-panel">
       <div className="decision-summary">
-        <div><span>Current state</span><strong className={actionable ? 'positive' : undefined}>{latest?.regime ?? 'warming up'}</strong></div>
+        <div><span>{projected ? 'Forecast state' : 'Current state'}</span><strong className={actionable ? 'positive' : undefined}>{latest?.regime ?? 'warming up'}</strong></div>
         <div><span>SMA 10</span><strong>{formatCurrency(latest?.fast)}</strong></div>
         <div><span>SMA 20</span><strong>{formatCurrency(latest?.slow)}</strong></div>
         <div><span>Signals shown</span><strong>{entries} enter / {exits} exit</strong></div>
@@ -294,7 +294,9 @@ function ChopperPanel({ points }: { points: ChopperPoint[] }) {
         {actionable ? 'Entry condition is active.' : 'No entry condition is active.'}
       </p>
       <p className="decision-note">
-        Enter when the 10-bar average is above the 20-bar average and rising versus five bars ago. Exit when that condition ends. Signals use closing-bar data only and never place orders.
+        {projected
+          ? 'Projected enter and exit markers use the forecast close path plus recent candles so the averages can warm up. Markers start flat at the forecast start (they do not inherit an open historical Chopper position). SMA 10/20 appear when you hover near those averages. They never place orders.'
+          : 'Enter when the 10-bar average is above the 20-bar average and rising versus five bars ago. Exit when that condition ends. Signals use closing-bar data only and never place orders.'}
       </p>
     </div>
   )
@@ -334,6 +336,11 @@ function App() {
     () => forecastEngine === 'chopper' ? calculateChopper(chart?.candles || []) : undefined,
     [chart, forecastEngine],
   )
+  const forecastChopper = useMemo(() => {
+    if (forecastEngine === 'chopper' || !forecast?.points?.length || !chart?.candles?.length) return undefined
+    const points = calculateChopperOnForecast(chart.candles, forecast.points)
+    return points.length ? points : undefined
+  }, [chart, forecast, forecastEngine])
   const [marketState, setMarketState] = useState<LoadState>('idle')
   const [marketError, setMarketError] = useState('')
   const [marketWarning, setMarketWarning] = useState('')
@@ -1142,7 +1149,7 @@ function App() {
                 </div>
               </div>
               {marketState === 'loading' && !chart ? <div className="chart-loading"><LoaderCircle className="spin" /> Loading candles and forecast…</div>
-                : chart?.candles?.length ? <MarketChart candles={chart.candles} forecast={forecast?.points || []} chopper={chopperPoints} />
+                : chart?.candles?.length ? <MarketChart candles={chart.candles} forecast={forecastEngine === 'chopper' ? [] : (forecast?.points || [])} chopper={chopperPoints} forecastChopper={forecastChopper} />
                   : <EmptyState>No chart data available for {symbol}.</EmptyState>}
               <div className="chart-meta">
                 <span><i className="legend candle" /> Historical OHLC</span>
@@ -1153,6 +1160,7 @@ function App() {
                     : forecastEngine === 'ensemble' || forecast?.engine === 'ensemble'
                     ? 'Ensemble forecast'
                     : 'Kronos forecast'}
+                  {forecastChopper ? ' · SMA 10 / 20 on hover' : ''}
                 </span>
                 <span className="meta-right">
                   {intervalMetaLabel(chartInterval)} · {barUnitLabel(chartInterval, DEFAULT_BARS[horizon])} ·{' '}
@@ -1174,7 +1182,12 @@ function App() {
               </div>
               {forecastEngine === 'chopper'
                 ? <ChopperPanel points={chopperPoints || []} />
-                : <DecisionPanel forecast={forecast} prediction={prediction} news={news} publicSentiment={publicSentiment} interval={chartInterval} />}
+                : (
+                  <>
+                    <DecisionPanel forecast={forecast} prediction={prediction} news={news} publicSentiment={publicSentiment} interval={chartInterval} />
+                    {forecastChopper && <ChopperPanel points={forecastChopper} projected />}
+                  </>
+                )}
               <p className="disclaimer">Chart-path forecasts and model-stance calls are probabilistic research outputs, not investment advice. They never trigger orders.</p>
             </section>
 
