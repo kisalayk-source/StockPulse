@@ -27,6 +27,7 @@ import { PortfolioPanel, type HoldSuggestion } from './PortfolioPanel'
 import { OrderReview, type ReviewOrder } from './OrderReview'
 import { SettingsModal } from './SettingsModal'
 import { FavoritesPanel, ResearchPanel, SecIntelligencePanel, SecRecordsPanel, SectorsPanel, TopAccumulationPanel } from './SecIntelligencePanel'
+import { calculateChopper, type ChopperPoint } from './chopper'
 import './App.css'
 
 type LoadState = 'idle' | 'loading' | 'ready' | 'error'
@@ -99,7 +100,17 @@ function MarketLight({ clock }: { clock: MarketClock }) {
 }
 
 type ForecastPreset = 'short' | 'long'
-type ForecastEngine = 'kronos' | 'ensemble'
+type ForecastEngine = 'kronos' | 'ensemble' | 'chopper'
+
+const DEV_AUTH_BYPASS = import.meta.env.DEV && import.meta.env.VITE_DEV_AUTH_BYPASS === 'true'
+const DEV_AUTH_USER: AuthUser = {
+  id: 0,
+  email: 'dev@stockpulse.local',
+  alpaca: {
+    paper: { configured: false, keyPreview: null },
+    live: { configured: false, keyPreview: null },
+  },
+}
 
 const CHART_INTERVALS: ChartInterval[] = ['1Min', '5Min', '15Min', '1Hour', '1Day']
 const DEFAULT_INTERVAL: Record<ForecastPreset, ChartInterval> = { short: '5Min', long: '1Day' }
@@ -265,6 +276,30 @@ function DecisionPanel({
   )
 }
 
+function ChopperPanel({ points }: { points: ChopperPoint[] }) {
+  const latest = points.at(-1)
+  const entries = points.filter((point) => point.signal === 'entry').length
+  const exits = points.filter((point) => point.signal === 'exit').length
+  const actionable = latest?.regime === 'green' || latest?.regime === 'lightgreen'
+  return (
+    <div className="decision-panel chopper-panel">
+      <div className="decision-summary">
+        <div><span>Current state</span><strong className={actionable ? 'positive' : undefined}>{latest?.regime ?? 'warming up'}</strong></div>
+        <div><span>SMA 10</span><strong>{formatCurrency(latest?.fast)}</strong></div>
+        <div><span>SMA 20</span><strong>{formatCurrency(latest?.slow)}</strong></div>
+        <div><span>Signals shown</span><strong>{entries} enter / {exits} exit</strong></div>
+      </div>
+      <p className="decision-path">
+        <strong>Position state:</strong>{' '}
+        {actionable ? 'Entry condition is active.' : 'No entry condition is active.'}
+      </p>
+      <p className="decision-note">
+        Enter when the 10-bar average is above the 20-bar average and rising versus five bars ago. Exit when that condition ends. Signals use closing-bar data only and never place orders.
+      </p>
+    </div>
+  )
+}
+
 type DashboardView = 'market' | 'favorites' | 'sectors' | 'top' | 'research' | 'records'
 
 const FALLBACK_SECTORS = ['Energy', 'Technology', 'Healthcare', 'Financials', 'Industrials']
@@ -275,8 +310,8 @@ function sleep(ms: number): Promise<void> {
 
 function App() {
   const [accessToken, setAccessTokenState] = useState<string | null>(() => getAccessToken())
-  const [authUser, setAuthUser] = useState<AuthUser | null>(null)
-  const [authChecking, setAuthChecking] = useState(() => Boolean(getAccessToken()))
+  const [authUser, setAuthUser] = useState<AuthUser | null>(() => DEV_AUTH_BYPASS ? DEV_AUTH_USER : null)
+  const [authChecking, setAuthChecking] = useState(() => !DEV_AUTH_BYPASS && Boolean(getAccessToken()))
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [mode, setMode] = useState<TradingMode>('paper')
   const [modeConfirm, setModeConfirm] = useState(false)
@@ -295,6 +330,10 @@ function App() {
   const [horizon, setHorizon] = useState<ForecastPreset>('short')
   const [chartInterval, setChartInterval] = useState<ChartInterval>(DEFAULT_INTERVAL.short)
   const [forecastEngine, setForecastEngine] = useState<ForecastEngine>('kronos')
+  const chopperPoints = useMemo(
+    () => forecastEngine === 'chopper' ? calculateChopper(chart?.candles || []) : undefined,
+    [chart, forecastEngine],
+  )
   const [marketState, setMarketState] = useState<LoadState>('idle')
   const [marketError, setMarketError] = useState('')
   const [marketWarning, setMarketWarning] = useState('')
@@ -555,10 +594,13 @@ function App() {
       })
       const forecastBars = DEFAULT_BARS[horizon]
       const predictionHorizon = chartInterval === '1Day' && horizon === 'long' ? '20d' : '5d'
+      const forecastPromise = forecastEngine === 'chopper'
+        ? Promise.resolve(null)
+        : api.forecast(symbol, horizon, forecastBars, forecastEngine, chartInterval)
       const [overviewResult, chartResult, forecastResult, predictionResult] = await Promise.allSettled([
         overviewPromise,
         api.chart(symbol, chartInterval),
-        api.forecast(symbol, horizon, forecastBars, forecastEngine, chartInterval),
+        forecastPromise,
         api.prediction(symbol, predictionHorizon),
       ])
       if (requestId !== marketRequest.current) return
@@ -568,7 +610,7 @@ function App() {
       setPrediction(predictionResult.status === 'fulfilled' ? predictionResult.value : null)
       const unavailable = [
         unavailableLabel(chartResult, 'chart'),
-        unavailableLabel(forecastResult, 'forecast'),
+        forecastEngine === 'chopper' ? '' : unavailableLabel(forecastResult, 'forecast'),
         unavailableLabel(predictionResult, 'hybrid prediction'),
       ].filter(Boolean)
       if (unavailable.length) {
@@ -637,6 +679,7 @@ function App() {
   }), [])
 
   useEffect(() => {
+    if (DEV_AUTH_BYPASS) return
     if (!accessToken) {
       setAuthUser(null)
       setAuthChecking(false)
@@ -892,7 +935,7 @@ function App() {
     )
   }
 
-  if (!accessToken || !authUser) {
+  if ((!accessToken && !DEV_AUTH_BYPASS) || !authUser) {
     return <AuthScreen onAuthenticated={(user) => { setAuthUser(user); setAccessTokenState(getAccessToken()) }} />
   }
 
@@ -1053,6 +1096,13 @@ function App() {
                     >
                       Forecast
                     </button>
+                    <button
+                      aria-pressed={forecastEngine === 'chopper'}
+                      className={forecastEngine === 'chopper' ? 'active' : ''}
+                      onClick={() => setForecastEngine('chopper')}
+                    >
+                      Chopper
+                    </button>
                   </div>
                   <div className="segmented" aria-label="Forecast preset">
                     <button
@@ -1092,13 +1142,15 @@ function App() {
                 </div>
               </div>
               {marketState === 'loading' && !chart ? <div className="chart-loading"><LoaderCircle className="spin" /> Loading candles and forecast…</div>
-                : chart?.candles?.length ? <MarketChart candles={chart.candles} forecast={forecast?.points || []} />
+                : chart?.candles?.length ? <MarketChart candles={chart.candles} forecast={forecast?.points || []} chopper={chopperPoints} />
                   : <EmptyState>No chart data available for {symbol}.</EmptyState>}
               <div className="chart-meta">
                 <span><i className="legend candle" /> Historical OHLC</span>
                 <span>
                   <i className="legend forecast" />{' '}
-                  {forecastEngine === 'ensemble' || forecast?.engine === 'ensemble'
+                  {forecastEngine === 'chopper'
+                    ? 'Chopper SMA 10 / 20'
+                    : forecastEngine === 'ensemble' || forecast?.engine === 'ensemble'
                     ? 'Ensemble forecast'
                     : 'Kronos forecast'}
                 </span>
@@ -1114,11 +1166,15 @@ function App() {
                   {forecast?.modelsUsed?.length
                     ? `${forecast.modelsUsed.join(' + ')} · `
                     : ''}
-                  {forecast?.model || (forecastEngine === 'ensemble' ? 'ensemble' : 'Kronos')} · prediction {formatDateTime(forecast?.predictionStart)}
-                  {' → '}{formatDateTime(forecast?.predictionEnd)} · data through {formatDateTime(forecast?.generatedAt)}
+                  {forecastEngine === 'chopper'
+                    ? 'trend lookback 5 bars · closing-bar signals'
+                    : <>{forecast?.model || (forecastEngine === 'ensemble' ? 'ensemble' : 'Kronos')} · prediction {formatDateTime(forecast?.predictionStart)}
+                      {' → '}{formatDateTime(forecast?.predictionEnd)} · data through {formatDateTime(forecast?.generatedAt)}</>}
                 </span>
               </div>
-              <DecisionPanel forecast={forecast} prediction={prediction} news={news} publicSentiment={publicSentiment} interval={chartInterval} />
+              {forecastEngine === 'chopper'
+                ? <ChopperPanel points={chopperPoints || []} />
+                : <DecisionPanel forecast={forecast} prediction={prediction} news={news} publicSentiment={publicSentiment} interval={chartInterval} />}
               <p className="disclaimer">Chart-path forecasts and model-stance calls are probabilistic research outputs, not investment advice. They never trigger orders.</p>
             </section>
 

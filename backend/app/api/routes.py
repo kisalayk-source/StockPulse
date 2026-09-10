@@ -31,6 +31,7 @@ from app.services.providers import (
     SEARCH_RESULT_LIMIT,
     ProviderUnavailable,
     merge_news,
+    local_symbol_search,
     rank_search_results,
 )
 
@@ -53,6 +54,24 @@ def trading_provider_call(
     **kwargs: Any,
 ) -> Any:
     credentials = get_user_broker_credentials(session, services.settings, user, mode)
+    with use_trading_credentials(credentials):
+        return provider_call(function, *args, **kwargs)
+
+
+def market_provider_call(
+    user: User,
+    session: Session,
+    services: Services,
+    function: Any,
+    *args: Any,
+    **kwargs: Any,
+) -> Any:
+    try:
+        credentials = get_user_broker_credentials(session, services.settings, user, "paper")
+    except HTTPException as exc:
+        if exc.status_code != status.HTTP_400_BAD_REQUEST:
+            raise
+        return provider_call(function, *args, **kwargs)
     with use_trading_credentials(credentials):
         return provider_call(function, *args, **kwargs)
 
@@ -166,19 +185,31 @@ async def market_clock(services: ServiceDep) -> dict[str, Any]:
 @router.get("/symbols/search")
 async def symbol_search(
     services: ServiceDep,
+    user: UserDep,
+    session: SessionDep,
     q: str = Query(min_length=1, max_length=80),
 ) -> dict[str, Any]:
     alpaca_results: list[dict[str, Any]] = []
     finnhub_results: list[dict[str, Any]] = []
     errors: list[dict[str, str]] = []
     try:
-        alpaca_results = await run_in_threadpool(services.alpaca.search_assets, q, "paper")
+        alpaca_results = await run_in_threadpool(
+            market_provider_call, user, session, services, services.alpaca.search_assets, q, "paper"
+        )
     except ProviderUnavailable as exc:
         logger.warning(
             "optional_provider_unavailable",
             extra={"provider": exc.provider, "error_type": type(exc).__name__},
         )
         errors.append({"provider": exc.provider, "message": "Provider unavailable"})
+    except HTTPException as exc:
+        if exc.status_code != status.HTTP_503_SERVICE_UNAVAILABLE:
+            raise
+        logger.warning(
+            "optional_provider_unavailable",
+            extra={"provider": "alpaca", "error_type": type(exc).__name__},
+        )
+        errors.append({"provider": "alpaca", "message": "Provider unavailable"})
     try:
         finnhub_results = await services.finnhub.search(q)
     except ProviderUnavailable as exc:
@@ -194,7 +225,7 @@ async def symbol_search(
         )
         errors.append({"provider": "finnhub", "message": "Provider request failed"})
     if not alpaca_results and not finnhub_results and len(errors) == 2:
-        raise HTTPException(status_code=503, detail={"providers": errors})
+        return {"results": local_symbol_search(q), "provider_errors": errors}
     merged: dict[str, dict[str, Any]] = {}
     for item in [*alpaca_results, *finnhub_results]:
         symbol = item.get("symbol")
@@ -208,9 +239,13 @@ async def symbol_search(
 async def stock_overview(
     symbol: SymbolPath,
     services: ServiceDep,
+    user: UserDep,
+    session: SessionDep,
     news_limit: int = Query(default=8, ge=0, le=20),
 ) -> dict[str, Any]:
-    snapshot = await run_in_threadpool(provider_call, services.alpaca.snapshot, symbol)
+    snapshot = await run_in_threadpool(
+        market_provider_call, user, session, services, services.alpaca.snapshot, symbol
+    )
     provider_errors: list[dict[str, str]] = []
     alpaca_news: list[dict[str, Any]] = []
     finnhub_news: list[dict[str, Any]] = []
@@ -224,7 +259,15 @@ async def stock_overview(
     ticker = symbol.upper()
     if news_limit:
         try:
-            alpaca_news = await run_in_threadpool(services.alpaca.news, ticker, news_limit)
+            alpaca_news = await run_in_threadpool(
+                market_provider_call,
+                user,
+                session,
+                services,
+                services.alpaca.news,
+                ticker,
+                news_limit,
+            )
         except Exception as exc:
             logger.error(
                 "optional_provider_failed",
@@ -268,13 +311,24 @@ async def stock_overview(
 async def stock_bars(
     symbol: SymbolPath,
     services: ServiceDep,
+    user: UserDep,
+    session: SessionDep,
     timeframe: Literal["1Min", "5Min", "15Min", "1Hour", "1Day"] = "1Day",
     start: datetime | None = None,
     end: datetime | None = None,
     limit: int = Query(default=300, ge=1, le=1000),
 ) -> dict[str, Any]:
     bars = await run_in_threadpool(
-        provider_call, services.alpaca.bars, symbol, timeframe, start, end, limit
+        market_provider_call,
+        user,
+        session,
+        services,
+        services.alpaca.bars,
+        symbol,
+        timeframe,
+        start,
+        end,
+        limit,
     )
     return {"symbol": symbol.upper(), "timeframe": timeframe, "bars": bars}
 
@@ -568,11 +622,18 @@ async def submit_option(
 
 @router.post("/forecast")
 async def forecast(
-    forecast_request: ForecastRequest, services: ServiceDep, request: Request
+    forecast_request: ForecastRequest,
+    services: ServiceDep,
+    request: Request,
+    user: UserDep,
+    session: SessionDep,
 ) -> dict[str, Any]:
     enforce_rate_limit(request, "forecast", services.settings.forecast_rate_limit_per_minute)
     return await run_in_threadpool(
-        provider_call,
+        market_provider_call,
+        user,
+        session,
+        services,
         services.kronos.forecast,
         forecast_request.symbol,
         forecast_request.preset,

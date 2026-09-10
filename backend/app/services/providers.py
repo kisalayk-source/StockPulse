@@ -82,6 +82,26 @@ SEARCH_ALIASES: dict[str, tuple[str, ...]] = {
 }
 
 SEARCH_RESULT_LIMIT = 40
+LOCAL_SYMBOL_CATALOG: tuple[dict[str, Any], ...] = (
+    {"symbol": "AAPL", "name": "Apple Inc.", "exchange": "NASDAQ", "tradable": True},
+    {"symbol": "MSFT", "name": "Microsoft Corporation", "exchange": "NASDAQ", "tradable": True},
+    {"symbol": "NVDA", "name": "NVIDIA Corporation", "exchange": "NASDAQ", "tradable": True},
+    {"symbol": "AMZN", "name": "Amazon.com, Inc.", "exchange": "NASDAQ", "tradable": True},
+    {"symbol": "META", "name": "Meta Platforms, Inc.", "exchange": "NASDAQ", "tradable": True},
+    {"symbol": "GOOGL", "name": "Alphabet Inc. Class A", "exchange": "NASDAQ", "tradable": True},
+    {"symbol": "GOOG", "name": "Alphabet Inc. Class C", "exchange": "NASDAQ", "tradable": True},
+    {"symbol": "TSLA", "name": "Tesla, Inc.", "exchange": "NASDAQ", "tradable": True},
+    {"symbol": "AMD", "name": "Advanced Micro Devices, Inc.", "exchange": "NASDAQ", "tradable": True},
+    {"symbol": "NFLX", "name": "Netflix, Inc.", "exchange": "NASDAQ", "tradable": True},
+    {"symbol": "JPM", "name": "JPMorgan Chase & Co.", "exchange": "NYSE", "tradable": True},
+    {"symbol": "BAC", "name": "Bank of America Corporation", "exchange": "NYSE", "tradable": True},
+    {"symbol": "XOM", "name": "Exxon Mobil Corporation", "exchange": "NYSE", "tradable": True},
+    {"symbol": "WMT", "name": "Walmart Inc.", "exchange": "NYSE", "tradable": True},
+    {"symbol": "DIS", "name": "The Walt Disney Company", "exchange": "NYSE", "tradable": True},
+    {"symbol": "SPY", "name": "SPDR S&P 500 ETF Trust", "exchange": "NYSE ARCA", "tradable": True},
+    {"symbol": "QQQ", "name": "Invesco QQQ Trust", "exchange": "NASDAQ", "tradable": True},
+    {"symbol": "IWM", "name": "iShares Russell 2000 ETF", "exchange": "NYSE ARCA", "tradable": True},
+)
 _OCC_OPTION_SYMBOL = re.compile(r"^([A-Z]{1,6})\d{6}[CP]\d{8}$")
 
 
@@ -128,6 +148,19 @@ def rank_search_results(query: str, items: list[dict[str, Any]]) -> list[dict[st
         return (bucket, extra, tradable_penalty, len(symbol_upper), symbol_upper)
 
     return sorted(items, key=key)
+
+
+def local_symbol_search(query: str) -> list[dict[str, Any]]:
+    needle = query.strip().casefold()
+    aliases = {symbol.upper() for symbol in SEARCH_ALIASES.get(needle, ())}
+    matches = [
+        dict(item)
+        for item in LOCAL_SYMBOL_CATALOG
+        if item["symbol"] in aliases
+        or needle in str(item["symbol"]).casefold()
+        or needle in str(item["name"]).casefold()
+    ]
+    return rank_search_results(query, matches)[:SEARCH_RESULT_LIMIT]
 
 
 _POSITIVE_NEWS = re.compile(

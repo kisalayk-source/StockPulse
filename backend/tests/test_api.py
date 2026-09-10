@@ -6,6 +6,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.config import Settings
+from app.auth import current_trading_credentials
 from app.db import reset_db_state
 from app.dependencies import Services
 from app.main import create_app
@@ -360,6 +361,19 @@ def test_register_login_and_me() -> None:
         assert login.json()["access_token"]
 
 
+def test_delete_alpaca_credentials() -> None:
+    with make_client() as client:
+        headers = register_and_headers(client)
+        removed = client.delete(
+            "/api/v1/auth/alpaca", params={"mode": "paper"}, headers=headers
+        )
+        me = client.get("/api/v1/auth/me", headers=headers)
+
+    assert removed.status_code == 200
+    assert removed.json()["alpaca"]["paper"]["configured"] is False
+    assert me.json()["alpaca"]["paper"]["configured"] is False
+
+
 def test_research_llm_preferences() -> None:
     with make_client(Settings(research_llm_enabled=True, openai_api_key="test-key")) as client:
         email = f"ai-user-{uuid4().hex[:8]}@example.com"
@@ -393,6 +407,27 @@ def test_research_llm_preferences() -> None:
 def test_unauthenticated_trading_is_rejected() -> None:
     with make_client() as client:
         response = client.get("/api/v1/account", params={"mode": "paper"})
+    assert response.status_code == 401
+
+
+def test_development_auth_bypass_uses_a_persisted_dev_user() -> None:
+    config = settings(
+        app_environment="development",
+        dev_auth_bypass=True,
+        dev_auth_email="local-dev@stockpulse.local",
+    )
+    with make_client(config) as client:
+        first = client.get("/api/v1/auth/me")
+        second = client.get("/api/v1/auth/me")
+
+    assert first.status_code == 200
+    assert first.json()["email"] == "local-dev@stockpulse.local"
+    assert second.json()["id"] == first.json()["id"]
+
+
+def test_auth_bypass_cannot_run_in_production() -> None:
+    with make_client(settings(app_environment="production", dev_auth_bypass=True)) as client:
+        response = client.get("/api/v1/auth/me")
     assert response.status_code == 401
 
 
@@ -610,6 +645,44 @@ def test_search_api_returns_ranked_common_symbols() -> None:
             "/api/v1/symbols/search", params={"q": "meta"}, headers=headers
         ).json()["results"]
         assert results[0]["symbol"] == "META"
+
+
+def test_search_api_falls_back_to_local_symbols_when_providers_are_unavailable() -> None:
+    class UnavailableAlpaca(FakeAlpaca):
+        def search_assets(self, query: str, mode: str) -> list[dict]:
+            raise ProviderUnavailable("alpaca", "credentials not configured")
+
+    class UnavailableFinnhub(FakeFinnhub):
+        async def search(self, query: str) -> list[dict]:
+            raise ProviderUnavailable("finnhub", "credentials not configured")
+
+    with make_client(alpaca=UnavailableAlpaca(), finnhub=UnavailableFinnhub()) as client:
+        headers = register_and_headers(client, with_alpaca=False)
+        response = client.get(
+            "/api/v1/symbols/search", params={"q": "apple"}, headers=headers
+        )
+
+    assert response.status_code == 200
+    assert response.json()["results"][0]["symbol"] == "AAPL"
+    assert {error["provider"] for error in response.json()["provider_errors"]} == {
+        "alpaca",
+        "finnhub",
+    }
+
+
+def test_market_data_uses_saved_user_credentials() -> None:
+    class CredentialAwareAlpaca(FakeAlpaca):
+        def snapshot(self, symbol: str) -> dict:
+            credentials = current_trading_credentials()
+            assert credentials is not None
+            assert credentials.key == "PKTESTKEY123456"
+            return super().snapshot(symbol)
+
+    with make_client(alpaca=CredentialAwareAlpaca()) as client:
+        headers = register_and_headers(client)
+        response = client.get("/api/v1/stocks/AAPL/overview", headers=headers)
+
+    assert response.status_code == 200
 
 
 def test_overview_returns_news_for_the_requested_symbol() -> None:

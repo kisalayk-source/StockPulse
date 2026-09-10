@@ -182,6 +182,7 @@ async def save_alpaca(
 def delete_alpaca(
     user: UserDep,
     session: SessionDep,
+    services: ServiceDep,
     mode: Literal["paper", "live"] = Query(default="paper"),
 ) -> dict[str, Any]:
     row = (
