@@ -457,8 +457,8 @@ class AlpacaService:
     def __init__(self, settings: Settings):
         self.settings = settings
         self._trading_clients: dict[str, Any] = {}
-        self._stock_client: Any = None
-        self._option_client: Any = None
+        self._stock_clients: dict[str, Any] = {}
+        self._option_clients: dict[str, Any] = {}
         self._asset_cache: TTLCache[str, Any] = TTLCache(maxsize=4, ttl=300)
 
     def _credentials(self, mode: str) -> tuple[str, str]:
@@ -487,21 +487,33 @@ class AlpacaService:
             self._trading_clients[cache_key] = TradingClient(key, secret, paper=(mode == "paper"))
         return self._trading_clients[cache_key]
 
+    def _data_cache_key(self, mode: str) -> str:
+        from app.auth import current_trading_credentials
+
+        override = current_trading_credentials()
+        if override is not None:
+            return f"{mode}:{override.key}"
+        return f"{mode}:env"
+
     def _stock_data(self) -> Any:
-        key, secret = self._credentials(self.settings.alpaca_data_credentials_mode)
-        if self._stock_client is None:
+        mode = self.settings.alpaca_data_credentials_mode
+        key, secret = self._credentials(mode)
+        cache_key = self._data_cache_key(mode)
+        if cache_key not in self._stock_clients:
             from alpaca.data.historical import StockHistoricalDataClient
 
-            self._stock_client = StockHistoricalDataClient(key, secret)
-        return self._stock_client
+            self._stock_clients[cache_key] = StockHistoricalDataClient(key, secret)
+        return self._stock_clients[cache_key]
 
     def _option_data(self) -> Any:
-        key, secret = self._credentials(self.settings.alpaca_data_credentials_mode)
-        if self._option_client is None:
+        mode = self.settings.alpaca_data_credentials_mode
+        key, secret = self._credentials(mode)
+        cache_key = self._data_cache_key(mode)
+        if cache_key not in self._option_clients:
             from alpaca.data.historical.option import OptionHistoricalDataClient
 
-            self._option_client = OptionHistoricalDataClient(key, secret)
-        return self._option_client
+            self._option_clients[cache_key] = OptionHistoricalDataClient(key, secret)
+        return self._option_clients[cache_key]
 
     def _stock_feed(self) -> Any:
         from alpaca.data.enums import DataFeed

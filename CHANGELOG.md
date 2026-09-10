@@ -55,6 +55,7 @@ Notable changes to this project are documented here. The format follows
 
 ### Fixed
 
+- **Hybrid prediction ignored Settings Alpaca keys** — `/stocks/{ticker}/prediction` (and related feature/signal/risk/explanation routes) now use the same saved paper credentials as market data, so UI-configured keys work without `ALPACA_PAPER_*` env vars. Stock/option data clients are also cached per credential key.
 - **SEC Records empty entity/action columns** — filings that were stored without parsed XML children are now backfilled on sync and on each `/filings` request; EDGAR document selection ranks Form 4/13D/13G/13F XML attachments (`ownership.xml`, `infotable.xml`, etc.) and retries parsing until structured data is extracted.
 - **SEC Records empty for valid tickers** — `/stocks/{symbol}/filings` syncs EDGAR submissions before querying SQLite; the SEC Records tab auto-loads on open and after search.
 - **LAN 502 on first load** — publish script waits for backend health before starting the frontend; accumulation scan no longer blocks API requests while building the mover universe.

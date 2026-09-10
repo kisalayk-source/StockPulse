@@ -293,6 +293,31 @@ def test_prediction_api_endpoints() -> None:
         assert "72%" in explanation.json()["explanation"]["text"]
 
 
+def test_prediction_uses_saved_user_alpaca_credentials() -> None:
+    """Hybrid prediction must inject Settings-saved keys, not only ALPACA_* env vars."""
+    from app.auth import current_trading_credentials
+
+    class CredentialAwarePrediction(FakePrediction):
+        def predict(self, ticker: str, *, horizon: str = "5d", retrain: bool = False) -> dict:
+            credentials = current_trading_credentials()
+            assert credentials is not None
+            assert credentials.key == "PKTESTKEY123456"
+            return super().predict(ticker, horizon=horizon, retrain=retrain)
+
+        def features(self, ticker: str) -> dict:
+            credentials = current_trading_credentials()
+            assert credentials is not None
+            return super().features(ticker)
+
+    with make_client(prediction=CredentialAwarePrediction()) as client:
+        headers = register_and_headers(client)
+        pred = client.get("/api/v1/stocks/AAPL/prediction", headers=headers, params={"horizon": "5d"})
+        features = client.get("/api/v1/stocks/AAPL/features", headers=headers)
+
+    assert pred.status_code == 200, pred.text
+    assert features.status_code == 200, features.text
+
+
 def test_prediction_engine_end_to_end(tmp_path: Path) -> None:
     pytest.importorskip("xgboost")
     engine = PredictionEngine(
