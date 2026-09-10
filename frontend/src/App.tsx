@@ -26,6 +26,8 @@ import { MoversPanel } from './MoversPanel'
 import { PortfolioPanel, type HoldSuggestion } from './PortfolioPanel'
 import { OrderReview, type ReviewOrder } from './OrderReview'
 import { SettingsModal } from './SettingsModal'
+import { TradingAgentPanel } from './TradingAgentPanel'
+import { RiskManagementPanel } from './RiskManagementPanel'
 import { FavoritesPanel, ResearchPanel, SecIntelligencePanel, SecRecordsPanel, SectorsPanel, TopAccumulationPanel } from './SecIntelligencePanel'
 import { calculateChopper, calculateChopperOnForecast, type ChopperPoint } from './chopper'
 import './App.css'
@@ -302,7 +304,21 @@ function ChopperPanel({ points, projected = false }: { points: ChopperPoint[]; p
   )
 }
 
-type DashboardView = 'market' | 'favorites' | 'sectors' | 'top' | 'research' | 'records'
+type DashboardView = 'market' | 'favorites' | 'sectors' | 'top' | 'research' | 'records' | 'trading-agent' | 'risk-management'
+
+function viewFromPath(pathname: string): DashboardView | null {
+  if (pathname === '/trading-agent' || pathname.endsWith('/trading-agent')) return 'trading-agent'
+  if (pathname === '/settings/risk-management' || pathname.endsWith('/settings/risk-management')) {
+    return 'risk-management'
+  }
+  return null
+}
+
+function pathForView(view: DashboardView): string {
+  if (view === 'trading-agent') return '/trading-agent'
+  if (view === 'risk-management') return '/settings/risk-management'
+  return '/'
+}
 
 const FALLBACK_SECTORS = ['Energy', 'Technology', 'Healthcare', 'Financials', 'Industrials']
 
@@ -378,10 +394,33 @@ function App() {
     const local = localMarketClock()
     return { isOpen: local.isOpen, session: local.session }
   })
-  const [dashboardView, setDashboardView] = useState<DashboardView>('market')
+  const [dashboardView, setDashboardView] = useState<DashboardView>(() => viewFromPath(window.location.pathname) || 'market')
   const [secData, setSecData] = useState<SecIntelligenceResponse | null>(null)
   const [secState, setSecState] = useState<LoadState>('idle')
   const [secError, setSecError] = useState('')
+
+  useEffect(() => {
+    const path = pathForView(dashboardView)
+    if (dashboardView === 'trading-agent' || dashboardView === 'risk-management') {
+      if (window.location.pathname !== path) {
+        window.history.replaceState({}, '', path)
+      }
+    } else if (
+      window.location.pathname === '/trading-agent'
+      || window.location.pathname === '/settings/risk-management'
+    ) {
+      window.history.replaceState({}, '', '/')
+    }
+  }, [dashboardView])
+
+  useEffect(() => {
+    const onPop = () => {
+      const view = viewFromPath(window.location.pathname)
+      if (view) setDashboardView(view)
+    }
+    window.addEventListener('popstate', onPop)
+    return () => window.removeEventListener('popstate', onPop)
+  }, [])
   const [sectorRows, setSectorRows] = useState<SectorAccumulationResponse[]>([])
   const [sectorsState, setSectorsState] = useState<LoadState>('idle')
   const [topAccumulation, setTopAccumulation] = useState<TopAccumulationResponse | null>(null)
@@ -1045,6 +1084,7 @@ function App() {
         <div className="dashboard-tabs" role="tablist" aria-label="Dashboard views">
           <button role="tab" aria-selected={dashboardView === 'market'} className={dashboardView === 'market' ? 'active' : ''} onClick={() => setDashboardView('market')}>Market</button>
           <button role="tab" aria-selected={dashboardView === 'favorites'} className={dashboardView === 'favorites' ? 'active' : ''} onClick={() => setDashboardView('favorites')}>Favorites</button>
+          <button role="tab" aria-selected={dashboardView === 'trading-agent'} className={dashboardView === 'trading-agent' ? 'active' : ''} onClick={() => setDashboardView('trading-agent')}>Trading Agent</button>
           <button role="tab" aria-selected={dashboardView === 'sectors'} className={dashboardView === 'sectors' ? 'active' : ''} onClick={() => setDashboardView('sectors')}>Sectors</button>
           <button role="tab" aria-selected={dashboardView === 'top'} className={dashboardView === 'top' ? 'active' : ''} onClick={() => setDashboardView('top')}>Top Accumulation</button>
           <button role="tab" aria-selected={dashboardView === 'records'} className={dashboardView === 'records' ? 'active' : ''} onClick={() => setDashboardView('records')}>SEC Records</button>
@@ -1309,6 +1349,14 @@ function App() {
             scanProgress={scanProgress}
             onSubmit={(query) => void runResearch(query)}
           />
+        )}
+
+        {dashboardView === 'trading-agent' && (
+          <TradingAgentPanel onOpenRiskSettings={() => setDashboardView('risk-management')} />
+        )}
+
+        {dashboardView === 'risk-management' && (
+          <RiskManagementPanel onClose={() => setDashboardView('trading-agent')} />
         )}
 
         {dashboardView === 'market' && <>

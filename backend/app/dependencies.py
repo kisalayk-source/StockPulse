@@ -22,6 +22,7 @@ class Services:
     kronos: Any
     sec: Any
     prediction: Any = None
+    trading_agent: Any = None
 
 
 class RateLimiter:
@@ -52,7 +53,7 @@ class RateLimiter:
 def build_services(settings: Settings) -> Services:
     alpaca = AlpacaService(settings)
     prediction = PredictionService(settings, alpaca) if settings.prediction_enabled else None
-    return Services(
+    services = Services(
         settings=settings,
         alpaca=alpaca,
         finnhub=FinnhubService(settings),
@@ -60,6 +61,10 @@ def build_services(settings: Settings) -> Services:
         sec=SecService(settings),
         prediction=prediction,
     )
+    from app.trading_agent.service import build_trading_agent_service
+
+    services.trading_agent = build_trading_agent_service(services)
+    return services
 
 
 def get_services(request: Request) -> Services:

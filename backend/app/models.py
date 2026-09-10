@@ -69,3 +69,15 @@ from app.sec.db_models import (  # noqa: E402,F401
     SecCompanyMapping,
     SecFiling,
 )
+
+# Autonomous Trading Agent models (imported for metadata registration)
+from app.trading_agent.models import (  # noqa: E402,F401
+    AgentConfig,
+    AgentEvent,
+    AgentOrder,
+    AgentPosition,
+    AgentRun,
+    DailyLossRecord,
+    TradeCandidate,
+    TradePlan,
+)
