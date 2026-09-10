@@ -55,6 +55,7 @@ Notable changes to this project are documented here. The format follows
 
 ### Fixed
 
+- **Market light Opens/Closes times used browser local timezone** — next open/close tooltip now formats in America/New_York (EDT/EST) so US session hours stay correct on UTC or non-Eastern machines.
 - **Hybrid prediction ignored Settings Alpaca keys** — `/stocks/{ticker}/prediction` (and related feature/signal/risk/explanation routes) now resolve and inject saved paper/live credentials on the request thread before fetching bars, so UI-configured keys work without `ALPACA_PAPER_*` env vars. Stock/option data clients are also cached per credential key.
 - **SEC Records empty entity/action columns** — filings that were stored without parsed XML children are now backfilled on sync and on each `/filings` request; EDGAR document selection ranks Form 4/13D/13G/13F XML attachments (`ownership.xml`, `infotable.xml`, etc.) and retries parsing until structured data is extracted.
 - **SEC Records empty for valid tickers** — `/stocks/{symbol}/filings` syncs EDGAR submissions before querying SQLite; the SEC Records tab auto-loads on open and after search.

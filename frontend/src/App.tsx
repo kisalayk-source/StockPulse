@@ -17,7 +17,7 @@ import {
   type TradingMode,
 } from './api'
 import {
-  formatCurrency, formatDateTime, formatNumber, formatPercent,
+  formatCurrency, formatDateTime, formatMarketDateTime, formatNumber, formatPercent,
   localMarketClock, marketStatusLabel, marketStatusTone,
 } from './format'
 import { AuthScreen } from './AuthScreen'
@@ -74,7 +74,7 @@ function MarketLight({ clock }: { clock: MarketClock }) {
   const tone = marketStatusTone(clock.session, clock.isOpen)
   const label = marketStatusLabel(clock.session, clock.isOpen)
   const next = clock.isOpen ? clock.nextClose : clock.nextOpen
-  const hint = next ? `${clock.isOpen ? 'Closes' : 'Opens'} ${formatDateTime(next)}` : label
+  const hint = next ? `${clock.isOpen ? 'Closes' : 'Opens'} ${formatMarketDateTime(next)}` : label
   const lamps = [
     { id: 'red', on: tone === 'closed', off: '#7a2424', lit: '#ff2d2d' },
     { id: 'yellow', on: tone === 'extended', off: '#7a6418', lit: '#ffd000' },
