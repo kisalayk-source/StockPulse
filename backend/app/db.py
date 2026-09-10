@@ -51,7 +51,7 @@ def init_db(settings: Settings) -> Engine:
             cursor = dbapi_connection.cursor()
             cursor.execute("PRAGMA foreign_keys=ON")
             cursor.execute("PRAGMA journal_mode=WAL")
-            cursor.execute("PRAGMA busy_timeout=10000")
+            cursor.execute("PRAGMA busy_timeout=60000")
             cursor.close()
 
     _SessionLocal = sessionmaker(bind=_engine, autoflush=False, autocommit=False, expire_on_commit=False)

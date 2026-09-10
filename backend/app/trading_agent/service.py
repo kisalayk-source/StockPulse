@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 from datetime import date, datetime, timezone
-from typing import Any
+from time import sleep
+from typing import Any, Callable, TypeVar
 from uuid import uuid4
 
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session
 
 from app.trading_agent.broker import (
@@ -32,6 +34,22 @@ from app.trading_agent.strategies import strategies_for_mode
 
 
 ACTIVE_STATUSES = {"paper", "live", "paused", "configured"}
+T = TypeVar("T")
+
+
+def _retry_locked(fn: Callable[[], T], *, attempts: int = 8, delay: float = 0.15) -> T:
+    """Retry SQLite 'database is locked' contention from concurrent writers."""
+    last: Exception | None = None
+    for index in range(attempts):
+        try:
+            return fn()
+        except OperationalError as exc:
+            last = exc
+            if "locked" not in str(exc).lower() or index == attempts - 1:
+                raise
+            sleep(delay * (index + 1))
+    assert last is not None
+    raise last
 
 
 class TradingAgentService:
@@ -53,34 +71,37 @@ class TradingAgentService:
     # ── persistence helpers ──────────────────────────────────────────
 
     def get_or_create_config(self, session: Session, user_id: int) -> AgentConfig:
-        row = (
-            session.query(AgentConfig)
-            .filter(AgentConfig.user_id == user_id)
-            .order_by(AgentConfig.id.asc())
-            .first()
-        )
-        if row:
-            return row
-        profile = "medium"
-        risk = get_risk_config(profile)
-        row = AgentConfig(
-            user_id=user_id,
-            name="Default Agent",
-            enabled=False,
-            status="disabled",
-            mode="paper",
-            trading_type="mixed",
-            risk_profile=profile,
-            risk_config=risk,
-            capital_allocation=float(risk.get("capital_allocation") or 10_000),
-            forecast_enabled=True,
-            live_trading_enabled=False,
-            universe=["SPY", "AAPL", "MSFT", "NVDA", "AMZN"],
-        )
-        session.add(row)
-        session.flush()
-        self._record_event(session, row, "AGENT_CREATED", "Agent configuration created", "info")
-        return row
+        def _load() -> AgentConfig:
+            row = (
+                session.query(AgentConfig)
+                .filter(AgentConfig.user_id == user_id)
+                .order_by(AgentConfig.id.asc())
+                .first()
+            )
+            if row:
+                return row
+            profile = "medium"
+            risk = get_risk_config(profile)
+            created = AgentConfig(
+                user_id=user_id,
+                name="Default Agent",
+                enabled=False,
+                status="disabled",
+                mode="paper",
+                trading_type="mixed",
+                risk_profile=profile,
+                risk_config=risk,
+                capital_allocation=float(risk.get("capital_allocation") or 10_000),
+                forecast_enabled=True,
+                live_trading_enabled=False,
+                universe=["SPY", "AAPL", "MSFT", "NVDA", "AMZN"],
+            )
+            session.add(created)
+            session.flush()
+            self._record_event(session, created, "AGENT_CREATED", "Agent configuration created", "info")
+            return created
+
+        return _retry_locked(_load)
 
     def resolved_risk_config(self, config: AgentConfig) -> dict[str, Any]:
         base = get_risk_config(config.risk_profile)
@@ -407,7 +428,7 @@ class TradingAgentService:
             summary={"symbols": tickers},
         )
         session.add(run)
-        session.flush()
+        _retry_locked(session.flush)
 
         broker = self._broker_for(config)
         if prices:
@@ -421,7 +442,17 @@ class TradingAgentService:
         rejected: list[dict[str, Any]] = []
 
         for symbol in tickers:
-            forecast = self.forecast_provider.get_forecast(symbol, "1Day")
+            try:
+                forecast = self.forecast_provider.get_forecast(symbol, "1Day")
+            except Exception as exc:
+                self._record_event(
+                    session,
+                    config,
+                    "FORECAST_ERROR",
+                    f"Forecast failed for {symbol}: {exc}",
+                    "warning",
+                )
+                continue
             price = (prices or {}).get(symbol.upper())
             if price is None:
                 if isinstance(broker, PaperBrokerAdapter) and symbol.upper() in broker.prices:
@@ -434,6 +465,10 @@ class TradingAgentService:
                         price = 0.0
                 else:
                     price = 100.0
+            if not price and isinstance(broker, PaperBrokerAdapter):
+                # Paper fallback mark so cycles remain testable without live market data
+                price = 100.0
+                broker.set_price(symbol, price)
             if not price:
                 continue
 
@@ -466,7 +501,7 @@ class TradingAgentService:
                         status="approved" if decision.approved else "rejected",
                     )
                     session.add(tc)
-                    session.flush()
+                    _retry_locked(session.flush)
 
                     if not decision.approved:
                         rejected.append({"symbol": symbol, "strategy": candidate.strategy, "reason": decision.reason})
@@ -516,7 +551,7 @@ class TradingAgentService:
                         },
                     )
                     session.add(plan)
-                    session.flush()
+                    _retry_locked(session.flush)
 
                     order_payload = None
                     if execute:
@@ -540,7 +575,7 @@ class TradingAgentService:
             "rejected": len(rejected),
             "daily_loss": daily,
         }
-        session.flush()
+        _retry_locked(session.flush)
         self._sync_positions(session, config, broker)
         return {
             "run_id": run.id,
@@ -911,7 +946,11 @@ class TradingAgentService:
 
 
 def build_trading_agent_service(services: Any) -> TradingAgentService:
-    forecast = KronosForecastProvider(services.kronos, getattr(services, "prediction", None))
+    forecast = KronosForecastProvider(
+        services.kronos,
+        getattr(services, "prediction", None),
+        getattr(services, "alpaca", None),
+    )
     return TradingAgentService(
         forecast_provider=forecast,
         alpaca=getattr(services, "alpaca", None),

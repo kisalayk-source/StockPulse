@@ -78,15 +78,15 @@ export function TradingAgentPanel({
   const refresh = useCallback(async () => {
     setError('')
     try {
-      const [cfg, cands, pos, ords, evts, perf] = await Promise.all([
-        api.getTradingAgentConfig(),
+      const cfg = await api.getTradingAgentConfig()
+      applyConfig(cfg)
+      const [cands, pos, ords, evts, perf] = await Promise.all([
         api.getTradingAgentCandidates(),
         api.getTradingAgentPositions(),
         api.getTradingAgentOrders(),
         api.getTradingAgentEvents(),
         api.getTradingAgentPerformance(),
       ])
-      applyConfig(cfg)
       setCandidates(cands)
       setPositions(pos)
       setOrders(ords)
