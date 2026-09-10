@@ -55,6 +55,7 @@ Notable changes to this project are documented here. The format follows
 
 ### Fixed
 
+- **Trading agent never sold intraday positions** — each cycle now flattens open equity longs on stop-loss, take-profit, max holding time, or near the close; forecast SELLs size to held shares (not capital budget); `trades_today` counts only the current session day so prior fills cannot block day-trade exits; flatten exits skip entry-only risk gates (`max_trades_per_day`, min risk/reward).
 - **Hybrid prediction Partial-data banner stayed opaque** — missing `xgboost` (or other ML import failures) and non-credential Alpaca errors now return actionable API `detail` strings; the Market Partial-data banner surfaces those messages instead of a blank “temporarily unavailable.” PredictionService also detects a missing `xgboost` install at startup and the API stays up if the ML stack fails to initialize.
 - **Market light Opens/Closes times used browser local timezone** — next open/close tooltip now formats in America/New_York (EDT/EST) so US session hours stay correct on UTC or non-Eastern machines.
 - **Hybrid prediction ignored Settings Alpaca keys** — `/stocks/{ticker}/prediction` (and related feature/signal/risk/explanation routes) now resolve and inject saved paper/live credentials on the request thread before fetching bars, so UI-configured keys work without `ALPACA_PAPER_*` env vars. Stock/option data clients are also cached per credential key.

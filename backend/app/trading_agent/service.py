@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from datetime import date, datetime, timezone
+from datetime import date, datetime, time, timedelta, timezone
+from zoneinfo import ZoneInfo
 from time import sleep
 from typing import Any, Callable, TypeVar
 from uuid import uuid4
@@ -30,7 +31,7 @@ from app.trading_agent.models import (
 )
 from app.trading_agent.risk_engine import PortfolioSnapshot, RiskEngine
 from app.trading_agent.risk_profiles import get_risk_config, merge_risk_config, validate_risk_config
-from app.trading_agent.strategies import strategies_for_mode
+from app.trading_agent.strategies import StrategyCandidate, build_intraday_exit_candidates, strategies_for_mode
 
 
 ACTIVE_STATUSES = {"paper", "live", "paused", "configured"}
@@ -416,6 +417,168 @@ class TradingAgentService:
 
     # ── decision cycle ───────────────────────────────────────────────
 
+
+    @staticmethod
+    def _session_day_start_utc(risk: dict[str, Any], *, now: datetime | None = None) -> datetime:
+        tz_name = str(risk.get("daily_loss_timezone") or "America/Los_Angeles")
+        reset = str(risk.get("daily_loss_reset_time") or "00:00")
+        current = now or datetime.now(timezone.utc)
+        day = trading_date_for(current, tz_name, reset)
+        hour_s, minute_s = reset.split(":", 1)
+        start_local = datetime.combine(day, time(hour=int(hour_s), minute=int(minute_s)), tzinfo=ZoneInfo(tz_name))
+        return start_local.astimezone(timezone.utc)
+
+    @staticmethod
+    def _near_equity_close(now: datetime, *, minutes_before: int = 15) -> bool:
+        eastern = now.astimezone(ZoneInfo("America/New_York"))
+        close = eastern.replace(hour=16, minute=0, second=0, microsecond=0)
+        window_start = close - timedelta(minutes=max(minutes_before, 0))
+        return window_start <= eastern <= close + timedelta(minutes=5)
+
+    def _open_plan_levels(self, session: Session, config: AgentConfig, symbol: str) -> tuple[float | None, float | None, float | None]:
+        """Return (entry, stop_loss, take_profit) from the latest approved/executed plan."""
+        plan = (
+            session.query(TradePlan)
+            .join(TradeCandidate)
+            .join(AgentRun)
+            .filter(
+                AgentRun.agent_config_id == config.id,
+                TradeCandidate.symbol == symbol.upper(),
+                TradePlan.status.in_(("approved", "executed")),
+            )
+            .order_by(TradePlan.id.desc())
+            .first()
+        )
+        if plan is None:
+            return None, None, None
+        return plan.entry_price, plan.stop_loss, plan.take_profit
+
+    def _position_opened_at(self, session: Session, config: AgentConfig, symbol: str) -> datetime | None:
+        row = (
+            session.query(AgentPosition)
+            .filter(
+                AgentPosition.user_id == config.user_id,
+                AgentPosition.symbol == symbol.upper(),
+                AgentPosition.quantity != 0,
+            )
+            .order_by(AgentPosition.id.desc())
+            .first()
+        )
+        return row.opened_at if row is not None else None
+
+    def _process_candidate(
+        self,
+        session: Session,
+        config: AgentConfig,
+        run: AgentRun,
+        broker: BrokerAdapter,
+        portfolio: PortfolioSnapshot,
+        risk: dict[str, Any],
+        candidate: StrategyCandidate,
+        forecast,
+        *,
+        market_open: bool,
+        execute: bool,
+        approved: list[dict[str, Any]],
+        rejected: list[dict[str, Any]],
+    ) -> PortfolioSnapshot:
+        trade_input = candidate.to_trade_input(
+            forecast=forecast,
+            market_open=market_open,
+            idempotency_key=f"{run.id}-{candidate.symbol}-{candidate.strategy}-{uuid4().hex[:8]}",
+        )
+        decision = self.risk_engine.evaluate(
+            trade_input,
+            portfolio,
+            risk,
+            agent_status=config.status,
+            live_trading_enabled=config.live_trading_enabled,
+        )
+        forecast_snapshot = forecast.to_dict() if forecast is not None and hasattr(forecast, "to_dict") else {
+            "symbol": candidate.symbol,
+            "signal": "EXIT",
+            "confidence": 1.0,
+        }
+        tc = TradeCandidate(
+            agent_run_id=run.id,
+            symbol=candidate.symbol.upper(),
+            asset_type=candidate.asset_type,
+            strategy=candidate.strategy,
+            forecast_snapshot=forecast_snapshot,
+            risk_decision=decision.to_dict(),
+            status="approved" if decision.approved else "rejected",
+        )
+        session.add(tc)
+        _retry_locked(session.flush)
+
+        if not decision.approved:
+            rejected.append({"symbol": candidate.symbol, "strategy": candidate.strategy, "reason": decision.reason})
+            if decision.checks.get("daily_loss_blocked"):
+                record = (
+                    session.query(DailyLossRecord)
+                    .filter(DailyLossRecord.agent_config_id == config.id)
+                    .order_by(DailyLossRecord.id.desc())
+                    .first()
+                )
+                if record:
+                    record.trades_blocked = int(record.trades_blocked or 0) + 1
+                self._record_event(
+                    session,
+                    config,
+                    "TRADE_BLOCKED_DAILY_LOSS",
+                    f"Blocked {candidate.symbol} {candidate.strategy}: {decision.reason}",
+                    "warning",
+                )
+            return portfolio
+
+        plan = TradePlan(
+            trade_candidate_id=tc.id,
+            entry_price=candidate.entry_price,
+            stop_loss=decision.stop_loss,
+            take_profit=decision.take_profit,
+            position_size=decision.position_size,
+            max_loss=decision.max_loss,
+            max_profit=candidate.max_profit,
+            risk_reward_ratio=decision.risk_reward_ratio,
+            status="approved",
+            plan_payload={
+                "symbol": candidate.symbol.upper(),
+                "mode": candidate.trading_mode,
+                "strategy": candidate.strategy,
+                "forecast_signal": getattr(forecast, "signal", "EXIT") if forecast is not None else "EXIT",
+                "forecast_confidence": getattr(forecast, "confidence", 1.0) if forecast is not None else 1.0,
+                "entry_price": candidate.entry_price,
+                "stop_loss": decision.stop_loss,
+                "take_profit": decision.take_profit,
+                "max_loss": decision.max_loss,
+                "max_profit": candidate.max_profit,
+                "risk_reward_ratio": decision.risk_reward_ratio,
+                "position_size": decision.position_size,
+                "status": "approved",
+                "metadata": candidate.metadata or {},
+            },
+        )
+        session.add(plan)
+        _retry_locked(session.flush)
+
+        order_payload = None
+        if execute:
+            order_payload = self._submit_plan(
+                session, config, plan, candidate, trade_input.idempotency_key or uuid4().hex
+            )
+            portfolio = self._portfolio_snapshot(session, config, broker)
+
+        approved.append(
+            {
+                "symbol": candidate.symbol,
+                "strategy": candidate.strategy,
+                "plan_id": plan.id,
+                "order": order_payload,
+                "metadata": candidate.metadata or {},
+            }
+        )
+        return portfolio
+
     def run_cycle(
         self,
         session: Session,
@@ -425,6 +588,8 @@ class TradingAgentService:
         execute: bool = True,
         market_open: bool = True,
         prices: dict[str, float] | None = None,
+        now: datetime | None = None,
+        near_close: bool | None = None,
     ) -> dict[str, Any]:
         if config.status not in {"paper", "live"}:
             raise ValueError(f"Agent must be running to cycle (status={config.status})")
@@ -451,9 +616,62 @@ class TradingAgentService:
                     broker.set_price(sym, px)
 
         daily = self.refresh_daily_loss(session, config)
+        self._sync_positions(session, config, broker)
         portfolio = self._portfolio_snapshot(session, config, broker)
         approved: list[dict[str, Any]] = []
         rejected: list[dict[str, Any]] = []
+        clock = now or datetime.now(timezone.utc)
+        close_flag = self._near_equity_close(clock) if near_close is None else bool(near_close)
+
+        # Exits first: stop / take-profit / max hold / EOD flatten for open equity longs.
+        open_positions = [
+            p for p in broker.get_positions()
+            if float(getattr(p, "quantity", 0) or 0) > 0 and str(getattr(p, "asset_type", "equity")).lower() in {"equity", "stock", ""}
+        ]
+        for pos in open_positions:
+            symbol = str(pos.symbol).upper()
+            mark = float(getattr(pos, "current_price", 0) or 0)
+            if mark <= 0 and isinstance(broker, PaperBrokerAdapter):
+                mark = float(broker.prices.get(symbol) or (prices or {}).get(symbol) or 0)
+            if mark <= 0 and prices and symbol in prices:
+                mark = float(prices[symbol])
+            if mark <= 0:
+                continue
+            entry, stop, take = self._open_plan_levels(session, config, symbol)
+            entry_price = float(entry or getattr(pos, "average_entry_price", 0) or mark)
+            if stop is None and entry_price > 0:
+                stop_pct = float(risk.get("default_stop_loss_pct") or 0)
+                stop = entry_price * (1 - stop_pct) if stop_pct > 0 else None
+            if take is None and entry_price > 0:
+                tp_pct = float(risk.get("default_take_profit_pct") or 0)
+                take = entry_price * (1 + tp_pct) if tp_pct > 0 else None
+            opened_at = self._position_opened_at(session, config, symbol)
+            for candidate in build_intraday_exit_candidates(
+                symbol=symbol,
+                quantity=float(pos.quantity),
+                mark_price=mark,
+                entry_price=entry_price,
+                stop_loss=stop,
+                take_profit=take,
+                opened_at=opened_at,
+                risk_config=risk,
+                now=clock,
+                near_close=close_flag,
+            ):
+                portfolio = self._process_candidate(
+                    session,
+                    config,
+                    run,
+                    broker,
+                    portfolio,
+                    risk,
+                    candidate,
+                    forecast=None,
+                    market_open=market_open,
+                    execute=execute,
+                    approved=approved,
+                    rejected=rejected,
+                )
 
         for symbol in tickers:
             try:
@@ -486,100 +704,39 @@ class TradingAgentService:
             if not price:
                 continue
 
+            held_qty = float(portfolio.position_qty(symbol))
             for engine in strategies_for_mode(config.trading_type):
                 # Filter mixed mode by trading_type preference already handled
                 if config.trading_type != "mixed" and engine.name != config.trading_type:
                     continue
                 for candidate in engine.generate(
-                    symbol, forecast, float(price), risk, float(config.capital_allocation)
+                    symbol,
+                    forecast,
+                    float(price),
+                    risk,
+                    float(config.capital_allocation),
+                    held_qty=held_qty,
                 ):
-                    trade_input = candidate.to_trade_input(
-                        forecast=forecast,
-                        market_open=market_open,
-                        idempotency_key=f"{run.id}-{symbol}-{candidate.strategy}-{uuid4().hex[:8]}",
-                    )
-                    decision = self.risk_engine.evaluate(
-                        trade_input,
+                    # Avoid opening a new buy when we already flat-exited this symbol in this cycle.
+                    if candidate.side.lower() == "buy" and any(
+                        a.get("symbol") == symbol and a.get("strategy") == "intraday_exit" for a in approved
+                    ):
+                        continue
+                    portfolio = self._process_candidate(
+                        session,
+                        config,
+                        run,
+                        broker,
                         portfolio,
                         risk,
-                        agent_status=config.status,
-                        live_trading_enabled=config.live_trading_enabled,
+                        candidate,
+                        forecast=forecast,
+                        market_open=market_open,
+                        execute=execute,
+                        approved=approved,
+                        rejected=rejected,
                     )
-                    tc = TradeCandidate(
-                        agent_run_id=run.id,
-                        symbol=symbol.upper(),
-                        asset_type=candidate.asset_type,
-                        strategy=candidate.strategy,
-                        forecast_snapshot=forecast.to_dict(),
-                        risk_decision=decision.to_dict(),
-                        status="approved" if decision.approved else "rejected",
-                    )
-                    session.add(tc)
-                    _retry_locked(session.flush)
-
-                    if not decision.approved:
-                        rejected.append({"symbol": symbol, "strategy": candidate.strategy, "reason": decision.reason})
-                        if decision.checks.get("daily_loss_blocked"):
-                            record = (
-                                session.query(DailyLossRecord)
-                                .filter(DailyLossRecord.agent_config_id == config.id)
-                                .order_by(DailyLossRecord.id.desc())
-                                .first()
-                            )
-                            if record:
-                                record.trades_blocked = int(record.trades_blocked or 0) + 1
-                            self._record_event(
-                                session,
-                                config,
-                                "TRADE_BLOCKED_DAILY_LOSS",
-                                f"Blocked {symbol} {candidate.strategy}: {decision.reason}",
-                                "warning",
-                            )
-                        continue
-
-                    plan = TradePlan(
-                        trade_candidate_id=tc.id,
-                        entry_price=candidate.entry_price,
-                        stop_loss=decision.stop_loss,
-                        take_profit=decision.take_profit,
-                        position_size=decision.position_size,
-                        max_loss=decision.max_loss,
-                        max_profit=candidate.max_profit,
-                        risk_reward_ratio=decision.risk_reward_ratio,
-                        status="approved",
-                        plan_payload={
-                            "symbol": symbol.upper(),
-                            "mode": candidate.trading_mode,
-                            "strategy": candidate.strategy,
-                            "forecast_signal": forecast.signal,
-                            "forecast_confidence": forecast.confidence,
-                            "entry_price": candidate.entry_price,
-                            "stop_loss": decision.stop_loss,
-                            "take_profit": decision.take_profit,
-                            "max_loss": decision.max_loss,
-                            "max_profit": candidate.max_profit,
-                            "risk_reward_ratio": decision.risk_reward_ratio,
-                            "position_size": decision.position_size,
-                            "status": "approved",
-                            "metadata": candidate.metadata or {},
-                        },
-                    )
-                    session.add(plan)
-                    _retry_locked(session.flush)
-
-                    order_payload = None
-                    if execute:
-                        order_payload = self._submit_plan(session, config, plan, candidate, trade_input.idempotency_key or uuid4().hex)
-                        portfolio = self._portfolio_snapshot(session, config, broker)
-
-                    approved.append(
-                        {
-                            "symbol": symbol,
-                            "strategy": candidate.strategy,
-                            "plan_id": plan.id,
-                            "order": order_payload,
-                        }
-                    )
+                    held_qty = float(portfolio.position_qty(symbol))
 
         run.status = "completed"
         run.ended_at = datetime.now(timezone.utc)
@@ -598,6 +755,7 @@ class TradingAgentService:
             "daily_loss": self.refresh_daily_loss(session, config),
             "performance": self.performance(session, config),
         }
+
 
     def _submit_plan(
         self,
@@ -915,7 +1073,11 @@ class TradingAgentService:
             .join(TradePlan)
             .join(TradeCandidate)
             .join(AgentRun)
-            .filter(AgentRun.agent_config_id == config.id, AgentOrder.status == "filled")
+            .filter(
+                AgentRun.agent_config_id == config.id,
+                AgentOrder.status == "filled",
+                AgentOrder.filled_at >= self._session_day_start_utc(self.resolved_risk_config(config)),
+            )
             .count(),
             gross_exposure=sum(abs(p.market_value) for p in positions),
         )

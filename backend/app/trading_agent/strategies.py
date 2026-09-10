@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import Any, Protocol
 
 from app.trading_agent.risk_engine import ForecastResult, TradeCandidateInput
@@ -74,6 +75,8 @@ class StrategyEngine(Protocol):
         price: float,
         risk_config: dict[str, Any],
         capital: float,
+        *,
+        held_qty: float = 0.0,
     ) -> list[StrategyCandidate]:
         ...
 
@@ -87,6 +90,73 @@ def _position_qty(price: float, capital: float, risk_config: dict[str, Any]) -> 
     return float(max(qty, 0))
 
 
+def _as_utc(value: datetime) -> datetime:
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
+
+
+def build_intraday_exit_candidates(
+    *,
+    symbol: str,
+    quantity: float,
+    mark_price: float,
+    entry_price: float,
+    stop_loss: float | None,
+    take_profit: float | None,
+    opened_at: datetime | None,
+    risk_config: dict[str, Any],
+    now: datetime | None = None,
+    near_close: bool = False,
+) -> list[StrategyCandidate]:
+    """Close open longs when stop/take-profit/max-hold/EOD triggers fire."""
+    qty = float(quantity)
+    if qty <= 0 or mark_price <= 0:
+        return []
+
+    reasons: list[str] = []
+    if stop_loss is not None and mark_price <= float(stop_loss):
+        reasons.append("stop_loss")
+    if take_profit is not None and mark_price >= float(take_profit):
+        reasons.append("take_profit")
+
+    max_hold = int(risk_config.get("max_position_holding_minutes") or 0)
+    if max_hold > 0 and opened_at is not None:
+        current = _as_utc(now or datetime.now(timezone.utc))
+        held_minutes = (current - _as_utc(opened_at)).total_seconds() / 60.0
+        if held_minutes >= max_hold:
+            reasons.append("max_holding")
+
+    if near_close and risk_config.get("close_positions_before_market_close", False):
+        reasons.append("eod_flatten")
+
+    if not reasons:
+        return []
+
+    reason = reasons[0]
+    return [
+        StrategyCandidate(
+            symbol=symbol.upper(),
+            strategy="intraday_exit",
+            trading_mode="day_trading",
+            asset_type="equity",
+            side="sell",
+            quantity=qty,
+            entry_price=mark_price,
+            stop_loss=stop_loss,
+            take_profit=take_profit,
+            max_loss=abs(mark_price - float(entry_price)) * qty if entry_price else None,
+            max_profit=None,
+            metadata={
+                "exit_reason": reason,
+                "exit_reasons": reasons,
+                "entry_price": entry_price,
+                "opened_at": opened_at.isoformat() if opened_at else None,
+            },
+        )
+    ]
+
+
 class DayTradingStrategy:
     name = "day_trading"
 
@@ -97,15 +167,23 @@ class DayTradingStrategy:
         price: float,
         risk_config: dict[str, Any],
         capital: float,
+        *,
+        held_qty: float = 0.0,
     ) -> list[StrategyCandidate]:
         if not risk_config.get("allow_day_trading", True):
             return []
         if forecast.signal.upper() not in {"BUY", "STRONG BUY", "SELL", "STRONG SELL"}:
             return []
-        qty = _position_qty(price, capital, risk_config)
+        side = "buy" if "BUY" in forecast.signal.upper() else "sell"
+        if side == "sell":
+            held = float(held_qty or 0.0)
+            if held <= 0 and not risk_config.get("short_selling_enabled", False):
+                return []
+            qty = held if held > 0 else _position_qty(price, capital, risk_config)
+        else:
+            qty = _position_qty(price, capital, risk_config)
         if qty <= 0:
             return []
-        side = "buy" if "BUY" in forecast.signal.upper() else "sell"
         stop_pct = float(risk_config.get("default_stop_loss_pct") or 0.01)
         tp_pct = float(risk_config.get("default_take_profit_pct") or 0.02)
         stop = price * (1 - stop_pct) if side == "buy" else price * (1 + stop_pct)
@@ -138,7 +216,10 @@ class LongTermStrategy:
         price: float,
         risk_config: dict[str, Any],
         capital: float,
+        *,
+        held_qty: float = 0.0,
     ) -> list[StrategyCandidate]:
+        _ = held_qty
         if forecast.signal.upper() not in {"BUY", "STRONG BUY"}:
             return []
         qty = _position_qty(price, capital, risk_config)
@@ -181,7 +262,10 @@ class OptionsStrategy:
         price: float,
         risk_config: dict[str, Any],
         capital: float,
+        *,
+        held_qty: float = 0.0,
     ) -> list[StrategyCandidate]:
+        _ = held_qty
         if not risk_config.get("allow_options", True):
             return []
         allowed = set(risk_config.get("allowed_option_strategies") or [])
