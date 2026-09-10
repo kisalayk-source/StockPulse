@@ -11,6 +11,7 @@ from app.auth import (
     credential_status,
     get_current_user,
     get_user_broker_credentials,
+    resolve_market_broker_credentials,
     use_trading_credentials,
 )
 from app.db import get_session
@@ -66,11 +67,8 @@ def market_provider_call(
     *args: Any,
     **kwargs: Any,
 ) -> Any:
-    try:
-        credentials = get_user_broker_credentials(session, services.settings, user, "paper")
-    except HTTPException as exc:
-        if exc.status_code != status.HTTP_400_BAD_REQUEST:
-            raise
+    credentials = resolve_market_broker_credentials(session, services.settings, user)
+    if credentials is None:
         return provider_call(function, *args, **kwargs)
     with use_trading_credentials(credentials):
         return provider_call(function, *args, **kwargs)

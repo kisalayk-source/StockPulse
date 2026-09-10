@@ -72,7 +72,7 @@ class FakeKronos:
         return {"movers": [], "scanned": 0}
 
 
-def register_and_headers(client: TestClient) -> dict[str, str]:
+def register_and_headers(client: TestClient, *, with_alpaca: bool = True) -> dict[str, str]:
     address = f"user-{uuid4().hex[:8]}@example.com"
     response = client.post(
         "/api/v1/auth/register",
@@ -80,12 +80,13 @@ def register_and_headers(client: TestClient) -> dict[str, str]:
     )
     assert response.status_code == 201, response.text
     headers = {"Authorization": f"Bearer {response.json()['access_token']}"}
-    saved = client.put(
-        "/api/v1/auth/alpaca",
-        headers=headers,
-        json={"mode": "paper", "key_id": "PKTESTKEY123456", "secret": "secretsecret12"},
-    )
-    assert saved.status_code == 200, saved.text
+    if with_alpaca:
+        saved = client.put(
+            "/api/v1/auth/alpaca",
+            headers=headers,
+            json={"mode": "paper", "key_id": "PKTESTKEY123456", "secret": "secretsecret12"},
+        )
+        assert saved.status_code == 200, saved.text
     return headers
 
 
@@ -316,6 +317,51 @@ def test_prediction_uses_saved_user_alpaca_credentials() -> None:
 
     assert pred.status_code == 200, pred.text
     assert features.status_code == 200, features.text
+
+
+def test_prediction_without_saved_keys_returns_settings_guidance() -> None:
+    from app.auth import current_trading_credentials
+    from app.services.providers import ProviderUnavailable
+
+    class RequiresCredentials(FakePrediction):
+        def predict(self, ticker: str, *, horizon: str = "5d", retrain: bool = False) -> dict:
+            if current_trading_credentials() is None:
+                raise ProviderUnavailable("alpaca", "Alpaca paper credentials are not configured")
+            return super().predict(ticker, horizon=horizon, retrain=retrain)
+
+    with make_client(prediction=RequiresCredentials()) as client:
+        headers = register_and_headers(client, with_alpaca=False)
+        response = client.get("/api/v1/stocks/AAPL/prediction", headers=headers)
+
+    assert response.status_code == 400
+    assert "Settings" in response.json()["detail"]
+
+
+def test_prediction_service_fetches_bars_with_injected_credentials() -> None:
+    """End-to-end: PredictionService.bars path sees ContextVar credentials."""
+    from app.auth import use_trading_credentials, BrokerCredentials
+    from app.services.prediction import PredictionService
+    from app.services.providers import ProviderUnavailable
+
+    seen: dict[str, str | None] = {"key": None}
+
+    class TrackingAlpaca(RichFakeAlpaca):
+        def bars(self, symbol: str, timeframe: str, start, end, limit: int) -> list[dict]:
+            from app.auth import current_trading_credentials
+
+            credentials = current_trading_credentials()
+            if credentials is None:
+                raise ProviderUnavailable("alpaca", "Alpaca paper credentials are not configured")
+            seen["key"] = credentials.key
+            return super().bars(symbol, timeframe, start, end, limit)
+
+    service = PredictionService(settings(), TrackingAlpaca())
+    # Avoid full model train: call _fetch_daily_bars only
+    with use_trading_credentials(BrokerCredentials(key="PKTESTKEY123456", secret="secretsecret12")):
+        bars = service._fetch_daily_bars("AAPL", limit=10)
+
+    assert seen["key"] == "PKTESTKEY123456"
+    assert len(bars) == 10
 
 
 def test_prediction_engine_end_to_end(tmp_path: Path) -> None:

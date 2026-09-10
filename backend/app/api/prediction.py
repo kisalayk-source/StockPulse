@@ -9,8 +9,12 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from sqlalchemy.orm import Session
 from starlette.concurrency import run_in_threadpool
 
-from app.api.routes import market_provider_call
-from app.auth import get_current_user
+from app.auth import (
+    BrokerCredentials,
+    get_current_user,
+    resolve_market_broker_credentials,
+    use_trading_credentials,
+)
 from app.db import get_session
 from app.dependencies import Services, enforce_rate_limit, get_services
 from app.models import User
@@ -44,8 +48,18 @@ def _prediction_service(services: Services):
 def _call(fn, *args, **kwargs):
     try:
         return fn(*args, **kwargs)
-    except ProviderUnavailable:
-        raise
+    except ProviderUnavailable as exc:
+        message = str(exc) or "Provider unavailable"
+        # Surface missing Settings keys clearly (same wording users already see).
+        if "credentials are not configured" in message.casefold():
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Configure Alpaca paper credentials in Settings before loading hybrid prediction",
+            ) from exc
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail={"provider": exc.provider, "message": "Provider unavailable"},
+        ) from exc
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
     except RuntimeError as exc:
@@ -57,7 +71,18 @@ def _call(fn, *args, **kwargs):
         ) from exc
 
 
-def _prediction_provider_call(
+def _prediction_with_credentials(
+    credentials: BrokerCredentials | None,
+    function: Any,
+    *args: Any,
+    **kwargs: Any,
+) -> Any:
+    """Run prediction under saved Alpaca keys resolved on the request thread."""
+    with use_trading_credentials(credentials):
+        return _call(function, *args, **kwargs)
+
+
+async def _run_prediction(
     user: User,
     session: Session,
     services: Services,
@@ -65,12 +90,12 @@ def _prediction_provider_call(
     *args: Any,
     **kwargs: Any,
 ) -> Any:
-    """Run prediction with the caller's saved Alpaca keys (same as market data)."""
-    return market_provider_call(
-        user,
-        session,
-        services,
-        _call,
+    # Resolve credentials before threadpool so DB access stays on the request thread
+    # (same keys overview/chart already use via market_provider_call).
+    credentials = resolve_market_broker_credentials(session, services.settings, user)
+    return await run_in_threadpool(
+        _prediction_with_credentials,
+        credentials,
         function,
         *args,
         **kwargs,
@@ -94,8 +119,7 @@ async def get_prediction(
     )
     service = _prediction_service(services)
     symbol = _ticker(ticker)
-    return await run_in_threadpool(
-        _prediction_provider_call,
+    return await _run_prediction(
         user,
         session,
         services,
@@ -121,14 +145,7 @@ async def get_features(
     )
     service = _prediction_service(services)
     symbol = _ticker(ticker)
-    return await run_in_threadpool(
-        _prediction_provider_call,
-        user,
-        session,
-        services,
-        service.features,
-        symbol,
-    )
+    return await _run_prediction(user, session, services, service.features, symbol)
 
 
 @router.get("/stocks/{ticker}/signals")
@@ -147,8 +164,7 @@ async def get_signals(
     )
     service = _prediction_service(services)
     symbol = _ticker(ticker)
-    return await run_in_threadpool(
-        _prediction_provider_call,
+    return await _run_prediction(
         user,
         session,
         services,
@@ -174,8 +190,7 @@ async def get_risk(
     )
     service = _prediction_service(services)
     symbol = _ticker(ticker)
-    return await run_in_threadpool(
-        _prediction_provider_call,
+    return await _run_prediction(
         user,
         session,
         services,
@@ -201,8 +216,7 @@ async def get_explanation(
     )
     service = _prediction_service(services)
     symbol = _ticker(ticker)
-    return await run_in_threadpool(
-        _prediction_provider_call,
+    return await _run_prediction(
         user,
         session,
         services,

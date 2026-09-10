@@ -74,6 +74,29 @@ def get_user_broker_credentials(
     return BrokerCredentials(key=row.key_id, secret=decrypt_secret(settings, row.secret_encrypted))
 
 
+def resolve_market_broker_credentials(
+    session: Session,
+    settings: Settings,
+    user: User,
+) -> BrokerCredentials | None:
+    """Return saved Alpaca keys for market data, or None to fall back to env.
+
+    Prefers ``alpaca_data_credentials_mode`` (paper by default), then the other mode,
+    so Settings-saved keys work for hybrid prediction / charts without ALPACA_* env vars.
+    """
+    preferred = settings.alpaca_data_credentials_mode
+    candidates = [preferred]
+    other = "live" if preferred == "paper" else "paper"
+    candidates.append(other)
+    for mode in candidates:
+        try:
+            return get_user_broker_credentials(session, settings, user, mode)
+        except HTTPException as exc:
+            if exc.status_code != status.HTTP_400_BAD_REQUEST:
+                raise
+    return None
+
+
 def credential_status(user: User) -> dict[str, dict[str, object]]:
     rows = {row.mode: row for row in user.credentials}
     result: dict[str, dict[str, object]] = {}
