@@ -101,8 +101,16 @@ class PaperBrokerAdapter:
         self.orders: dict[str, OrderResult] = {}
         self.open_orders: dict[str, dict[str, Any]] = {}
         self.realized_pnl = 0.0
+        self.day_start_realized = 0.0
         self.fees = 0.0
         self._seen_keys: set[str] = set()
+
+    def mark_day_start(self) -> None:
+        """Capture realized P/L baseline for daily-loss calculations."""
+        self.day_start_realized = float(self.realized_pnl)
+
+    def today_realized_pnl(self) -> float:
+        return float(self.realized_pnl) - float(self.day_start_realized)
 
     def set_price(self, symbol: str, price: float) -> None:
         self.prices[symbol.upper()] = float(price)
@@ -234,7 +242,11 @@ class PaperBrokerAdapter:
             equity=equity,
             cash=self.cash,
             buying_power=self.cash,
-            raw={"realized_pnl": self.realized_pnl, "fees": self.fees},
+            raw={
+                "realized_pnl": self.realized_pnl,
+                "today_realized_pnl": self.today_realized_pnl(),
+                "fees": self.fees,
+            },
         )
 
     def get_open_orders(self) -> list[dict[str, Any]]:

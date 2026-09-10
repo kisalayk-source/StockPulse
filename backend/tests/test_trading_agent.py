@@ -52,13 +52,14 @@ def make_agent_client():
             )
         }
     )
+    config = settings()
     paper_brokers: dict[int, PaperBrokerAdapter] = {}
     agent = TradingAgentService(
         forecast_provider=forecast,
         alpaca=FakeAlpaca(),
         paper_brokers=paper_brokers,
+        settings=config,
     )
-    config = settings()
     services = Services(config, FakeAlpaca(), FakeFinnhub(), FakeKronos(), FakeSec(), None, agent)
     client = TestClient(create_app(config, services))
     return client, agent, paper_brokers
@@ -91,6 +92,35 @@ def test_cannot_start_live_without_enablement():
             headers=headers,
         )
         assert resp.status_code == 400
+
+
+def test_cannot_arm_live_when_server_disallows():
+    with make_agent_client()[0] as client:
+        headers = register_headers(client)
+        resp = client.put(
+            "/api/v1/trading-agent/config",
+            json={"live_trading_enabled": True, "live_confirmation": "LIVE"},
+            headers=headers,
+        )
+        assert resp.status_code == 422
+        assert "disabled" in resp.json()["detail"].lower()
+
+
+def test_paper_today_realized_ignores_prior_session_gains():
+    broker = PaperBrokerAdapter(starting_cash=10_000, prices={"NVDA": 100})
+    buy = broker.submit_order(OrderRequest(symbol="NVDA", side="buy", quantity=5, idempotency_key="b1"))
+    assert buy.status == "filled"
+    broker.set_price("NVDA", 110)
+    sell = broker.submit_order(OrderRequest(symbol="NVDA", side="sell", quantity=5, idempotency_key="s1"))
+    assert sell.status == "filled"
+    assert broker.realized_pnl == 50
+    broker.mark_day_start()
+    broker.set_price("NVDA", 100)
+    broker.submit_order(OrderRequest(symbol="NVDA", side="buy", quantity=2, idempotency_key="b2"))
+    broker.set_price("NVDA", 90)
+    broker.submit_order(OrderRequest(symbol="NVDA", side="sell", quantity=2, idempotency_key="s2"))
+    assert broker.realized_pnl == 30  # lifetime
+    assert broker.today_realized_pnl() == -20  # today only
 
 
 def test_pause_resume_and_emergency_stop():

@@ -61,12 +61,18 @@ class TradingAgentService:
         daily_loss_service: DailyLossService | None = None,
         alpaca: Any | None = None,
         paper_brokers: dict[int, PaperBrokerAdapter] | None = None,
+        settings: Any | None = None,
     ) -> None:
         self.forecast_provider = forecast_provider
         self.risk_engine = risk_engine or RiskEngine()
         self.daily_loss = daily_loss_service or DailyLossService()
         self.alpaca = alpaca
+        self.settings = settings
         self._paper_brokers = paper_brokers if paper_brokers is not None else {}
+
+    def _assert_live_allowed(self) -> None:
+        if self.settings is not None and not bool(getattr(self.settings, "allow_live_trading", False)):
+            raise ValueError("Live trading is disabled on this server")
 
     # ── persistence helpers ──────────────────────────────────────────
 
@@ -126,8 +132,9 @@ class TradingAgentService:
         if payload.get("capital_allocation") is not None:
             overrides["capital_allocation"] = float(payload["capital_allocation"])
 
-        # Live enablement requires explicit confirmation
+        # Live enablement requires explicit confirmation and server allow flag
         if payload.get("live_trading_enabled") is True:
+            self._assert_live_allowed()
             confirmation = str(payload.get("live_confirmation") or "")
             if confirmation.upper() != "LIVE":
                 raise ValueError("Live trading requires confirmation phrase LIVE")
@@ -193,6 +200,7 @@ class TradingAgentService:
 
     def start(self, session: Session, config: AgentConfig, *, mode: str = "paper", live_confirmation: str | None = None) -> AgentConfig:
         if mode == "live":
+            self._assert_live_allowed()
             if not config.live_trading_enabled:
                 raise ValueError("Enable live trading in settings before starting in live mode")
             if str(live_confirmation or "").upper() != "LIVE":
@@ -294,6 +302,9 @@ class TradingAgentService:
         if existing and not reset:
             return existing
 
+        if isinstance(broker, PaperBrokerAdapter):
+            broker.mark_day_start()
+
         if existing and reset:
             # Explicit user reset only — archive by updating values for a fresh window
             existing.starting_equity = account.equity
@@ -339,7 +350,10 @@ class TradingAgentService:
         account = broker.get_account()
         positions = broker.get_positions()
         unrealized = sum(p.unrealized_pnl for p in positions)
-        realized = float(account.raw.get("realized_pnl") or record.realized_pnl)
+        if isinstance(broker, PaperBrokerAdapter):
+            realized = broker.today_realized_pnl()
+        else:
+            realized = float(account.raw.get("today_realized_pnl") or account.raw.get("realized_pnl") or record.realized_pnl)
         fees = float(account.raw.get("fees") or record.trading_fees)
         risk = self.resolved_risk_config(config)
         snapshot = self.daily_loss.evaluate(
@@ -436,8 +450,8 @@ class TradingAgentService:
                 for sym, px in prices.items():
                     broker.set_price(sym, px)
 
-        portfolio = self._portfolio_snapshot(session, config, broker)
         daily = self.refresh_daily_loss(session, config)
+        portfolio = self._portfolio_snapshot(session, config, broker)
         approved: list[dict[str, Any]] = []
         rejected: list[dict[str, Any]] = []
 
@@ -860,11 +874,22 @@ class TradingAgentService:
         positions = broker.get_positions()
         record = (
             session.query(DailyLossRecord)
-            .filter(DailyLossRecord.agent_config_id == config.id)
+            .filter(
+                DailyLossRecord.agent_config_id == config.id,
+                DailyLossRecord.trading_date == trading_date_for(
+                    datetime.now(timezone.utc),
+                    str(self.resolved_risk_config(config).get("daily_loss_timezone") or "America/Los_Angeles"),
+                    str(self.resolved_risk_config(config).get("daily_loss_reset_time") or "00:00"),
+                ),
+            )
             .order_by(DailyLossRecord.id.desc())
             .first()
         )
         starting = record.starting_equity if record else account.equity
+        if isinstance(broker, PaperBrokerAdapter):
+            today_realized = broker.today_realized_pnl()
+        else:
+            today_realized = float(account.raw.get("today_realized_pnl") or account.raw.get("realized_pnl") or (record.realized_pnl if record else 0))
         return PortfolioSnapshot(
             equity=account.equity,
             cash=account.cash,
@@ -881,7 +906,7 @@ class TradingAgentService:
                 for p in positions
             ],
             open_orders=broker.get_open_orders(),
-            realized_pnl_today=float(account.raw.get("realized_pnl") or (record.realized_pnl if record else 0)),
+            realized_pnl_today=today_realized,
             unrealized_pnl=sum(p.unrealized_pnl for p in positions),
             trading_fees_today=float(account.raw.get("fees") or (record.trading_fees if record else 0)),
             starting_daily_equity=starting,
@@ -954,4 +979,5 @@ def build_trading_agent_service(services: Any) -> TradingAgentService:
     return TradingAgentService(
         forecast_provider=forecast,
         alpaca=getattr(services, "alpaca", None),
+        settings=getattr(services, "settings", None),
     )
