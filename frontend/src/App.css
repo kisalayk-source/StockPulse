@@ -484,3 +484,181 @@ label input:focus,label select:focus { border-color: #655298; }.bid-ask { displa
 @media (max-width: 900px) {
   .sec-columns { grid-template-columns: 1fr; }
 }
+
+/* Autonomous Trading Agent */
+.trading-agent-page,
+.risk-management-page {
+  display: grid;
+  gap: 16px;
+}
+.agent-hero .agent-subtitle,
+.agent-subtitle {
+  margin: 6px 0 0;
+  color: var(--muted);
+  font-size: 12px;
+}
+.agent-controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: flex-end;
+}
+.agent-controls button,
+.mode-chips button,
+.agent-settings button,
+.daily-loss-card button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border: 1px solid var(--border);
+  background: var(--panel-2);
+  color: var(--text);
+  border-radius: 8px;
+  padding: 8px 12px;
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 600;
+}
+.agent-controls button:disabled,
+.mode-chips button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+.agent-controls button.danger,
+button.danger {
+  color: #ffb0b6;
+  border-color: #7d3640;
+  background: #30171c;
+}
+.mode-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.mode-chips button.active {
+  color: var(--green);
+  border-color: #28634f;
+  background: #102b24;
+}
+.daily-loss-card {
+  border: 1px solid var(--border);
+  border-radius: 13px;
+  background: linear-gradient(160deg, rgba(18, 28, 40, 0.98), rgba(10, 14, 22, 0.98));
+  padding: 0 0 14px;
+  box-shadow: 0 18px 50px rgba(0, 0, 0, 0.15);
+}
+.daily-loss-card.warning {
+  border-color: #8a6a2b;
+  box-shadow: 0 0 0 1px rgba(241, 189, 101, 0.25);
+}
+.daily-loss-card.critical,
+.daily-loss-card.blocked {
+  border-color: #7d3640;
+  box-shadow: 0 0 0 1px rgba(242, 99, 107, 0.28);
+}
+.daily-loss-grid,
+.agent-config-grid,
+.risk-fields {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 12px 16px;
+  padding: 0 18px 8px;
+}
+.daily-loss-grid label,
+.agent-config-grid label,
+.risk-fields label {
+  display: grid;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--muted);
+}
+.daily-loss-grid input,
+.agent-config-grid input,
+.agent-config-grid select,
+.risk-fields input,
+.risk-fields select,
+.risk-management-page select {
+  width: 100%;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: #0c1119;
+  color: var(--text);
+  padding: 8px 10px;
+}
+.daily-status.warning { color: #f1bd65; background: #352916; }
+.daily-status.critical,
+.daily-status.blocked { color: var(--red); background: #32171c; }
+.daily-status.active { color: var(--green); background: #123026; }
+.inline-fields {
+  display: flex;
+  gap: 8px;
+}
+.inline-fields input { flex: 1; }
+.agent-panels {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px;
+}
+.agent-panels .card { min-height: 220px; }
+.agent-log {
+  list-style: none;
+  margin: 0;
+  padding: 0 18px 18px;
+  display: grid;
+  gap: 10px;
+  max-height: 280px;
+  overflow: auto;
+}
+.agent-log li {
+  display: grid;
+  gap: 2px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--panel-2);
+  font-size: 12px;
+}
+.agent-log small { color: var(--muted); }
+.agent-log .severity-critical,
+.agent-log .severity-warning { border-color: #7d3640; }
+.agent-metrics { padding: 0 0 12px; }
+.error-banner.compact,
+.warning-banner.compact {
+  margin: 0 18px 12px;
+}
+.text-button {
+  border: 0;
+  background: transparent;
+  color: var(--blue, #6aa7ff);
+  cursor: pointer;
+  font-size: 12px;
+}
+.checkbox-row {
+  display: flex !important;
+  align-items: center;
+  gap: 8px;
+}
+.checkbox-row input { width: auto; }
+.risk-management-page .card { padding-bottom: 18px; }
+.risk-management-page .card-heading,
+.risk-management-page > .card > label,
+.risk-management-page .risk-fields,
+.risk-management-page .modal-actions,
+.risk-management-page .agent-subtitle {
+  padding-left: 18px;
+  padding-right: 18px;
+}
+.risk-management-page .modal-actions { margin-top: 12px; }
+.button.primary,
+button.primary {
+  background: #16392d;
+  border-color: #28634f;
+  color: var(--green);
+}
+@media (max-width: 900px) {
+  .agent-panels { grid-template-columns: 1fr; }
+  .agent-controls { justify-content: flex-start; }
+  .daily-loss-grid,
+  .agent-config-grid,
+  .risk-fields { grid-template-columns: 1fr; }
+}

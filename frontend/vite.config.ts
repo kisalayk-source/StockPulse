@@ -22,6 +22,8 @@ export default defineConfig({
     allowedHosts: ['stockapp', 'stockapp.local', 'stockapp.lan', 'stockpulse.trade', '.lan', '.local'],
     proxy: apiProxy,
   },
+  // SPA routes for /trading-agent and /settings/risk-management
+  appType: 'spa',
   test: {
     environment: 'jsdom',
     setupFiles: './src/test/setup.ts',

@@ -255,6 +255,134 @@ export interface AuthResponse {
   user: AuthUser
 }
 
+export type RiskProfile = 'low' | 'medium' | 'high' | 'custom'
+export type AgentStatus = 'disabled' | 'configured' | 'paper' | 'paused' | 'live' | 'emergency_stop'
+export type AgentTradingType = 'options' | 'day_trading' | 'long_term' | 'mixed'
+export type DailyLossStatus = 'active' | 'warning' | 'critical' | 'blocked'
+
+export interface DailyLossState {
+  tradingDate?: string
+  timezone?: string
+  startingEquity: number
+  currentEquity: number
+  realizedPnl: number
+  unrealizedPnl: number
+  tradingFees: number
+  todayPnl: number
+  dailyLoss: number
+  dailyLossPercent: number
+  maxDailyLossAmount: number | null
+  maxDailyLossPercent: number | null
+  effectiveLimit: number | null
+  remainingDailyLoss: number | null
+  status: DailyLossStatus
+  limitReached: boolean
+  enabled: boolean
+  calculation?: string
+  action?: string
+  lastResetAt?: string | null
+  nextResetAt?: string | null
+  warningThresholdPct?: number
+  criticalThresholdPct?: number
+  utilizationPct?: number
+  warnings: string[]
+}
+
+export interface TradingAgentConfig {
+  id: number
+  name: string
+  enabled: boolean
+  status: AgentStatus | string
+  mode: TradingMode | string
+  tradingType: AgentTradingType | string
+  riskProfile: RiskProfile | string
+  riskConfig: Record<string, unknown>
+  capitalAllocation: number
+  forecastEnabled: boolean
+  liveTradingEnabled: boolean
+  universe: string[]
+  dailyLoss: DailyLossState
+  createdAt?: string | null
+  updatedAt?: string | null
+}
+
+export interface TradeCandidateRow {
+  id: number
+  symbol: string
+  assetType: string
+  strategy: string
+  status: string
+  forecastSnapshot: Record<string, unknown>
+  riskDecision: Record<string, unknown> | null
+  createdAt?: string | null
+}
+
+export interface TradePlanRow {
+  id: number
+  status: string
+  entryPrice: number | null
+  stopLoss: number | null
+  takeProfit: number | null
+  positionSize: number
+  maxLoss: number | null
+  maxProfit: number | null
+  riskRewardRatio: number | null
+  plan: Record<string, unknown>
+  createdAt?: string | null
+}
+
+export interface AgentOrderRow {
+  id: number
+  brokerOrderId?: string | null
+  status: string
+  symbol: string
+  side: string
+  filledQuantity: number
+  averageFillPrice: number | null
+  requestedQuantity: number
+  errorMessage?: string | null
+  submittedAt?: string | null
+  filledAt?: string | null
+}
+
+export interface AgentPositionRow {
+  id: number
+  symbol: string
+  assetType: string
+  quantity: number
+  averageEntryPrice: number
+  currentPrice: number
+  unrealizedPnl: number
+  realizedPnl: number
+}
+
+export interface AgentEventRow {
+  id: number
+  eventType: string
+  message: string
+  severity: string
+  payload?: Record<string, unknown> | null
+  createdAt?: string | null
+}
+
+export interface AgentPerformance {
+  totalPnl: number
+  realizedPnl: number
+  unrealizedPnl: number
+  numberOfTrades: number
+  maxDailyLossReachedCount: number
+  tradesBlockedByDailyLoss: number
+  positionsOpen: number
+  ordersFilled: number
+}
+
+export interface RiskManagementConfig {
+  riskProfile: RiskProfile
+  riskConfig: Record<string, unknown>
+  profiles: Record<string, Record<string, unknown>>
+  dailyLoss: DailyLossState
+}
+
 export interface MarketClock {
   isOpen: boolean
   session: string
@@ -550,6 +678,146 @@ function retryAfterMs(response: Response): number {
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => window.setTimeout(resolve, ms))
+}
+
+function mapDailyLoss(raw: unknown): DailyLossState {
+  const payload = object(raw)
+  return {
+    tradingDate: text(payload.trading_date) || undefined,
+    timezone: text(payload.timezone) || undefined,
+    startingEquity: number(payload.starting_equity) ?? 0,
+    currentEquity: number(payload.current_equity) ?? 0,
+    realizedPnl: number(payload.realized_pnl) ?? 0,
+    unrealizedPnl: number(payload.unrealized_pnl) ?? 0,
+    tradingFees: number(payload.trading_fees) ?? 0,
+    todayPnl: number(payload.today_pnl) ?? 0,
+    dailyLoss: number(payload.daily_loss) ?? 0,
+    dailyLossPercent: number(payload.daily_loss_percent) ?? 0,
+    maxDailyLossAmount: number(payload.max_daily_loss_amount),
+    maxDailyLossPercent: number(payload.max_daily_loss_percent),
+    effectiveLimit: number(payload.effective_limit),
+    remainingDailyLoss: number(payload.remaining_daily_loss),
+    status: (text(payload.status, 'active') as DailyLossStatus),
+    limitReached: Boolean(payload.limit_reached),
+    enabled: payload.enabled !== false,
+    calculation: text(payload.calculation) || undefined,
+    action: text(payload.action) || undefined,
+    lastResetAt: text(payload.last_reset_at) || null,
+    nextResetAt: text(payload.next_reset_at) || null,
+    warningThresholdPct: number(payload.warning_threshold_pct) ?? undefined,
+    criticalThresholdPct: number(payload.critical_threshold_pct) ?? undefined,
+    utilizationPct: number(payload.utilization_pct) ?? undefined,
+    warnings: list(payload.warnings).map((w) => String(w)),
+  }
+}
+
+function mapTradingAgentConfig(raw: unknown): TradingAgentConfig {
+  const payload = object(raw)
+  return {
+    id: number(payload.id) ?? 0,
+    name: text(payload.name, 'Default Agent'),
+    enabled: Boolean(payload.enabled),
+    status: text(payload.status, 'disabled'),
+    mode: text(payload.mode, 'paper'),
+    tradingType: text(payload.trading_type, 'mixed'),
+    riskProfile: text(payload.risk_profile, 'medium'),
+    riskConfig: object(payload.risk_config),
+    capitalAllocation: number(payload.capital_allocation) ?? 0,
+    forecastEnabled: payload.forecast_enabled !== false,
+    liveTradingEnabled: Boolean(payload.live_trading_enabled),
+    universe: list(payload.universe).map((s) => String(s).toUpperCase()),
+    dailyLoss: mapDailyLoss(payload.daily_loss),
+    createdAt: text(payload.created_at) || null,
+    updatedAt: text(payload.updated_at) || null,
+  }
+}
+
+function mapTradeCandidate(raw: unknown): TradeCandidateRow {
+  const payload = object(raw)
+  return {
+    id: number(payload.id) ?? 0,
+    symbol: text(payload.symbol),
+    assetType: text(payload.asset_type, 'equity'),
+    strategy: text(payload.strategy),
+    status: text(payload.status),
+    forecastSnapshot: object(payload.forecast_snapshot),
+    riskDecision: payload.risk_decision ? object(payload.risk_decision) : null,
+    createdAt: text(payload.created_at) || null,
+  }
+}
+
+function mapTradePlan(raw: unknown): TradePlanRow {
+  const payload = object(raw)
+  return {
+    id: number(payload.id) ?? 0,
+    status: text(payload.status),
+    entryPrice: number(payload.entry_price),
+    stopLoss: number(payload.stop_loss),
+    takeProfit: number(payload.take_profit),
+    positionSize: number(payload.position_size) ?? 0,
+    maxLoss: number(payload.max_loss),
+    maxProfit: number(payload.max_profit),
+    riskRewardRatio: number(payload.risk_reward_ratio),
+    plan: object(payload.plan),
+    createdAt: text(payload.created_at) || null,
+  }
+}
+
+function mapAgentOrder(raw: unknown): AgentOrderRow {
+  const payload = object(raw)
+  return {
+    id: number(payload.id) ?? 0,
+    brokerOrderId: text(payload.broker_order_id) || null,
+    status: text(payload.status),
+    symbol: text(payload.symbol),
+    side: text(payload.side),
+    filledQuantity: number(payload.filled_quantity) ?? 0,
+    averageFillPrice: number(payload.average_fill_price),
+    requestedQuantity: number(payload.requested_quantity) ?? 0,
+    errorMessage: text(payload.error_message) || null,
+    submittedAt: text(payload.submitted_at) || null,
+    filledAt: text(payload.filled_at) || null,
+  }
+}
+
+function mapAgentPosition(raw: unknown): AgentPositionRow {
+  const payload = object(raw)
+  return {
+    id: number(payload.id) ?? 0,
+    symbol: text(payload.symbol),
+    assetType: text(payload.asset_type, 'equity'),
+    quantity: number(payload.quantity) ?? 0,
+    averageEntryPrice: number(payload.average_entry_price) ?? 0,
+    currentPrice: number(payload.current_price) ?? 0,
+    unrealizedPnl: number(payload.unrealized_pnl) ?? 0,
+    realizedPnl: number(payload.realized_pnl) ?? 0,
+  }
+}
+
+function mapAgentEvent(raw: unknown): AgentEventRow {
+  const payload = object(raw)
+  return {
+    id: number(payload.id) ?? 0,
+    eventType: text(payload.event_type),
+    message: text(payload.message),
+    severity: text(payload.severity, 'info'),
+    payload: payload.payload ? object(payload.payload) : null,
+    createdAt: text(payload.created_at) || null,
+  }
+}
+
+function mapAgentPerformance(raw: unknown): AgentPerformance {
+  const payload = object(raw)
+  return {
+    totalPnl: number(payload.total_pnl) ?? 0,
+    realizedPnl: number(payload.realized_pnl) ?? 0,
+    unrealizedPnl: number(payload.unrealized_pnl) ?? 0,
+    numberOfTrades: number(payload.number_of_trades) ?? 0,
+    maxDailyLossReachedCount: number(payload.max_daily_loss_reached_count) ?? 0,
+    tradesBlockedByDailyLoss: number(payload.trades_blocked_by_daily_loss) ?? 0,
+    positionsOpen: number(payload.positions_open) ?? 0,
+    ordersFilled: number(payload.orders_filled) ?? 0,
+  }
 }
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
@@ -1459,5 +1727,91 @@ export const api = {
   },
   removeFavorite: async (ticker: string): Promise<void> => {
     await request<unknown>(`/favorites/${encodeURIComponent(ticker)}`, { method: 'DELETE' })
+  },
+
+  // ── Autonomous Trading Agent ──────────────────────────────────────
+  getTradingAgentConfig: async (): Promise<TradingAgentConfig> =>
+    mapTradingAgentConfig(await request<unknown>('/trading-agent/config')),
+  updateTradingAgentConfig: async (body: Record<string, unknown>): Promise<TradingAgentConfig> =>
+    mapTradingAgentConfig(await request<unknown>('/trading-agent/config', {
+      method: 'PUT',
+      body: JSON.stringify(body),
+    })),
+  startTradingAgent: async (mode: 'paper' | 'live' = 'paper', liveConfirmation?: string): Promise<TradingAgentConfig> =>
+    mapTradingAgentConfig(await request<unknown>('/trading-agent/start', {
+      method: 'POST',
+      body: JSON.stringify({ mode, live_confirmation: liveConfirmation }),
+    })),
+  pauseTradingAgent: async (): Promise<TradingAgentConfig> =>
+    mapTradingAgentConfig(await request<unknown>('/trading-agent/pause', { method: 'POST' })),
+  resumeTradingAgent: async (): Promise<TradingAgentConfig> =>
+    mapTradingAgentConfig(await request<unknown>('/trading-agent/resume', { method: 'POST' })),
+  emergencyStopTradingAgent: async (): Promise<TradingAgentConfig> =>
+    mapTradingAgentConfig(await request<unknown>('/trading-agent/emergency-stop', { method: 'POST' })),
+  runTradingAgentCycle: async (symbols?: string[], execute = true): Promise<Record<string, unknown>> =>
+    object(await request<unknown>('/trading-agent/cycle', {
+      method: 'POST',
+      body: JSON.stringify({ symbols, execute }),
+    })),
+  getTradingAgentCandidates: async (): Promise<TradeCandidateRow[]> => {
+    const payload = object(await request<unknown>('/trading-agent/candidates'))
+    return list(payload.candidates).map((row) => mapTradeCandidate(row))
+  },
+  getTradingAgentTradePlans: async (): Promise<TradePlanRow[]> => {
+    const payload = object(await request<unknown>('/trading-agent/trade-plans'))
+    return list(payload.trade_plans).map((row) => mapTradePlan(row))
+  },
+  getTradingAgentOrders: async (): Promise<AgentOrderRow[]> => {
+    const payload = object(await request<unknown>('/trading-agent/orders'))
+    return list(payload.orders).map((row) => mapAgentOrder(row))
+  },
+  getTradingAgentPositions: async (): Promise<AgentPositionRow[]> => {
+    const payload = object(await request<unknown>('/trading-agent/positions'))
+    return list(payload.positions).map((row) => mapAgentPosition(row))
+  },
+  getTradingAgentEvents: async (): Promise<AgentEventRow[]> => {
+    const payload = object(await request<unknown>('/trading-agent/events'))
+    return list(payload.events).map((row) => mapAgentEvent(row))
+  },
+  getTradingAgentPerformance: async (): Promise<AgentPerformance> =>
+    mapAgentPerformance(await request<unknown>('/trading-agent/performance')),
+  getTradingAgentDailyLoss: async (): Promise<DailyLossState> =>
+    mapDailyLoss(await request<unknown>('/trading-agent/daily-loss')),
+  updateTradingAgentDailyLoss: async (body: Record<string, unknown>): Promise<DailyLossState> =>
+    mapDailyLoss(await request<unknown>('/trading-agent/daily-loss', {
+      method: 'PUT',
+      body: JSON.stringify(body),
+    })),
+  resetTradingAgentDailyLoss: async (): Promise<DailyLossState> =>
+    mapDailyLoss(await request<unknown>('/trading-agent/daily-loss/reset', { method: 'POST' })),
+  getRiskManagementConfig: async (): Promise<RiskManagementConfig> => {
+    const payload = object(await request<unknown>('/risk-management/config'))
+    return {
+      riskProfile: text(payload.risk_profile, 'medium') as RiskProfile,
+      riskConfig: object(payload.risk_config) as Record<string, unknown>,
+      profiles: object(payload.profiles) as Record<string, Record<string, unknown>>,
+      dailyLoss: mapDailyLoss(payload.daily_loss),
+    }
+  },
+  updateRiskManagementConfig: async (body: Record<string, unknown>): Promise<RiskManagementConfig> => {
+    const payload = object(await request<unknown>('/risk-management/config', {
+      method: 'PUT',
+      body: JSON.stringify(body),
+    }))
+    return {
+      riskProfile: text(payload.risk_profile, 'medium') as RiskProfile,
+      riskConfig: object(payload.risk_config) as Record<string, unknown>,
+      profiles: {},
+      dailyLoss: mapDailyLoss(payload.daily_loss),
+    }
+  },
+  resetRiskManagementConfig: async (): Promise<RiskManagementConfig> => {
+    const payload = object(await request<unknown>('/risk-management/reset', { method: 'POST' }))
+    return {
+      riskProfile: text(payload.risk_profile, 'medium') as RiskProfile,
+      riskConfig: object(payload.risk_config) as Record<string, unknown>,
+      profiles: {},
+      dailyLoss: mapDailyLoss(payload.daily_loss),
+    }
   },
 }
