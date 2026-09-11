@@ -142,13 +142,15 @@ npm run dev
 
 ## LAN publish (local network)
 
-From the repository root:
+Canonical LAN URL: **http://192.168.86.197:5173/**
+
+From the repository root on the Windows host that owns `192.168.86.197`:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File scripts/publish-kronos-lan.ps1
 ```
 
-The script builds the frontend, starts the API on loopback `:8000`, **waits for `/api/v1/health`**, then starts Vite preview on `0.0.0.0:5173`. LAN clients use the UI proxy — the API is not exposed off loopback. Logs: `runtime-logs/backend.*.log`, `runtime-logs/frontend.*.log`. A watchdog (`scripts/watch-kronos-lan.ps1`) can restart the stack when health checks fail.
+The script builds the frontend, starts the API on loopback `:8000`, **waits for `/api/v1/health`**, then starts Vite preview on `0.0.0.0:5173`. When `192.168.86.197` is assigned on the host, it also verifies that preferred LAN URL. LAN clients use the UI proxy — the API is not exposed off loopback. Logs: `runtime-logs/backend.*.log`, `runtime-logs/frontend.*.log`. A watchdog (`scripts/watch-kronos-lan.ps1`) can restart the stack when health checks fail.
 
 If you see **502** on API routes through the UI, confirm `http://127.0.0.1:8000/api/v1/health` responds and republish.
 
