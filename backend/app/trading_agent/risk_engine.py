@@ -258,6 +258,7 @@ class RiskEngine:
         max_trades = int(risk_config.get("max_trades_per_day") or 0)
         if (
             trade_candidate.trading_mode == "day_trading"
+            and trade_candidate.strategy != "intraday_exit"
             and max_trades > 0
             and portfolio.trades_today >= max_trades
         ):
@@ -436,7 +437,12 @@ class RiskEngine:
         if max_loss and max_loss > 0 and max_profit is not None:
             rr = max_profit / max_loss
             min_rr = float(risk_config.get("min_risk_reward_ratio") or 0)
-            if min_rr > 0 and rr < min_rr:
+            # Flatten exits are not new entries — do not gate them on entry R/R.
+            if (
+                min_rr > 0
+                and rr < min_rr
+                and trade_candidate.strategy != "intraday_exit"
+            ):
                 return reject(f"Risk/reward {rr:.2f} below minimum {min_rr:.2f}")
 
         if daily.status in {"warning", "critical"}:
