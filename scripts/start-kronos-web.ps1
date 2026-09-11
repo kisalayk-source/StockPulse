@@ -1,6 +1,7 @@
 # Starts the StockPulse website (Vite preview) and keeps it in the foreground.
 # Registered as Windows Task Scheduler task "KronosWeb" (at logon).
-# Independent of Cursor: open http://localhost:5173 in a normal browser.
+# Independent of Cursor: open http://localhost:5173 locally, or
+# http://192.168.86.197:5173/ from other devices on the LAN after publish.
 
 $ErrorActionPreference = "Stop"
 $root = Split-Path -Parent $PSScriptRoot
@@ -47,7 +48,7 @@ if (-not (Test-Path $distIndex)) {
 }
 
 Set-Location $frontend
-Add-Content -Path $logFile -Value "$(Get-Date -Format o) starting website on http://localhost:5173"
+Add-Content -Path $logFile -Value "$(Get-Date -Format o) starting website on http://192.168.86.197:5173/ (also http://localhost:5173)"
 $ErrorActionPreference = "Continue"
 & $nodeCommand $viteEntry preview --host 0.0.0.0 --port 5173 --strictPort *>> $logFile
 exit $LASTEXITCODE

@@ -152,7 +152,7 @@ powershell -ExecutionPolicy Bypass -File scripts/publish-kronos-lan.ps1
 
 The script builds the frontend, starts the API on loopback `:8000`, **waits for `/api/v1/health`**, then starts Vite preview on `0.0.0.0:5173`. When `192.168.86.197` is assigned on the host, it also verifies that preferred LAN URL. LAN clients use the UI proxy — the API is not exposed off loopback. Logs: `runtime-logs/backend.*.log`, `runtime-logs/frontend.*.log`. A watchdog (`scripts/watch-kronos-lan.ps1`) can restart the stack when health checks fail.
 
-If you see **502** on API routes through the UI, confirm `http://127.0.0.1:8000/api/v1/health` responds and republish.
+If you see **502** on API routes through the UI, confirm `http://127.0.0.1:8000/api/v1/health` responds and republish. After a successful LAN publish, also confirm **http://192.168.86.197:5173/** and **http://192.168.86.197:5173/api/v1/health**.
 
 ## Containers
 
@@ -162,8 +162,10 @@ Build and start the StockPulse API and frontend from the repository root:
 docker compose up --build
 ```
 
-Open the frontend at `http://localhost:5173` and API documentation at
-`http://localhost:8000/docs`. The optional legacy web UI is available with:
+For Docker Compose on the host, open the frontend at `http://localhost:5173`. For the
+Windows LAN publish stack (preferred for this workspace), open
+**http://192.168.86.197:5173/**. API documentation is at `http://localhost:8000/docs`
+on the host. The optional legacy web UI is available with:
 
 ```bash
 docker compose --profile legacy up --build webui

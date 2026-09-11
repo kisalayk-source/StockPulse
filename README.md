@@ -81,7 +81,8 @@ npm ci
 npm run dev
 ```
 
-- App: [http://localhost:5173](http://localhost:5173)
+- App (dev): [http://localhost:5173](http://localhost:5173)
+- App (LAN publish): [http://192.168.86.197:5173/](http://192.168.86.197:5173/)
 - API docs: [http://localhost:8000/docs](http://localhost:8000/docs)
 
 ### Publish on your LAN

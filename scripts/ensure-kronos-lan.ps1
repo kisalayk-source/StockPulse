@@ -1,5 +1,6 @@
 $ErrorActionPreference = "Stop"
 $mutex = [System.Threading.Mutex]::new($false, "Global\KronosLanWatchdog")
+$PreferredLanUrl = "http://192.168.86.197:5173"
 
 if (-not $mutex.WaitOne(0)) {
     exit 0
@@ -12,6 +13,17 @@ try {
         $api = Invoke-WebRequest "http://127.0.0.1:5173/api/v1/health" -UseBasicParsing -TimeoutSec 3
         $backend = Invoke-WebRequest "http://127.0.0.1:8000/api/v1/health" -UseBasicParsing -TimeoutSec 3
         $healthy = $site.StatusCode -eq 200 -and $api.StatusCode -eq 200 -and $backend.StatusCode -eq 200
+
+        # Prefer verifying the canonical LAN URL when this host owns that address.
+        if ($healthy) {
+            try {
+                $lanSite = Invoke-WebRequest "$PreferredLanUrl/" -UseBasicParsing -TimeoutSec 3
+                $lanApi = Invoke-WebRequest "$PreferredLanUrl/api/v1/health" -UseBasicParsing -TimeoutSec 3
+                $healthy = $lanSite.StatusCode -eq 200 -and $lanApi.StatusCode -eq 200
+            } catch {
+                # Loopback healthy but preferred LAN IP not assigned/reachable — still treat as up.
+            }
+        }
     } catch {
         $healthy = $false
     }
