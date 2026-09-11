@@ -81,18 +81,21 @@ npm ci
 npm run dev
 ```
 
-- App: [http://localhost:5173](http://localhost:5173)
+- App (dev): [http://localhost:5173](http://localhost:5173)
+- App (LAN publish): [http://192.168.86.197:5173/](http://192.168.86.197:5173/)
 - API docs: [http://localhost:8000/docs](http://localhost:8000/docs)
 
 ### Publish on your LAN
 
 Builds the frontend and starts API + UI (backend stays on loopback; LAN clients use the UI proxy). The publish script waits for the API on port 8000 before starting the frontend to avoid transient **502** proxy errors.
 
+Canonical LAN URL (always): [http://192.168.86.197:5173/](http://192.168.86.197:5173/)
+
 ```powershell
 powershell -ExecutionPolicy Bypass -File scripts/publish-kronos-lan.ps1
 ```
 
-After login, Sectors and Top Accumulation populate from a background **accumulation scan** (may take several minutes on first load). See [docs/SEC_ACCUMULATION.md](./docs/SEC_ACCUMULATION.md).
+Run that script on the Windows host that owns `192.168.86.197`. After login, Sectors and Top Accumulation populate from a background **accumulation scan** (may take several minutes on first load). See [docs/SEC_ACCUMULATION.md](./docs/SEC_ACCUMULATION.md).
 
 ### Docker
 

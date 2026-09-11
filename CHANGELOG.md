@@ -14,6 +14,7 @@ Notable changes to this project are documented here. The format follows
 
 ### Changed
 
+- **Canonical LAN URL** — LAN publish always targets and documents **http://192.168.86.197:5173/** (`scripts/publish-kronos-lan.ps1`, Cursor publish rule, and operator docs). Publish must run on the Windows host that owns that IP.
 - **SEC Records tab** — polished layout with stat chips, AI analysis card, filing-entity/action columns, expandable parsed-detail rows, and improved insider/ownership mini-tables (replaces plain description text and bullet lists).
 - **SEC market tabs** — background accumulation scan (blue-chip + movers universe) populates Sectors, Top Accumulation, and AI Research; sector names normalized from Finnhub profiles.
 - Chart interval control (1m / 5m / 15m / 1h / 1D) for historical candles and

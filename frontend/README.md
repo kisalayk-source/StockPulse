@@ -17,11 +17,21 @@ substitute for network access controls or a proper user-authentication system.
 
 ## Commands
 
-- `npm run dev` — Vite development server
+- `npm run dev` — Vite development server (`http://localhost:5173`)
 - `npm run test` — Vitest and Testing Library suite
 - `npm run typecheck` — strict TypeScript project check
 - `npm run lint` — Oxlint
 - `npm run build` — typecheck and production bundle
+
+## LAN publish
+
+From the repository root on the Windows host that owns `192.168.86.197`:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/publish-kronos-lan.ps1
+```
+
+Canonical LAN URL: **http://192.168.86.197:5173/** (API stays on loopback; LAN clients use the Vite proxy).
 
 ## Dashboard views
 
@@ -83,7 +93,7 @@ that 13F holdings are quarterly reported positions — not real-time trade activ
 
 ### Troubleshooting
 
-- **502 Bad Gateway** on `/api/v1/*` — the Vite proxy could not reach the API. Confirm `http://127.0.0.1:8000/api/v1/health` responds; republish with `scripts/publish-kronos-lan.ps1`.
+- **502 Bad Gateway** on `/api/v1/*` — the Vite proxy could not reach the API. Confirm `http://127.0.0.1:8000/api/v1/health` responds; republish with `scripts/publish-kronos-lan.ps1`. After publish, confirm **http://192.168.86.197:5173/api/v1/health**.
 - **Empty Sectors / Top Accumulation** — wait for the background accumulation scan (progress banner) or hit dashboard Refresh.
 - **SEC Records** — search by ticker; results cover the last 6 months with filing entity, action labels, expandable parsed XML details, and an AI analysis card (rule-based when LLM is off). If columns are empty, re-search to trigger XML backfill. Check `provider_errors` in the API response if sync fails.
 - **Signal labels** — tables show readable classifications (e.g. `Strong Accumulation`) instead of raw enum codes.

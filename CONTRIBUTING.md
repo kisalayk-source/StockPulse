@@ -10,6 +10,8 @@ Thank you for helping improve Kronos. By participating, you agree to follow the
    redistribute, model checkpoints, generated predictions, or runtime logs.
 3. Base work on a supported Python (3.10–3.12) and Node.js 22 environment.
 4. Follow the setup and verification steps in [docs/DEVELOPMENT.md](./docs/DEVELOPMENT.md).
+   Local LAN publish (when validating UI on the network) uses
+   **http://192.168.86.197:5173/** via `scripts/publish-kronos-lan.ps1`.
 
 ## Pull requests
 
