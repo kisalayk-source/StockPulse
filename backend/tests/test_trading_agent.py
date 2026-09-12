@@ -92,7 +92,12 @@ def settings(**overrides) -> Settings:
     return Settings(_env_file=None, **defaults)
 
 
-def make_agent_client():
+def make_agent_client(*, use_alpaca: bool = False):
+    """Build a test client.
+
+    ``use_alpaca=False`` keeps the in-memory PaperBrokerAdapter (strategy unit tests).
+    ``use_alpaca=True`` routes paper mode through FakeAlpaca like production.
+    """
     reset_db_state()
     forecast = StaticForecastProvider(
         {
@@ -112,22 +117,31 @@ def make_agent_client():
     )
     config = settings()
     paper_brokers: dict[int, PaperBrokerAdapter] = {}
+    alpaca = FakeAlpaca() if use_alpaca else None
     agent = TradingAgentService(
         forecast_provider=forecast,
-        alpaca=FakeAlpaca(),
+        alpaca=alpaca,
         paper_brokers=paper_brokers,
         settings=config,
     )
-    services = Services(config, FakeAlpaca(), FakeFinnhub(), FakeKronos(), FakeSec(), None, agent)
+    services = Services(config, alpaca or FakeAlpaca(), FakeFinnhub(), FakeKronos(), FakeSec(), None, agent)
     client = TestClient(create_app(config, services))
-    return client, agent, paper_brokers
+    return client, agent, paper_brokers, alpaca
 
 
-def register_headers(client: TestClient) -> dict[str, str]:
+def register_headers(client: TestClient, *, with_alpaca: bool = False) -> dict[str, str]:
     email = f"agent-{uuid4().hex[:8]}@example.com"
     response = client.post("/api/v1/auth/register", json={"email": email, "password": "password123"})
     assert response.status_code == 201, response.text
-    return {"Authorization": f"Bearer {response.json()['access_token']}"}
+    headers = {"Authorization": f"Bearer {response.json()['access_token']}"}
+    if with_alpaca:
+        saved = client.put(
+            "/api/v1/auth/alpaca",
+            headers=headers,
+            json={"mode": "paper", "key_id": "PKTESTKEY123456", "secret": "secretsecret12"},
+        )
+        assert saved.status_code == 200, saved.text
+    return headers
 
 
 def test_agent_starts_in_paper_mode():
@@ -193,7 +207,7 @@ def test_pause_resume_and_emergency_stop():
 
 
 def test_paper_cycle_stores_forecast_snapshot():
-    client, agent, paper_brokers = make_agent_client()
+    client, agent, paper_brokers, _alpaca = make_agent_client()
     with client:
         headers = register_headers(client)
         client.put(
@@ -221,8 +235,43 @@ def test_paper_cycle_stores_forecast_snapshot():
         assert orders[0]["status"] == "filled"
 
 
+
+
+def test_paper_mode_routes_orders_to_alpaca():
+    client, agent, paper_brokers, alpaca = make_agent_client(use_alpaca=True)
+    assert alpaca is not None
+    with client:
+        headers = register_headers(client, with_alpaca=True)
+        client.put(
+            "/api/v1/trading-agent/config",
+            json={"trading_type": "long_term", "universe": ["NVDA"], "capital_allocation": 10000},
+            headers=headers,
+        )
+        cfg = client.post("/api/v1/trading-agent/start", json={"mode": "paper"}, headers=headers).json()
+        assert cfg["id"] not in paper_brokers
+        cycle = client.post(
+            "/api/v1/trading-agent/cycle",
+            json={"symbols": ["NVDA"], "execute": True},
+            headers=headers,
+        )
+        assert cycle.status_code == 200, cycle.text
+        assert alpaca.submitted, "expected agent orders to hit FakeAlpaca"
+        orders = client.get("/api/v1/trading-agent/orders", headers=headers).json()["orders"]
+        assert orders
+        assert orders[0]["status"] == "filled"
+
+
+def test_paper_start_requires_alpaca_credentials_when_broker_configured():
+    client, _agent, _paper, _alpaca = make_agent_client(use_alpaca=True)
+    with client:
+        headers = register_headers(client, with_alpaca=False)
+        resp = client.post("/api/v1/trading-agent/start", json={"mode": "paper"}, headers=headers)
+        assert resp.status_code == 400
+        assert "alpaca" in resp.json()["detail"].lower()
+
+
 def test_duplicate_orders_prevented():
-    client, agent, _ = make_agent_client()
+    client, agent, _paper_brokers, _alpaca = make_agent_client()
     with client:
         headers = register_headers(client)
         # Bootstrap config via API
@@ -486,7 +535,7 @@ def _start_day_trading_with_long(agent, paper_brokers, client, headers, *, qty: 
 
 
 def test_cycle_sells_open_long_when_stop_is_hit():
-    client, agent, paper_brokers = make_agent_client()
+    client, agent, paper_brokers, _alpaca = make_agent_client()
     agent.forecast_provider = StaticForecastProvider({"NVDA": _forecast("HOLD", expected_return=0.0)})
     with client:
         headers = register_headers(client)
@@ -511,7 +560,7 @@ def test_cycle_sells_open_long_when_stop_is_hit():
 
 
 def test_cycle_sells_open_long_when_take_profit_is_hit():
-    client, agent, paper_brokers = make_agent_client()
+    client, agent, paper_brokers, _alpaca = make_agent_client()
     agent.forecast_provider = StaticForecastProvider({"NVDA": _forecast("HOLD", expected_return=0.0)})
     with client:
         headers = register_headers(client)
@@ -536,7 +585,7 @@ def test_cycle_sells_open_long_when_take_profit_is_hit():
 
 
 def test_cycle_sells_when_max_holding_minutes_elapsed():
-    client, agent, paper_brokers = make_agent_client()
+    client, agent, paper_brokers, _alpaca = make_agent_client()
     agent.forecast_provider = StaticForecastProvider({"NVDA": _forecast("HOLD", expected_return=0.0)})
     with client:
         headers = register_headers(client)
@@ -572,7 +621,7 @@ def test_cycle_sells_when_max_holding_minutes_elapsed():
 
 
 def test_cycle_sells_near_market_close():
-    client, agent, paper_brokers = make_agent_client()
+    client, agent, paper_brokers, _alpaca = make_agent_client()
     agent.forecast_provider = StaticForecastProvider({"NVDA": _forecast("HOLD", expected_return=0.0)})
     with client:
         headers = register_headers(client)
@@ -602,7 +651,7 @@ def test_cycle_sells_near_market_close():
 
 
 def test_cycle_forecast_sell_closes_held_shares():
-    client, agent, paper_brokers = make_agent_client()
+    client, agent, paper_brokers, _alpaca = make_agent_client()
     agent.forecast_provider = StaticForecastProvider(
         {"NVDA": _forecast("SELL", expected_return=-0.04)}
     )
@@ -632,7 +681,7 @@ def test_cycle_forecast_sell_closes_held_shares():
 
 
 def test_trades_today_ignores_prior_session_fills():
-    client, agent, paper_brokers = make_agent_client()
+    client, agent, paper_brokers, _alpaca = make_agent_client()
     with client:
         headers = register_headers(client)
         client.put(
