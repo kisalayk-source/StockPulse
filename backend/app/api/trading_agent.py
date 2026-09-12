@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
-from typing import Annotated, Any
+from contextlib import contextmanager
+from typing import Annotated, Any, Iterator
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy.orm import Session
 
-from app.auth import get_current_user
+from app.auth import get_current_user, get_user_broker_credentials, use_trading_credentials
 from app.db import get_session
 from app.dependencies import enforce_rate_limit, get_services
 from app.models import User
@@ -31,6 +32,34 @@ def _agent(request: Request) -> TradingAgentService:
 
 def _config(session: Session, user: User, agent: TradingAgentService):
     return agent.get_or_create_config(session, user.id)
+
+
+def _broker_mode(config: Any, *, requested_mode: str | None = None) -> str:
+    mode = requested_mode or getattr(config, "mode", None) or "paper"
+    if mode == "live" and bool(getattr(config, "live_trading_enabled", False)):
+        return "live"
+    return "paper"
+
+
+@contextmanager
+def _trading_credentials(
+    request: Request,
+    session: Session,
+    user: User,
+    config: Any,
+    *,
+    requested_mode: str | None = None,
+) -> Iterator[None]:
+    """Bind Settings Alpaca keys when the agent routes orders through Alpaca."""
+    agent = _agent(request)
+    if getattr(agent, "alpaca", None) is None:
+        yield
+        return
+    services = get_services(request)
+    mode = _broker_mode(config, requested_mode=requested_mode)
+    credentials = get_user_broker_credentials(session, services.settings, user, mode)
+    with use_trading_credentials(credentials):
+        yield
 
 
 @router.get("/trading-agent/config")
@@ -68,7 +97,8 @@ def start_agent(
     agent = _agent(request)
     config = _config(session, user, agent)
     try:
-        agent.start(session, config, mode=body.mode, live_confirmation=body.live_confirmation)
+        with _trading_credentials(request, session, user, config, requested_mode=body.mode):
+            agent.start(session, config, mode=body.mode, live_confirmation=body.live_confirmation)
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
     return agent.config_payload(session, config)
@@ -92,7 +122,8 @@ def resume_agent(request: Request, user: UserDep, session: SessionDep) -> dict[s
     agent = _agent(request)
     config = _config(session, user, agent)
     try:
-        agent.resume(session, config)
+        with _trading_credentials(request, session, user, config):
+            agent.resume(session, config)
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
     return agent.config_payload(session, config)
@@ -103,7 +134,8 @@ def emergency_stop(request: Request, user: UserDep, session: SessionDep) -> dict
     enforce_rate_limit(request, "trading-agent-lifecycle", 30)
     agent = _agent(request)
     config = _config(session, user, agent)
-    agent.emergency_stop(session, config)
+    with _trading_credentials(request, session, user, config):
+        agent.emergency_stop(session, config)
     return agent.config_payload(session, config)
 
 
@@ -120,18 +152,22 @@ def run_cycle(
     market_open = True
     services = get_services(request)
     try:
-        clock = services.alpaca.market_clock("paper")
-        market_open = bool(clock.get("is_open")) if isinstance(clock, dict) else True
+        with _trading_credentials(request, session, user, config):
+            clock = services.alpaca.market_clock("paper")
+            market_open = bool(clock.get("is_open")) if isinstance(clock, dict) else True
+    except HTTPException:
+        raise
     except Exception:
         market_open = True
     try:
-        return agent.run_cycle(
-            session,
-            config,
-            symbols=body.symbols,
-            execute=body.execute,
-            market_open=market_open,
-        )
+        with _trading_credentials(request, session, user, config):
+            return agent.run_cycle(
+                session,
+                config,
+                symbols=body.symbols,
+                execute=body.execute,
+                market_open=market_open,
+            )
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
 
@@ -189,7 +225,8 @@ def get_performance(request: Request, user: UserDep, session: SessionDep) -> dic
 def get_daily_loss(request: Request, user: UserDep, session: SessionDep) -> dict[str, Any]:
     agent = _agent(request)
     config = _config(session, user, agent)
-    return agent.get_daily_loss_snapshot(session, config)
+    with _trading_credentials(request, session, user, config):
+        return agent.get_daily_loss_snapshot(session, config)
 
 
 @router.put("/trading-agent/daily-loss")
@@ -203,10 +240,11 @@ def put_daily_loss(
     agent = _agent(request)
     config = _config(session, user, agent)
     try:
-        agent.update_daily_loss(session, config, body.model_dump(exclude_unset=True))
+        with _trading_credentials(request, session, user, config):
+            agent.update_daily_loss(session, config, body.model_dump(exclude_unset=True))
+            return agent.get_daily_loss_snapshot(session, config)
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
-    return agent.get_daily_loss_snapshot(session, config)
 
 
 @router.post("/trading-agent/daily-loss/reset")
@@ -214,4 +252,5 @@ def reset_daily_loss(request: Request, user: UserDep, session: SessionDep) -> di
     enforce_rate_limit(request, "trading-agent-lifecycle", 10)
     agent = _agent(request)
     config = _config(session, user, agent)
-    return agent.reset_daily_loss(session, config)
+    with _trading_credentials(request, session, user, config):
+        return agent.reset_daily_loss(session, config)

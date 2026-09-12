@@ -1017,8 +1017,15 @@ class TradingAgentService:
     # ── internals ────────────────────────────────────────────────────
 
     def _broker_for(self, config: AgentConfig) -> BrokerAdapter:
-        if config.mode == "live" and config.live_trading_enabled and self.alpaca is not None:
-            return AlpacaBrokerAdapter(self.alpaca, mode="live")
+        # Prefer the user's Alpaca account for both paper and live so agent fills
+        # and cash/equity match the real broker ledger (not a local $25k simulator).
+        if self.alpaca is not None:
+            mode = (
+                "live"
+                if config.mode == "live" and config.live_trading_enabled
+                else "paper"
+            )
+            return AlpacaBrokerAdapter(self.alpaca, mode=mode)
         if config.id not in self._paper_brokers:
             risk = self.resolved_risk_config(config)
             starting = float(risk.get("starting_capital") or config.capital_allocation or 25_000)
