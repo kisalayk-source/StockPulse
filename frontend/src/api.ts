@@ -684,8 +684,13 @@ function normalizeError(payload: unknown, status: number): string {
   return `Request failed (${status})`
 }
 
+function headerGet(response: Response, name: string): string | null {
+  // Tests often mock fetch with a plain object that omits Headers.
+  return response.headers?.get?.(name) ?? null
+}
+
 function retryAfterMs(response: Response): number {
-  const raw = response.headers.get('Retry-After')
+  const raw = headerGet(response, 'Retry-After')
   const seconds = raw ? Number(raw) : NaN
   if (Number.isFinite(seconds) && seconds >= 0) return seconds * 1000
   return 1500
@@ -860,7 +865,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
       ...init?.headers,
     },
   })
-  const echoed = response.headers.get('X-Request-ID') || requestId
+  const echoed = headerGet(response, 'X-Request-ID') || requestId
   setLastRequestId(echoed)
   const payload: unknown = response.status === 204 ? null : await response.json().catch(() => null)
   if (!response.ok) {
