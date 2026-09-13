@@ -177,6 +177,7 @@ class PredictionService:
         retrain: bool = False,
         sec_events: list[dict[str, Any]] | None = None,
         fundamentals_metrics: dict[str, Any] | None = None,
+        position_concentration: float | None = None,
     ) -> dict[str, Any]:
         self._require_ready()
         lookback = int(self.engine.config.get("prediction", {}).get("lookback_bars", 400))
@@ -188,6 +189,7 @@ class PredictionService:
             retrain=retrain,
             sec_events=sec_events,
             fundamentals_metrics=fundamentals_metrics,
+            position_concentration=position_concentration,
         )
 
     def features(

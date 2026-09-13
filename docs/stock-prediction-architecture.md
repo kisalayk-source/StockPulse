@@ -103,7 +103,7 @@ Unit tests assert that feature computation at `T` ignores later bars/filings.
 2. **MVP-2 (done):** Kronos directional adapter, LightGBM, weighted ensemble, Platt/isotonic calibration (Kronos/LGBM off by default)
 3. **MVP-3 (done):** SEC flow features (PIT-safe) into `FeatureSnapshot.sec`
 4. **MVP-4 (done):** Fundamental features from Finnhub into `FeatureSnapshot.fundamentals`
-5. **MVP-5:** Independent signal risk engine
+5. **MVP-5 (done):** Independent signal risk engine (veto/downgrade BUY on vol, drawdown, concentration)
 6. **MVP-6:** Walk-forward, ablation, SHAP, registry metrics
 7. **MVP-7:** LLM explanation from structured results only
 

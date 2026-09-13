@@ -28,6 +28,13 @@ def explain_prediction(structured: dict[str, Any], *, llm_enabled: bool = False)
     risks = []
     if risk_score is not None:
         risks.append(f"Risk score: {risk_score}")
+    gate = structured.get("risk_gate") or {}
+    if gate.get("gated") and gate.get("action") in {"veto", "downgrade"}:
+        original = gate.get("original_signal")
+        action = gate.get("action")
+        risks.append(f"Risk gate {action}: {original} → {signal}")
+        for reason in gate.get("reasons") or []:
+            risks.append(str(reason))
     members = structured.get("model_predictions") or {}
     if members:
         drivers.append(

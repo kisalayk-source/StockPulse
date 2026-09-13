@@ -26,7 +26,7 @@ from ml.models.xgboost_model import XGBoostModel
 from ml.observability import log_prediction
 from ml.regime import classify_market_regime
 from ml.registry import ModelRegistry, ModelRecord
-from ml.risk import assess_risk
+from ml.risk import apply_risk_gate, assess_risk
 
 PathForecastFn = Callable[[str, str, pd.DataFrame], dict[str, Any] | None]
 
@@ -70,6 +70,7 @@ class PredictionEngine:
         retrain: bool = False,
         sec_events: list[dict[str, Any]] | None = None,
         fundamentals_metrics: dict[str, Any] | None = None,
+        position_concentration: float | None = None,
     ) -> dict[str, Any]:
         started = perf_counter()
         pred_cfg = self.config.get("prediction", {})
@@ -171,17 +172,49 @@ class PredictionEngine:
         )
 
         tech = snapshot.technical
+        risk_cfg = self.config.get("risk") or {}
+        last_close = float(ohlcv["close"].iloc[-1]) if "close" in ohlcv.columns else None
+        price_ref = tech.get("sma_20") or tech.get("sma_50") or last_close
         risk = assess_risk(
             predicted_probability=probability,
             expected_return=None,
             volatility=tech.get("rolling_volatility"),
             atr=tech.get("atr"),
+            price=float(price_ref) if price_ref is not None else last_close,
             drawdown=tech.get("drawdown"),
             market_regime=regime.get("regime"),
             model_agreement=agreement,
             data_quality=1.0 if len(tech) >= 10 else 0.5,
-            config=self.config.get("risk"),
+            position_concentration=position_concentration,
+            config=risk_cfg,
         )
+        gate = apply_risk_gate(
+            decision["signal"],
+            risk,
+            volatility=tech.get("rolling_volatility"),
+            drawdown=tech.get("drawdown"),
+            position_concentration=position_concentration,
+            config=risk_cfg,
+        )
+        decision = {
+            **decision,
+            "signal": gate["signal"],
+            "risk_gate": {
+                "action": gate["action"],
+                "original_signal": gate["original_signal"],
+                "reasons": gate["reasons"],
+                "gated": gate["gated"],
+            },
+        }
+        risk = {
+            **risk,
+            "gate": {
+                "action": gate["action"],
+                "original_signal": gate["original_signal"],
+                "reasons": gate["reasons"],
+                "gated": gate["gated"],
+            },
+        }
 
         structured = {
             "ticker": ticker.upper(),
@@ -198,6 +231,7 @@ class PredictionEngine:
             "institutional_score": _institutional_score(snapshot.sec),
             "fundamental_score": _fundamental_score(snapshot.fundamentals),
             "calibration_method": cal_method,
+            "risk_gate": decision.get("risk_gate"),
         }
         explanation = explain_prediction(
             structured,
