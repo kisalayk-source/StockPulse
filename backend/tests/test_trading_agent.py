@@ -1222,3 +1222,112 @@ def test_max_holding_uses_latest_buy_not_stale_opened_at():
         assert exit_sells == [], body
         positions = client.get("/api/v1/trading-agent/positions", headers=headers).json()["positions"]
         assert any(p["symbol"] == "NVDA" and float(p["quantity"]) > 0 for p in positions)
+
+
+def test_provider_uses_hybrid_signal_and_path_expected_return():
+    from app.trading_agent.forecast_provider import KronosForecastProvider
+
+    class FakePrediction:
+        def predict(self, ticker, horizon="5d"):
+            return {
+                "signal": "BUY",
+                "confidence": 0.72,
+                "probability": 0.72,
+                "expected_return": None,
+                "risk_score": 0.3,
+                "horizon": "5d",
+                "timestamp": "2026-01-01T00:00:00+00:00",
+                "model_versions": {"xgboost": "1.0"},
+            }
+
+    class FakeKronosPath:
+        def forecast(self, **kwargs):
+            return {
+                "net_forecast_change": 0.04,
+                "forecast_change": 0.04,
+                "historical": [{"close": 100.0}],
+                "forecast": [
+                    {"close": 102.0, "low": 99.0, "high": 103.0},
+                    {"close": 104.0, "low": 100.5, "high": 105.0},
+                ],
+                "model": "ensemble",
+                "engine": "ensemble",
+            }
+
+    provider = KronosForecastProvider(FakeKronosPath(), FakePrediction(), None)
+    result = provider.get_forecast("NVDA")
+    assert result.signal == "BUY"
+    assert result.signal_source == "hybrid"
+    assert result.model_name == "hybrid_prediction"
+    assert result.expected_return == pytest.approx(0.04)
+    assert result.path_expected_return == pytest.approx(0.04)
+    assert result.path_target_price == pytest.approx(104.0)
+    assert result.path_stop_price is not None and result.path_stop_price < 100.0
+
+
+def test_provider_hold_when_hybrid_missing_even_if_path_bullish():
+    from app.trading_agent.forecast_provider import KronosForecastProvider
+
+    class FakeKronosPath:
+        def forecast(self, **kwargs):
+            return {
+                "net_forecast_change": 0.08,
+                "historical": [{"close": 50.0}],
+                "forecast": [{"close": 54.0, "low": 49.0, "high": 55.0}],
+            }
+
+    provider = KronosForecastProvider(FakeKronosPath(), None, None)
+    result = provider.get_forecast("AAPL")
+    assert result.signal == "HOLD"
+    assert result.signal_source == "unavailable"
+    assert result.path_expected_return == pytest.approx(0.08)
+
+
+def test_day_trading_uses_path_target_for_take_profit():
+    strategy = DayTradingStrategy()
+    risk = {
+        "allow_day_trading": True,
+        "max_position_size_pct": 0.1,
+        "default_stop_loss_pct": 0.01,
+        "default_take_profit_pct": 0.02,
+    }
+    forecast = ForecastResult(
+        symbol="NVDA",
+        signal="BUY",
+        confidence=0.8,
+        forecast_horizon="5d",
+        expected_return=0.05,
+        downside_risk=0.01,
+        forecast_version="test",
+        generated_at=datetime.now(timezone.utc).isoformat(),
+        features_snapshot_id="snap",
+        model_name="hybrid_prediction",
+        signal_source="hybrid",
+        path_expected_return=0.05,
+        path_target_price=110.0,
+        path_stop_price=97.0,
+    )
+    buys = strategy.generate("NVDA", forecast, 100.0, risk, 50_000)
+    assert len(buys) == 1
+    assert buys[0].take_profit == pytest.approx(110.0)
+    assert buys[0].stop_loss == pytest.approx(97.0)
+
+
+def test_day_trading_skips_when_signal_source_unavailable():
+    strategy = DayTradingStrategy()
+    risk = {"allow_day_trading": True, "max_position_size_pct": 0.1}
+    forecast = ForecastResult(
+        symbol="NVDA",
+        signal="BUY",
+        confidence=0.9,
+        forecast_horizon="5d",
+        expected_return=0.05,
+        downside_risk=0.01,
+        forecast_version="hybrid-unavailable",
+        generated_at=datetime.now(timezone.utc).isoformat(),
+        features_snapshot_id="snap",
+        model_name="hybrid_unavailable",
+        signal_source="unavailable",
+        path_expected_return=0.08,
+    )
+    assert strategy.generate("NVDA", forecast, 100.0, risk, 50_000) == []

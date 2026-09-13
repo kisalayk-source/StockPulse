@@ -99,13 +99,17 @@ Unit tests assert that feature computation at `T` ignores later bars/filings.
 
 ## MVP sequence
 
-1. **MVP-1:** Market → technical features → XGBoost → probability → BUY/HOLD/SELL + API
-2. **MVP-2 (done):** Kronos directional adapter, LightGBM, weighted ensemble, Platt/isotonic calibration (Kronos/LGBM off by default)
+Plain-language overview for non-engineers: **[mvp-roadmap.md](./mvp-roadmap.md)**.
+
+1. **MVP-1 (done):** Market → technical features → XGBoost → probability → BUY/HOLD/SELL + API
+2. **MVP-2 (done):** Kronos directional adapter, LightGBM, weighted ensemble, Platt/isotonic calibration
 3. **MVP-3 (done):** SEC flow features (PIT-safe) into `FeatureSnapshot.sec`
 4. **MVP-4 (done):** Fundamental features from Finnhub into `FeatureSnapshot.fundamentals`
 5. **MVP-5 (done):** Independent signal risk engine (veto/downgrade BUY on vol, drawdown, concentration)
 6. **MVP-6 (done):** Walk-forward, ablation, SHAP, registry metrics
-7. **MVP-7:** LLM explanation from structured results only
+7. **MVP-7 (planned):** LLM explanation from structured results only
+
+**Agent alignment (done):** hybrid owns BUY/SELL; Kronos path owns sizing/targets only — see [mvp-roadmap.md](./mvp-roadmap.md#agent-alignment-done) and the section below.
 
 ## Non-goals
 
@@ -121,9 +125,24 @@ All weights, horizons, decision thresholds, feature toggles, and provider flags
 live in `ml/config/prediction.yaml` (plus env toggles on the API). Models are
 plugins: disable any member without redesigning the pipeline.
 
+## Agent alignment
+
+Once the calibrated hybrid ensemble is live, the autonomous trading agent uses:
+
+| Source | Role |
+|---|---|
+| Hybrid prediction (`PredictionService`) | **Only** BUY / HOLD / SELL (and strong variants) |
+| Kronos / path ensemble | Expected move, target/stop hints, and position sizing — **not** a rival signal |
+
+If hybrid is unavailable, the agent emits `HOLD` (`signal_source=unavailable`)
+rather than inventing direction from the path. Setting:
+`agent_require_hybrid_signal` (default `true`).
+
 ## Related docs
 
+- [mvp-roadmap.md](./mvp-roadmap.md) — plain-language MVP-1…7 + agent alignment
+- [how-forecast-works.md](./how-forecast-works.md) — everyday chart path vs model stance
 - [DEVELOPMENT.md](./DEVELOPMENT.md) — local setup, path forecast vs prediction
 - [SEC_ACCUMULATION.md](./SEC_ACCUMULATION.md) — EDGAR pipeline
 - [BACKTEST.md](./BACKTEST.md) — portfolio backtester (`kronos_backtest/`)
-- Feature / model / API docs under `docs/` grow with each MVP
+- Feature / model / risk / eval docs under `docs/` (linked from the MVP roadmap)

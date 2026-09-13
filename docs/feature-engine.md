@@ -2,6 +2,8 @@
 
 Deterministic feature builders live under `ml/features/`.
 
+Plain-language MVP overview: [mvp-roadmap.md](./mvp-roadmap.md).
+
 ## MVP-1 (implemented)
 
 Technical features from daily OHLCV:

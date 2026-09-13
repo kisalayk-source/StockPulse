@@ -1443,13 +1443,18 @@ class TradingAgentService:
 
 
 def build_trading_agent_service(services: Any) -> TradingAgentService:
+    settings = getattr(services, "settings", None)
+    require_hybrid = True
+    if settings is not None:
+        require_hybrid = bool(getattr(settings, "agent_require_hybrid_signal", True))
     forecast = KronosForecastProvider(
         services.kronos,
         getattr(services, "prediction", None),
         getattr(services, "alpaca", None),
+        require_hybrid_signal=require_hybrid,
     )
     return TradingAgentService(
         forecast_provider=forecast,
         alpaca=getattr(services, "alpaca", None),
-        settings=getattr(services, "settings", None),
+        settings=settings,
     )

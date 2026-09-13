@@ -4,6 +4,8 @@
 BUY-side signals. This is **independent** from order pre-trade gates in
 `backend/app/services/risk.py` and trading-agent portfolio limits.
 
+Plain-language overview: [mvp-roadmap.md](./mvp-roadmap.md#mvp-5--signal-risk-safety-net).
+
 ## MVP-5 (implemented)
 
 `assess_risk(...)` blends:

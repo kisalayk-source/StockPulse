@@ -4,6 +4,9 @@ FastAPI backend for manual Alpaca equity/options trading, Finnhub fundamentals, 
 accumulation intelligence, lazy-loaded Kronos **path** forecasts, and hybrid directional
 prediction (`ml/`). Python 3.12 is recommended.
 
+User-facing MVP guide: [docs/mvp-roadmap.md](../docs/mvp-roadmap.md).
+Prediction API detail: [docs/api.md](../docs/api.md).
+
 ## Setup
 
 Run commands from the repository root so the existing `model` package remains importable:
@@ -136,7 +139,7 @@ All routes use the `/api/v1` prefix.
 - `POST /forecast`
 - `POST /forecast/movers`
 - `GET /forecast/movers/status`
-- `GET /stocks/{ticker}/prediction?horizon=5d` — hybrid directional signal (MVP-1)
+- `GET /stocks/{ticker}/prediction?horizon=5d` — hybrid directional signal (MVP-1…6; see [docs/mvp-roadmap.md](../docs/mvp-roadmap.md))
 - `GET /stocks/{ticker}/features`
 - `GET /stocks/{ticker}/signals`
 - `GET /stocks/{ticker}/risk`

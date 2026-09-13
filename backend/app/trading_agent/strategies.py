@@ -81,13 +81,72 @@ class StrategyEngine(Protocol):
         ...
 
 
-def _position_qty(price: float, capital: float, risk_config: dict[str, Any]) -> float:
+def _position_qty(
+    price: float,
+    capital: float,
+    risk_config: dict[str, Any],
+    forecast: ForecastResult | None = None,
+) -> float:
     if price <= 0 or capital <= 0:
         return 0.0
     max_pct = float(risk_config.get("max_position_size_pct") or 0.05)
     budget = capital * max_pct
-    qty = int(budget // price)
+    # Scale notional with path expected move when hybrid signal is actionable.
+    strength = 1.0
+    if forecast is not None:
+        move = forecast.path_expected_return
+        if move is None:
+            move = forecast.expected_return
+        try:
+            move_f = abs(float(move or 0.0))
+        except (TypeError, ValueError):
+            move_f = 0.0
+        # 0% move → 0.75x; ~4%+ move → up to 1.25x (still capped by max_pct budget).
+        strength = max(0.75, min(1.25, 0.75 + move_f / 0.08))
+        if forecast.signal_source == "unavailable":
+            strength = 0.0
+    qty = int((budget * strength) // price)
     return float(max(qty, 0))
+
+
+def _path_levels(
+    *,
+    price: float,
+    side: str,
+    risk_config: dict[str, Any],
+    forecast: ForecastResult,
+    default_stop_pct: float,
+    default_tp_pct: float,
+) -> tuple[float, float]:
+    """Prefer Kronos path target/stop when present; else risk-config percentages."""
+    stop_pct = float(risk_config.get("default_stop_loss_pct") or default_stop_pct)
+    tp_pct = float(risk_config.get("default_take_profit_pct") or default_tp_pct)
+
+    path_stop = forecast.path_stop_price
+    path_target = forecast.path_target_price
+    path_ret = forecast.path_expected_return
+    if path_ret is None:
+        path_ret = forecast.expected_return
+
+    if side == "buy":
+        stop = price * (1 - stop_pct)
+        take = price * (1 + tp_pct)
+        if path_stop is not None and float(path_stop) < price:
+            stop = float(path_stop)
+        if path_target is not None and float(path_target) > price:
+            take = float(path_target)
+        elif path_ret is not None and float(path_ret) > 0:
+            take = max(take, price * (1.0 + float(path_ret) * 0.85))
+    else:
+        stop = price * (1 + stop_pct)
+        take = price * (1 - tp_pct)
+        if path_stop is not None and float(path_stop) > price:
+            stop = float(path_stop)
+        if path_target is not None and float(path_target) < price:
+            take = float(path_target)
+        elif path_ret is not None and float(path_ret) < 0:
+            take = min(take, price * (1.0 + float(path_ret) * 0.85))
+    return stop, take
 
 
 def _as_utc(value: datetime) -> datetime:
@@ -174,20 +233,26 @@ class DayTradingStrategy:
             return []
         if forecast.signal.upper() not in {"BUY", "STRONG BUY", "SELL", "STRONG SELL"}:
             return []
+        if forecast.signal_source == "unavailable":
+            return []
         side = "buy" if "BUY" in forecast.signal.upper() else "sell"
         if side == "sell":
             held = float(held_qty or 0.0)
             if held <= 0 and not risk_config.get("short_selling_enabled", False):
                 return []
-            qty = held if held > 0 else _position_qty(price, capital, risk_config)
+            qty = held if held > 0 else _position_qty(price, capital, risk_config, forecast)
         else:
-            qty = _position_qty(price, capital, risk_config)
+            qty = _position_qty(price, capital, risk_config, forecast)
         if qty <= 0:
             return []
-        stop_pct = float(risk_config.get("default_stop_loss_pct") or 0.01)
-        tp_pct = float(risk_config.get("default_take_profit_pct") or 0.02)
-        stop = price * (1 - stop_pct) if side == "buy" else price * (1 + stop_pct)
-        take = price * (1 + tp_pct) if side == "buy" else price * (1 - tp_pct)
+        stop, take = _path_levels(
+            price=price,
+            side=side,
+            risk_config=risk_config,
+            forecast=forecast,
+            default_stop_pct=0.01,
+            default_tp_pct=0.02,
+        )
         return [
             StrategyCandidate(
                 symbol=symbol.upper(),
@@ -201,7 +266,11 @@ class DayTradingStrategy:
                 take_profit=take,
                 max_loss=abs(price - stop) * qty,
                 max_profit=abs(take - price) * qty,
-                metadata={"max_holding_minutes": risk_config.get("max_position_holding_minutes")},
+                metadata={
+                    "max_holding_minutes": risk_config.get("max_position_holding_minutes"),
+                    "signal_source": forecast.signal_source,
+                    "path_expected_return": forecast.path_expected_return,
+                },
             )
         ]
 
@@ -222,13 +291,19 @@ class LongTermStrategy:
         _ = held_qty
         if forecast.signal.upper() not in {"BUY", "STRONG BUY"}:
             return []
-        qty = _position_qty(price, capital, risk_config)
+        if forecast.signal_source == "unavailable":
+            return []
+        qty = _position_qty(price, capital, risk_config, forecast)
         if qty <= 0:
             return []
-        stop_pct = float(risk_config.get("default_stop_loss_pct") or 0.05)
-        tp_pct = float(risk_config.get("default_take_profit_pct") or 0.15)
-        stop = price * (1 - stop_pct)
-        take = price * (1 + tp_pct)
+        stop, take = _path_levels(
+            price=price,
+            side="buy",
+            risk_config=risk_config,
+            forecast=forecast,
+            default_stop_pct=0.05,
+            default_tp_pct=0.15,
+        )
         return [
             StrategyCandidate(
                 symbol=symbol.upper(),
@@ -245,6 +320,8 @@ class LongTermStrategy:
                 metadata={
                     "min_holding_period_days": risk_config.get("min_holding_period_days"),
                     "close_eod": False,
+                    "signal_source": forecast.signal_source,
+                    "path_expected_return": forecast.path_expected_return,
                 },
             )
         ]
@@ -267,6 +344,8 @@ class OptionsStrategy:
     ) -> list[StrategyCandidate]:
         _ = held_qty
         if not risk_config.get("allow_options", True):
+            return []
+        if forecast.signal_source == "unavailable":
             return []
         allowed = set(risk_config.get("allowed_option_strategies") or [])
         signal = forecast.signal.upper()

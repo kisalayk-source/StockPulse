@@ -3,6 +3,8 @@
 Objective comparison of Kronos / XGBoost / LightGBM / hybrid ensembles uses the
 walk-forward + ablation harness under `ml/backtesting/` (MVP-6).
 
+Plain-language overview: [mvp-roadmap.md](./mvp-roadmap.md#mvp-6--prove-it).
+
 ## Rules
 
 - Do not claim a feature group or model is “better” without shared periods
@@ -23,4 +25,5 @@ SHAP (or importance) summary from the last fold’s model.
 
 Config defaults: `evaluation:` in `ml/config/prediction.yaml`.
 
-Related: [backtesting.md](./backtesting.md), [model-engine.md](./model-engine.md).
+Related: [backtesting.md](./backtesting.md), [model-engine.md](./model-engine.md),
+[mvp-roadmap.md](./mvp-roadmap.md).

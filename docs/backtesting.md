@@ -3,6 +3,8 @@
 Walk-forward backtesting, ablation, and SHAP for the hybrid directional engine
 live under `ml/backtesting/` (MVP-6).
 
+Plain-language overview: [mvp-roadmap.md](./mvp-roadmap.md#mvp-6--prove-it).
+
 ## Capabilities
 
 | API | Role |
@@ -36,3 +38,4 @@ On live retrain, `PredictionEngine` writes holdout `validation_metrics`
 - Portfolio / path backtests: [BACKTEST.md](./BACKTEST.md) (`kronos_backtest/`)
 - SEC PIT score backtests: `backend/app/sec/backtest/`
 - Evaluation policy: [model-evaluation.md](./model-evaluation.md)
+- Plain-language MVP overview: [mvp-roadmap.md](./mvp-roadmap.md)
