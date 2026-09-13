@@ -34,7 +34,7 @@ They can disagree. That is normal — they answer different questions.
 | **MVP-4** | Done | Company fundamentals (valuation, growth, health) from Finnhub |
 | **MVP-5** | Done | Extra safety: soften or block BUY when risk looks too high |
 | **MVP-6** | Done | Prove-it toolkit: fair backtests, “what if we remove this?”, explanations of which clues mattered |
-| **MVP-7** | Planned | Clearer plain-language explanations that only use real numbers from the model |
+| **MVP-7** | Done | Clearer plain-language explanations that only use real numbers from the model |
 | **Agent alignment** | Done | Agent follows hybrid for BUY/SELL; chart path only helps size and targets |
 
 ---
@@ -133,14 +133,21 @@ ongoing.
 
 ---
 
-## MVP-7 — Plain explanations (planned)
+## MVP-7 — Plain explanations
 
-**What it will be:** Human-readable explanations of a stance that are allowed to
+**What it is:** Human-readable explanations of a stance that are allowed to
 use **only** numbers and fields already produced by the quantitative engine —
 no invented prices, filings, or probabilities.
 
-**Status:** Template explanations exist today; richer LLM narration that stays
-strictly grounded is the remaining MVP-7 work.
+A clear **template** summary is always built first. When AI summaries are
+enabled for your account (and the server has OpenAI configured), StockPulse may
+add a short narrated paragraph that rephrases those same figures. If AI is off
+or fails, you still get the template.
+
+**What you get:** Easier-to-read stance notes under the decision panel /
+explanation endpoint, still grounded in the model output.
+
+**What it is not:** Permission for the model to invent new stats or place trades.
 
 ---
 

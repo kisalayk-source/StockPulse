@@ -107,7 +107,7 @@ Plain-language overview for non-engineers: **[mvp-roadmap.md](./mvp-roadmap.md)*
 4. **MVP-4 (done):** Fundamental features from Finnhub into `FeatureSnapshot.fundamentals`
 5. **MVP-5 (done):** Independent signal risk engine (veto/downgrade BUY on vol, drawdown, concentration)
 6. **MVP-6 (done):** Walk-forward, ablation, SHAP, registry metrics
-7. **MVP-7 (planned):** LLM explanation from structured results only
+7. **MVP-7 (done):** LLM explanation from structured results only (template always; OpenAI optional + grounded)
 
 **Agent alignment (done):** hybrid owns BUY/SELL; Kronos path owns sizing/targets only — see [mvp-roadmap.md](./mvp-roadmap.md#agent-alignment-done) and the section below.
 

@@ -138,6 +138,7 @@ kronos_backtest/   Historical backtester (not used by the live dashboard)
 | [frontend/README.md](./frontend/README.md) | Dashboard commands & API client |
 | [docs/DEVELOPMENT.md](./docs/DEVELOPMENT.md) | Environments, checks, Docker |
 | [docs/mvp-roadmap.md](./docs/mvp-roadmap.md) | Plain-language MVP-1…7 + agent alignment |
+| [docs/explanation.md](./docs/explanation.md) | Grounded template / optional LLM explanations (MVP-7) |
 | [docs/how-forecast-works.md](./docs/how-forecast-works.md) | Chart path vs model stance (non-tech) |
 | [docs/stock-prediction-architecture.md](./docs/stock-prediction-architecture.md) | Hybrid stack architecture & leakage rules |
 | [docs/logging.md](./docs/logging.md) | JSON logs + Elasticsearch/Kibana |

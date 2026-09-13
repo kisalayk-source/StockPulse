@@ -234,10 +234,7 @@ class PredictionEngine:
             "calibration_method": cal_method,
             "risk_gate": decision.get("risk_gate"),
         }
-        explanation = explain_prediction(
-            structured,
-            llm_enabled=bool(self.config.get("llm", {}).get("enabled")),
-        )
+        explanation = explain_prediction(structured)
 
         latency_ms = round((perf_counter() - started) * 1000, 2)
         result = {

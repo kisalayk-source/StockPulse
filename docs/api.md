@@ -10,7 +10,7 @@ Plain-language MVP overview: [mvp-roadmap.md](./mvp-roadmap.md).
 | GET | `/stocks/{ticker}/features` | Latest feature snapshot |
 | GET | `/stocks/{ticker}/signals` | Signal + probability summary |
 | GET | `/stocks/{ticker}/risk` | Signal risk assessment |
-| GET | `/stocks/{ticker}/explanation` | Template/LLM explanation |
+| GET | `/stocks/{ticker}/explanation` | Template/LLM explanation (MVP-7; LLM only when research AI is on) |
 
 Horizons: `1d`, `5d`, `20d`.
 

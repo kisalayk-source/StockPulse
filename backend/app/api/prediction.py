@@ -114,12 +114,36 @@ async def _run_prediction(
     credentials = resolve_market_broker_credentials(session, services.settings, user)
     service = _prediction_service(services)
     enriched = await _enrich_feature_inputs(session, service, *args, **kwargs)
-    return await run_in_threadpool(
+    result = await run_in_threadpool(
         _prediction_with_credentials,
         credentials,
         function,
         *args,
         **enriched,
+    )
+    return await _maybe_enrich_explanation(user, services, service, result)
+
+
+async def _maybe_enrich_explanation(
+    user: User,
+    services: Services,
+    service: Any,
+    result: Any,
+) -> Any:
+    """Optionally narrate explanation with grounded OpenAI (MVP-7)."""
+    if not isinstance(result, dict) or "explanation" not in result:
+        return result
+    from app.services.prediction_explanation import enrich_prediction_explanation
+
+    llm_enabled = False
+    engine = getattr(service, "engine", None)
+    if engine is not None:
+        llm_enabled = bool((engine.config.get("llm") or {}).get("enabled"))
+    return await enrich_prediction_explanation(
+        services.settings,
+        user,
+        result,
+        llm_config_enabled=llm_enabled,
     )
 
 

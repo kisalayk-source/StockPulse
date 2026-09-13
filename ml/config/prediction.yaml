@@ -74,7 +74,9 @@ risk:
     edge: 0.10
 
 llm:
-  enabled: false
+  # When true, API may narrate explanations via OpenAI if RESEARCH_LLM_ENABLED
+  # and the user has "Use AI summaries" on — otherwise template text is kept.
+  enabled: true
 
 features:
   technical: true

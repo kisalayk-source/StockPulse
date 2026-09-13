@@ -103,7 +103,7 @@ fakes; do not put real credentials in fixtures or commits.
 - Config: `ml/config/prediction.yaml`
 - API: `GET /api/v1/stocks/{ticker}/prediction` (also `/features`, `/signals`, `/risk`, `/explanation`)
 - Agent: hybrid owns BUY/SELL; Kronos path owns sizing/targets (`agent_require_hybrid_signal`)
-- Docs: [mvp-roadmap.md](./mvp-roadmap.md) (non-tech), [stock-prediction-architecture.md](./stock-prediction-architecture.md), [model-engine.md](./model-engine.md), [feature-engine.md](./feature-engine.md), [risk-engine.md](./risk-engine.md), [backtesting.md](./backtesting.md), [kronos.md](./kronos.md)
+- Docs: [mvp-roadmap.md](./mvp-roadmap.md) (non-tech), [stock-prediction-architecture.md](./stock-prediction-architecture.md), [model-engine.md](./model-engine.md), [feature-engine.md](./feature-engine.md), [risk-engine.md](./risk-engine.md), [backtesting.md](./backtesting.md), [explanation.md](./explanation.md), [kronos.md](./kronos.md)
 
 ```bash
 # from repo root
