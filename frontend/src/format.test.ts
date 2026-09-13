@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
-  formatCurrency, formatMarketDateTime, formatNumber, formatPercent,
-  localMarketClock, marketStatusLabel, marketStatusTone,
+  formatCurrency, formatDateTime, formatMarketDateTime, formatNumber, formatPercent,
+  localMarketClock, marketStatusLabel, marketStatusTone, parseUtcDate,
 } from './format'
 
 describe('financial formatters', () => {
@@ -11,6 +11,18 @@ describe('financial formatters', () => {
     expect(formatNumber(1_250_000, true)).toBe('1.3M')
     expect(formatPercent(2.345)).toBe('2.35%')
     expect(formatPercent(0.0425, false)).toBe('4.25%')
+  })
+})
+
+describe('Pacific datetime formatting', () => {
+  it('treats naive timestamps as UTC and formats in America/Los_Angeles', () => {
+    const parsed = parseUtcDate('2026-08-13 16:30:00.000000')
+    expect(parsed.toISOString()).toBe('2026-08-13T16:30:00.000Z')
+    const formatted = formatDateTime('2026-08-13T16:30:00Z')
+    expect(formatted).toMatch(/Aug 13/)
+    expect(formatted).toMatch(/9:30\s*AM/i)
+    expect(formatted).toMatch(/PDT|PST/)
+    expect(formatDateTime(null)).toBe('Unavailable')
   })
 })
 

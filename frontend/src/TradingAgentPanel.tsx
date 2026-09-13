@@ -63,12 +63,14 @@ export function TradingAgentPanel({
   const [notice, setNotice] = useState('')
   const [livePhrase, setLivePhrase] = useState('')
   const [capital, setCapital] = useState('')
+  const [cycleMinutes, setCycleMinutes] = useState('5')
   const [maxLossAmount, setMaxLossAmount] = useState('')
   const [maxLossPercent, setMaxLossPercent] = useState('')
 
   const applyConfig = useCallback((next: TradingAgentConfig) => {
     setConfig(next)
     setCapital(String(next.capitalAllocation || ''))
+    setCycleMinutes(String(Math.max(1, Math.round((next.cycleIntervalSeconds || 300) / 60))))
     const amount = next.riskConfig.max_daily_loss_amount
     const pct = next.riskConfig.max_daily_loss_percent
     setMaxLossAmount(amount != null ? String(amount) : '')
@@ -101,6 +103,16 @@ export function TradingAgentPanel({
     void refresh()
   }, [refresh])
 
+  const running = config?.status === 'paper' || config?.status === 'live'
+
+  useEffect(() => {
+    if (!running) return
+    const timer = window.setInterval(() => {
+      void refresh()
+    }, 15_000)
+    return () => window.clearInterval(timer)
+  }, [running, refresh])
+
   async function run(action: () => Promise<unknown>, success?: string) {
     setBusy(true)
     setError('')
@@ -117,7 +129,24 @@ export function TradingAgentPanel({
   }
 
   const daily: DailyLossState | undefined = config?.dailyLoss
-  const running = config?.status === 'paper' || config?.status === 'live'
+  const intervalMinutes = Math.max(1, Math.round((config?.cycleIntervalSeconds || 300) / 60))
+  const autoCycleLabel = running
+    ? `Auto-cycling every ${intervalMinutes}m${
+        config?.lastCycleAt ? ` · last cycle ${formatDateTime(config.lastCycleAt)}` : ' · waiting for first cycle'
+      }`
+    : null
+  const accepted = candidates.filter((row) => row.status === 'approved')
+  const rejected = candidates.filter((row) => row.status === 'rejected')
+  const riskAdjustEvents = events.filter(
+    (event) => event.eventType === 'RISK_AUTO_ADJUSTED' || event.eventType === 'RISK_AUTO_ADJUST_SKIPPED',
+  )
+  const latestRiskAdjust = riskAdjustEvents[0]
+  const filledOrders = orders.filter((row) => row.status === 'filled')
+  const cycleNotice =
+    running && accepted.length === 0 && rejected.length > 0
+      ? latestRiskAdjust?.message ||
+        `Latest cycle rejected ${rejected.length} opportunities with no approvals. Risk may auto-adjust for the next cycle.`
+      : null
 
   return (
     <div className="trading-agent-page" data-testid="trading-agent-page">
@@ -131,6 +160,7 @@ export function TradingAgentPanel({
               {(config?.mode || 'paper').toUpperCase()}
               {config?.liveTradingEnabled ? ' · Live armed' : ''}
             </p>
+            {autoCycleLabel && <p className="agent-subtitle">{autoCycleLabel}</p>}
           </div>
           <div className="agent-controls">
             <button
@@ -175,6 +205,12 @@ export function TradingAgentPanel({
           </div>
         )}
         {notice && <p className="settings-notice">{notice}</p>}
+        {cycleNotice && (
+          <div className="warning-banner compact" role="status" data-testid="cycle-reject-notice">
+            <AlertTriangle size={16} />
+            <span>{cycleNotice}</span>
+          </div>
+        )}
         {config?.status === 'live' && (
           <div className="danger-callout" role="alert">
             <ShieldAlert size={16} />
@@ -344,6 +380,26 @@ export function TradingAgentPanel({
             />
           </label>
           <label>
+            <span>Auto-cycle interval (minutes)</span>
+            <input
+              type="number"
+              min={1}
+              max={1440}
+              value={cycleMinutes}
+              disabled={busy}
+              onChange={(event) => setCycleMinutes(event.target.value)}
+              onBlur={() => {
+                const minutes = Number(cycleMinutes)
+                if (!Number.isFinite(minutes) || minutes < 1) return
+                const seconds = Math.round(minutes) * 60
+                void run(
+                  () => api.updateTradingAgentConfig({ cycle_interval_seconds: seconds }),
+                  `Auto-cycle every ${Math.round(minutes)}m`,
+                )
+              }}
+            />
+          </label>
+          <label>
             <span>Enable live trading (type LIVE)</span>
             <div className="inline-fields">
               <input
@@ -381,8 +437,8 @@ export function TradingAgentPanel({
       </section>
 
       <div className="agent-panels">
-        <section className="card">
-          <div className="card-heading compact"><h2>Forecast &amp; Opportunity Queue</h2></div>
+        <section className="card agent-resizable" data-testid="accepted-queue">
+          <div className="card-heading compact"><h2>Accepted opportunities</h2></div>
           <div className="table-wrap">
             <table>
               <thead>
@@ -391,19 +447,19 @@ export function TradingAgentPanel({
                   <th>Strategy</th>
                   <th>Signal</th>
                   <th>Confidence</th>
-                  <th>Status</th>
+                  <th>When</th>
                 </tr>
               </thead>
               <tbody>
-                {candidates.length === 0 ? (
-                  <tr><td colSpan={5}>No candidates yet. Start the agent and run a cycle.</td></tr>
-                ) : candidates.slice(0, 12).map((row) => (
+                {accepted.length === 0 ? (
+                  <tr><td colSpan={5}>No approved opportunities this cycle window</td></tr>
+                ) : accepted.map((row) => (
                   <tr key={row.id}>
                     <td>{row.symbol}</td>
                     <td>{row.strategy}</td>
                     <td>{String(row.forecastSnapshot.signal || '—')}</td>
                     <td>{formatPercent(Number(row.forecastSnapshot.confidence) || null)}</td>
-                    <td><span className={`status ${row.status}`}>{row.status}</span></td>
+                    <td>{formatDateTime(row.createdAt)}</td>
                   </tr>
                 ))}
               </tbody>
@@ -411,7 +467,41 @@ export function TradingAgentPanel({
           </div>
         </section>
 
-        <section className="card">
+        <section className="card agent-resizable" data-testid="rejected-queue">
+          <div className="card-heading compact"><h2>Rejected opportunities</h2></div>
+          <div className="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Symbol</th>
+                  <th>Strategy</th>
+                  <th>Signal</th>
+                  <th>Confidence</th>
+                  <th>Reason</th>
+                  <th>When</th>
+                </tr>
+              </thead>
+              <tbody>
+                {rejected.length === 0 ? (
+                  <tr><td colSpan={6}>No rejections yet</td></tr>
+                ) : rejected.map((row) => (
+                  <tr key={row.id}>
+                    <td>{row.symbol}</td>
+                    <td>{row.strategy}</td>
+                    <td>{String(row.forecastSnapshot.signal || '—')}</td>
+                    <td>{formatPercent(Number(row.forecastSnapshot.confidence) || null)}</td>
+                    <td className="agent-reject-reason">
+                      {String(row.riskDecision?.reason || 'Rejected by risk engine')}
+                    </td>
+                    <td>{formatDateTime(row.createdAt)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </section>
+
+        <section className="card agent-resizable">
           <div className="card-heading compact"><h2>Active Positions</h2></div>
           <div className="table-wrap">
             <table>
@@ -441,8 +531,14 @@ export function TradingAgentPanel({
           </div>
         </section>
 
-        <section className="card">
-          <div className="card-heading compact"><h2>Trade History</h2></div>
+        <section className="card agent-resizable" data-testid="trade-history">
+          <div className="card-heading compact">
+            <h2>Trade History</h2>
+            <p className="agent-subtitle">
+              Filled &amp; submitted agent orders · {filledOrders.length} filled
+              {performance?.numberOfTrades != null ? ` · Performance trades ${performance.numberOfTrades}` : ''}
+            </p>
+          </div>
           <div className="table-wrap">
             <table>
               <thead>
@@ -458,7 +554,7 @@ export function TradingAgentPanel({
               <tbody>
                 {orders.length === 0 ? (
                   <tr><td colSpan={6}>No agent orders yet</td></tr>
-                ) : orders.slice(0, 12).map((row) => (
+                ) : orders.map((row) => (
                   <tr key={row.id}>
                     <td>{row.symbol}</td>
                     <td>{row.side}</td>
@@ -473,10 +569,25 @@ export function TradingAgentPanel({
           </div>
         </section>
 
-        <section className="card">
+        <section className="card agent-resizable" data-testid="risk-auto-adjust-log">
+          <div className="card-heading compact"><h2>Risk auto-adjustments</h2></div>
+          <ul className="agent-log">
+            {riskAdjustEvents.length === 0 ? (
+              <li>No automatic risk changes yet. When a cycle rejects every opportunity, thresholds may loosen and appear here.</li>
+            ) : riskAdjustEvents.map((event) => (
+              <li key={event.id} className={`severity-${event.severity}`}>
+                <strong>{event.eventType === 'RISK_AUTO_ADJUSTED' ? 'Risk loosened' : 'Adjust skipped'}</strong>
+                <span>{event.message}</span>
+                <small>{formatDateTime(event.createdAt)}</small>
+              </li>
+            ))}
+          </ul>
+        </section>
+
+        <section className="card agent-resizable">
           <div className="card-heading compact"><h2>Agent Activity Log</h2></div>
           <ul className="agent-log">
-            {events.length === 0 ? <li>No events</li> : events.slice(0, 20).map((event) => (
+            {events.length === 0 ? <li>No events</li> : events.map((event) => (
               <li key={event.id} className={`severity-${event.severity}`}>
                 <strong>{event.eventType}</strong>
                 <span>{event.message}</span>
@@ -486,12 +597,37 @@ export function TradingAgentPanel({
           </ul>
         </section>
 
-        <section className="card">
-          <div className="card-heading compact"><h2>Performance Summary</h2></div>
+        <section className="card agent-resizable" data-testid="performance-summary">
+          <div className="card-heading compact">
+            <div>
+              <h2>Performance Summary</h2>
+              <p className="agent-subtitle">
+                Total P/L is profit or loss (realized + unrealized), not cash moved.
+                Invested is open cost basis; taken out is lifetime sell proceeds.
+              </p>
+            </div>
+          </div>
           <div className="metric-grid agent-metrics">
-            <div><span>Total P/L</span><strong className={(performance?.totalPnl || 0) < 0 ? 'negative' : 'positive'}>{formatCurrency(performance?.totalPnl)}</strong></div>
-            <div><span>Realized</span><strong>{formatCurrency(performance?.realizedPnl)}</strong></div>
-            <div><span>Unrealized</span><strong>{formatCurrency(performance?.unrealizedPnl)}</strong></div>
+            <div>
+              <span>Total P/L (profit)</span>
+              <strong className={(performance?.totalPnl || 0) < 0 ? 'negative' : 'positive'}>
+                {formatCurrency(performance?.totalPnl)}
+              </strong>
+            </div>
+            <div><span>Realized P/L</span><strong className={(performance?.realizedPnl || 0) < 0 ? 'negative' : 'positive'}>{formatCurrency(performance?.realizedPnl)}</strong></div>
+            <div><span>Unrealized P/L</span><strong className={(performance?.unrealizedPnl || 0) < 0 ? 'negative' : 'positive'}>{formatCurrency(performance?.unrealizedPnl)}</strong></div>
+            <div>
+              <span>Invested now (cost basis)</span>
+              <strong>{formatCurrency(performance?.capitalInvested)}</strong>
+            </div>
+            <div>
+              <span>Taken out (sell proceeds)</span>
+              <strong>{formatCurrency(performance?.proceedsFromExits)}</strong>
+            </div>
+            <div>
+              <span>Account equity</span>
+              <strong>{formatCurrency(performance?.accountEquity)}</strong>
+            </div>
             <div><span>Trades</span><strong>{performance?.numberOfTrades ?? 0}</strong></div>
             <div><span>Daily loss hits</span><strong>{performance?.maxDailyLossReachedCount ?? 0}</strong></div>
             <div><span>Blocked by daily loss</span><strong>{performance?.tradesBlockedByDailyLoss ?? 0}</strong></div>

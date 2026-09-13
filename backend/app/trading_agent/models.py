@@ -47,6 +47,8 @@ class AgentConfig(Base):
     live_confirmation_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
     broker_id: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
     universe: Mapped[list[Any]] = mapped_column(JSON, nullable=False, default=list)
+    cycle_interval_seconds: Mapped[int] = mapped_column(Integer, nullable=False, default=300)
+    last_cycle_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utc_now, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=_utc_now, onupdate=_utc_now, nullable=False

@@ -21,15 +21,28 @@ export const formatPercent = (value: number | null | undefined, alreadyPercent =
   return `${alreadyPercent ? value.toFixed(2) : (value * 100).toFixed(2)}%`
 }
 
+/** Treat naive timestamps (no Z / offset) as UTC so Pacific formatting is correct. */
+export const parseUtcDate = (value: string): Date => {
+  const trimmed = value.trim()
+  if (!trimmed) return new Date(Number.NaN)
+  if (/[zZ]$|[+-]\d{2}:?\d{2}$/.test(trimmed)) {
+    return new Date(trimmed)
+  }
+  const normalized = trimmed.includes('T') ? trimmed : trimmed.replace(' ', 'T')
+  return new Date(`${normalized}Z`)
+}
+
+/** Display times in America/Los_Angeles (PDT/PST). */
 export const formatDateTime = (value: string | null | undefined) => {
   if (!value) return 'Unavailable'
-  const date = new Date(value)
+  const date = parseUtcDate(value)
   if (Number.isNaN(date.getTime())) return 'Unavailable'
   return new Intl.DateTimeFormat('en-US', {
     month: 'short',
     day: 'numeric',
     hour: 'numeric',
     minute: '2-digit',
+    timeZone: 'America/Los_Angeles',
     timeZoneName: 'short',
   }).format(date)
 }

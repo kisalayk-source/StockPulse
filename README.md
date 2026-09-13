@@ -133,6 +133,7 @@ kronos_backtest/   Historical backtester (not used by the live dashboard)
 | [backend/README.md](./backend/README.md) | API, config, smoke checklist |
 | [frontend/README.md](./frontend/README.md) | Dashboard commands & API client |
 | [docs/DEVELOPMENT.md](./docs/DEVELOPMENT.md) | Environments, checks, Docker |
+| [docs/logging.md](./docs/logging.md) | JSON logs + Elasticsearch/Kibana |
 | [docs/SEC_ACCUMULATION.md](./docs/SEC_ACCUMULATION.md) | SEC EDGAR ingestion, Accumulation Score, API, backtest |
 | [docs/StockPulse.html](./docs/StockPulse.html) | Product & operations guide |
 | [CHANGELOG.md](./CHANGELOG.md) | Release notes |

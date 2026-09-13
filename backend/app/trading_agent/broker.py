@@ -123,6 +123,46 @@ class PaperBrokerAdapter:
                 (pos.current_price - pos.average_entry_price) * pos.quantity * multiplier
             )
 
+    def restore_position(
+        self,
+        *,
+        symbol: str,
+        quantity: float,
+        average_entry_price: float,
+        current_price: float | None = None,
+        realized_pnl: float = 0.0,
+        asset_type: str = "equity",
+    ) -> None:
+        """Hydrate a position after process restart (does not adjust cash)."""
+        sym = symbol.upper()
+        qty = float(quantity)
+        mark = float(current_price if current_price and current_price > 0 else average_entry_price)
+        entry = float(average_entry_price)
+        self.prices[sym] = mark if mark > 0 else self.prices.get(sym, entry)
+        if abs(qty) <= 1e-9:
+            # Flat row retained for realized P/L only.
+            self.positions[sym] = Position(
+                symbol=sym,
+                quantity=0.0,
+                average_entry_price=entry,
+                current_price=mark if mark > 0 else entry,
+                unrealized_pnl=0.0,
+                realized_pnl=float(realized_pnl),
+                asset_type=asset_type or "equity",
+                market_value=0.0,
+            )
+            return
+        self.positions[sym] = Position(
+            symbol=sym,
+            quantity=qty,
+            average_entry_price=entry,
+            current_price=mark,
+            unrealized_pnl=(mark - entry) * qty,
+            realized_pnl=float(realized_pnl),
+            asset_type=asset_type or "equity",
+            market_value=qty * mark,
+        )
+
     def submit_order(self, order: OrderRequest) -> OrderResult:
         key = order.idempotency_key or uuid4().hex
         if key in self._seen_keys:
@@ -210,7 +250,11 @@ class PaperBrokerAdapter:
             existing.realized_pnl += realized
             existing.quantity -= sell_qty
             if existing.quantity <= 1e-9:
-                del self.positions[symbol]
+                # Keep a flat row so realized P/L survives sync / performance queries.
+                existing.quantity = 0.0
+                existing.market_value = 0.0
+                existing.unrealized_pnl = 0.0
+                existing.current_price = price
             else:
                 existing.current_price = price
                 existing.market_value = existing.quantity * price * multiplier
@@ -238,10 +282,15 @@ class PaperBrokerAdapter:
             existing.status = "canceled"
 
     def get_positions(self) -> list[Position]:
+        """Open positions only (qty != 0)."""
+        return [p for p in self.positions.values() if abs(float(p.quantity)) > 1e-9]
+
+    def get_position_ledger(self) -> list[Position]:
+        """Open and flat positions, including realized P/L after full exits."""
         return list(self.positions.values())
 
     def get_account(self) -> AccountSnapshot:
-        positions_value = sum(p.market_value for p in self.positions.values())
+        positions_value = sum(p.market_value for p in self.get_positions())
         equity = self.cash + positions_value
         return AccountSnapshot(
             equity=equity,
