@@ -11,6 +11,7 @@ from uuid import uuid4
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session
 
+from app.services.providers import ProviderUnavailable
 from app.trading_agent.broker import (
     AlpacaBrokerAdapter,
     BrokerAdapter,
@@ -102,6 +103,7 @@ class TradingAgentService:
                 forecast_enabled=True,
                 live_trading_enabled=False,
                 universe=["SPY", "AAPL", "MSFT", "NVDA", "AMZN"],
+                cycle_interval_seconds=300,
             )
             session.add(created)
             session.flush()
@@ -125,6 +127,11 @@ class TradingAgentService:
             config.forecast_enabled = bool(payload["forecast_enabled"])
         if "universe" in payload and payload["universe"] is not None:
             config.universe = [str(s).upper() for s in payload["universe"]]
+        if "cycle_interval_seconds" in payload and payload["cycle_interval_seconds"] is not None:
+            interval = int(payload["cycle_interval_seconds"])
+            if interval < 60 or interval > 86_400:
+                raise ValueError("cycle_interval_seconds must be between 60 and 86400")
+            config.cycle_interval_seconds = interval
 
         profile = payload.get("risk_profile") or config.risk_profile
         overrides = dict(config.risk_config or {})
@@ -212,6 +219,7 @@ class TradingAgentService:
             config.mode = "paper"
             config.status = "paper"
         config.enabled = True
+        config.last_cycle_at = None
         config.updated_at = datetime.now(timezone.utc)
         run = AgentRun(agent_config_id=config.id, status="running", forecast_version="forecast-mode")
         session.add(run)
@@ -247,6 +255,7 @@ class TradingAgentService:
         config.status = "live" if config.mode == "live" and config.live_trading_enabled else "paper"
         if config.status == "paper":
             config.mode = "paper"
+        config.last_cycle_at = None
         config.updated_at = datetime.now(timezone.utc)
         self._record_event(session, config, "AGENT_RESUMED", f"Agent resumed in {config.status} mode", "info")
         _ = risk
@@ -257,7 +266,7 @@ class TradingAgentService:
         config.enabled = False
         config.updated_at = datetime.now(timezone.utc)
         if cancel_orders:
-            broker = self._broker_for(config)
+            broker = self._broker_for(config, session=session)
             for order in broker.get_open_orders():
                 oid = str(order.get("id") or order.get("broker_order_id") or "")
                 if oid:
@@ -289,7 +298,7 @@ class TradingAgentService:
         tz = str(risk.get("daily_loss_timezone") or "America/Los_Angeles")
         reset_hhmm = str(risk.get("daily_loss_reset_time") or "00:00")
         trading_day = trading_date_for(now, tz, reset_hhmm)
-        broker = self._broker_for(config)
+        broker = self._broker_for(config, session=session)
         account = broker.get_account()
         existing = (
             session.query(DailyLossRecord)
@@ -347,7 +356,7 @@ class TradingAgentService:
 
     def refresh_daily_loss(self, session: Session, config: AgentConfig) -> dict[str, Any]:
         record = self.ensure_daily_loss_record(session, config, reset=False)
-        broker = self._broker_for(config)
+        broker = self._broker_for(config, session=session)
         account = broker.get_account()
         positions = broker.get_positions()
         unrealized = sum(p.unrealized_pnl for p in positions)
@@ -382,7 +391,10 @@ class TradingAgentService:
         return snapshot.to_dict()
 
     def get_daily_loss_snapshot(self, session: Session, config: AgentConfig) -> dict[str, Any]:
-        return self.refresh_daily_loss(session, config)
+        try:
+            return self.refresh_daily_loss(session, config)
+        except ProviderUnavailable as exc:
+            return self._unavailable_daily_loss(config, str(exc))
 
     def reset_daily_loss(self, session: Session, config: AgentConfig) -> dict[str, Any]:
         self.ensure_daily_loss_record(session, config, reset=True)
@@ -398,7 +410,7 @@ class TradingAgentService:
             "critical",
             {"action": action},
         )
-        broker = self._broker_for(config)
+        broker = self._broker_for(config, session=session)
         if action in {"cancel_open_orders", "cancel_orders_and_pause", "emergency_stop"}:
             for order in broker.get_open_orders():
                 oid = str(order.get("id") or order.get("broker_order_id") or "")
@@ -454,17 +466,36 @@ class TradingAgentService:
         return plan.entry_price, plan.stop_loss, plan.take_profit
 
     def _position_opened_at(self, session: Session, config: AgentConfig, symbol: str) -> datetime | None:
+        """Return when the current open lot started (latest buy fill), not first-ever row create time."""
         row = (
             session.query(AgentPosition)
             .filter(
-                AgentPosition.user_id == config.user_id,
+                AgentPosition.agent_config_id == config.id,
                 AgentPosition.symbol == symbol.upper(),
                 AgentPosition.quantity != 0,
             )
             .order_by(AgentPosition.id.desc())
             .first()
         )
-        return row.opened_at if row is not None else None
+        if row is None:
+            return None
+        latest_buy = (
+            session.query(AgentOrder)
+            .join(TradePlan)
+            .join(TradeCandidate)
+            .join(AgentRun)
+            .filter(
+                AgentRun.agent_config_id == config.id,
+                AgentOrder.symbol == symbol.upper(),
+                AgentOrder.side == "buy",
+                AgentOrder.status == "filled",
+            )
+            .order_by(AgentOrder.filled_at.desc(), AgentOrder.id.desc())
+            .first()
+        )
+        if latest_buy is not None and latest_buy.filled_at is not None:
+            return latest_buy.filled_at
+        return row.opened_at
 
     def _process_candidate(
         self,
@@ -609,7 +640,7 @@ class TradingAgentService:
         session.add(run)
         _retry_locked(session.flush)
 
-        broker = self._broker_for(config)
+        broker = self._broker_for(config, session=session)
         if prices:
             if isinstance(broker, PaperBrokerAdapter):
                 for sym, px in prices.items():
@@ -746,12 +777,24 @@ class TradingAgentService:
             "rejected": len(rejected),
             "daily_loss": daily,
         }
+        config.last_cycle_at = run.ended_at
+        config.updated_at = run.ended_at
+        auto_adjust = self._maybe_auto_adjust_risk(
+            session,
+            config,
+            approved=approved,
+            rejected=rejected,
+            market_open=market_open,
+        )
+        if auto_adjust:
+            run.summary["auto_adjust"] = auto_adjust
         _retry_locked(session.flush)
         self._sync_positions(session, config, broker)
         return {
             "run_id": run.id,
             "approved": approved,
             "rejected": rejected,
+            "auto_adjust": auto_adjust,
             "daily_loss": self.refresh_daily_loss(session, config),
             "performance": self.performance(session, config),
         }
@@ -770,7 +813,7 @@ class TradingAgentService:
         if config.mode == "live" and not config.live_trading_enabled:
             raise ValueError("Live trading is not enabled")
 
-        broker = self._broker_for(config)
+        broker = self._broker_for(config, session=session)
         # Prevent duplicate by idempotency key
         existing = session.query(AgentOrder).filter(AgentOrder.idempotency_key == idempotency_key).one_or_none()
         if existing:
@@ -827,7 +870,11 @@ class TradingAgentService:
     # ── queries ──────────────────────────────────────────────────────
 
     def config_payload(self, session: Session, config: AgentConfig) -> dict[str, Any]:
-        daily = self.get_daily_loss_snapshot(session, config)
+        try:
+            daily = self.get_daily_loss_snapshot(session, config)
+        except ProviderUnavailable as exc:
+            # Keep the agent panel loadable when Alpaca keys are missing/unbound.
+            daily = self._unavailable_daily_loss(config, str(exc))
         return {
             "id": config.id,
             "name": config.name,
@@ -841,12 +888,49 @@ class TradingAgentService:
             "forecast_enabled": config.forecast_enabled,
             "live_trading_enabled": config.live_trading_enabled,
             "universe": config.universe or [],
+            "cycle_interval_seconds": int(config.cycle_interval_seconds or 300),
+            "last_cycle_at": config.last_cycle_at.isoformat() if config.last_cycle_at else None,
             "daily_loss": daily,
             "created_at": config.created_at.isoformat() if config.created_at else None,
             "updated_at": config.updated_at.isoformat() if config.updated_at else None,
         }
 
-    def list_candidates(self, session: Session, config: AgentConfig, limit: int = 50) -> list[dict[str, Any]]:
+    def _unavailable_daily_loss(self, config: AgentConfig, reason: str) -> dict[str, Any]:
+        risk = self.resolved_risk_config(config)
+        tz = str(risk.get("daily_loss_timezone") or "America/Los_Angeles")
+        reset = str(risk.get("daily_loss_reset_time") or "00:00")
+        now = datetime.now(timezone.utc)
+        trading_day = trading_date_for(now, tz, reset)
+        starting = float(risk.get("starting_capital") or config.capital_allocation or 0)
+        return {
+            "trading_date": trading_day.isoformat(),
+            "timezone": tz,
+            "starting_equity": starting,
+            "current_equity": starting,
+            "realized_pnl": 0.0,
+            "unrealized_pnl": 0.0,
+            "trading_fees": 0.0,
+            "today_pnl": 0.0,
+            "daily_loss": 0.0,
+            "daily_loss_percent": 0.0,
+            "max_daily_loss_amount": risk.get("max_daily_loss_amount"),
+            "max_daily_loss_percent": risk.get("max_daily_loss_percent"),
+            "effective_limit": None,
+            "remaining_daily_loss": None,
+            "status": "active",
+            "limit_reached": False,
+            "enabled": bool(risk.get("max_daily_loss_enabled", True)),
+            "calculation": str(risk.get("daily_loss_calculation") or "realized_plus_unrealized"),
+            "action": str(risk.get("daily_loss_action") or "cancel_orders_and_pause"),
+            "last_reset_at": None,
+            "next_reset_at": None,
+            "warning_threshold_pct": float(risk.get("daily_loss_warning_threshold_pct") or 50),
+            "critical_threshold_pct": float(risk.get("daily_loss_critical_threshold_pct") or 80),
+            "utilization_pct": 0.0,
+            "warnings": [reason or "Alpaca credentials unavailable"],
+        }
+
+    def list_candidates(self, session: Session, config: AgentConfig, limit: int = 100) -> list[dict[str, Any]]:
         rows = (
             session.query(TradeCandidate)
             .join(AgentRun)
@@ -896,7 +980,7 @@ class TradingAgentService:
             for r in rows
         ]
 
-    def list_orders(self, session: Session, config: AgentConfig, limit: int = 50) -> list[dict[str, Any]]:
+    def list_orders(self, session: Session, config: AgentConfig, limit: int = 200) -> list[dict[str, Any]]:
         rows = (
             session.query(AgentOrder)
             .join(TradePlan)
@@ -907,7 +991,7 @@ class TradingAgentService:
             .limit(limit)
             .all()
         )
-        return [
+        payload = [
             {
                 "id": r.id,
                 "broker_order_id": r.broker_order_id,
@@ -923,9 +1007,15 @@ class TradingAgentService:
             }
             for r in rows
         ]
+        # Prefer filled orders first so Performance trade count aligns with visible history.
+        payload.sort(key=lambda o: (0 if o["status"] == "filled" else 1, -int(o["id"])))
+        return payload
 
     def list_positions(self, session: Session, config: AgentConfig) -> list[dict[str, Any]]:
-        self._sync_positions(session, config, self._broker_for(config))
+        try:
+            self._sync_positions(session, config, self._broker_for(config, session=session))
+        except ProviderUnavailable:
+            pass
         rows = (
             session.query(AgentPosition)
             .filter(AgentPosition.user_id == config.user_id, AgentPosition.quantity != 0)
@@ -977,12 +1067,63 @@ class TradingAgentService:
                 out.append({"symbol": symbol, "error": str(exc)})
         return out
 
+    @staticmethod
+    def _asset_multiplier(asset_type: str | None) -> float:
+        return 100.0 if str(asset_type or "").lower() == "option" else 1.0
+
     def performance(self, session: Session, config: AgentConfig) -> dict[str, Any]:
         orders = self.list_orders(session, config, limit=500)
         filled = [o for o in orders if o["status"] == "filled"]
-        positions = self.list_positions(session, config)
-        realized = sum(float(p.get("realized_pnl") or 0) for p in positions)
-        unrealized = sum(float(p.get("unrealized_pnl") or 0) for p in positions)
+        broker = self._broker_for(config, session=session)
+        # Persist any flat realized rows before reading.
+        try:
+            self._sync_positions(session, config, broker)
+            account = broker.get_account()
+            account_equity: float | None = float(account.equity)
+        except ProviderUnavailable:
+            account_equity = None
+        all_rows = (
+            session.query(AgentPosition)
+            .filter(AgentPosition.agent_config_id == config.id)
+            .all()
+        )
+        open_rows = [r for r in all_rows if abs(float(r.quantity or 0)) > 1e-9]
+        realized = sum(float(r.realized_pnl or 0) for r in all_rows)
+        if account_equity is not None and isinstance(broker, PaperBrokerAdapter):
+            # Prefer live paper ledger when it is ahead of DB (same process, pre-commit edge).
+            broker_realized = float(broker.realized_pnl)
+            if abs(broker_realized) >= abs(realized) - 1e-9:
+                realized = broker_realized
+        unrealized = sum(float(r.unrealized_pnl or 0) for r in open_rows)
+        # Capital still tied up in open longs (cost basis), not mark-to-market P/L.
+        capital_invested = sum(
+            abs(float(r.quantity or 0))
+            * float(r.average_entry_price or 0)
+            * self._asset_multiplier(r.asset_type)
+            for r in open_rows
+        )
+        market_value_open = sum(
+            abs(float(r.quantity or 0))
+            * float(r.current_price or r.average_entry_price or 0)
+            * self._asset_multiplier(r.asset_type)
+            for r in open_rows
+        )
+        # Lifetime cash returned from exits (sell fill notional), distinct from realized P/L.
+        proceeds_from_exits = 0.0
+        for order in filled:
+            if str(order.get("side") or "").lower() != "sell":
+                continue
+            qty = float(order.get("filled_quantity") or 0)
+            px = float(order.get("average_fill_price") or 0)
+            if qty > 0 and px > 0:
+                proceeds_from_exits += qty * px
+        if account_equity is not None and isinstance(broker, PaperBrokerAdapter):
+            starting_capital = float(broker.starting_cash)
+        else:
+            starting_capital = float(config.capital_allocation or 0)
+        if account_equity is None:
+            account_equity = starting_capital + realized + unrealized
+        equity_change = account_equity - starting_capital
         events = (
             session.query(AgentEvent)
             .filter(
@@ -998,6 +1139,12 @@ class TradingAgentService:
             "total_pnl": realized + unrealized,
             "realized_pnl": realized,
             "unrealized_pnl": unrealized,
+            "capital_invested": capital_invested,
+            "market_value_open": market_value_open,
+            "proceeds_from_exits": proceeds_from_exits,
+            "starting_capital": starting_capital,
+            "account_equity": account_equity,
+            "equity_change": equity_change,
             "number_of_trades": len(filled),
             "win_rate": None,
             "average_win": None,
@@ -1008,22 +1155,169 @@ class TradingAgentService:
             "sortino_ratio": None,
             "max_daily_loss_reached_count": hit,
             "trades_blocked_by_daily_loss": blocked,
-            "positions_open": len(positions),
+            "positions_open": len(open_rows),
             "orders_filled": len(filled),
-            "note": "Forecast performance vs execution performance are tracked separately via forecast_snapshot on candidates.",
+            "note": (
+                "total_pnl is profit/loss (realized + unrealized). "
+                "capital_invested is open cost basis; proceeds_from_exits is lifetime sell notional. "
+                "Forecast vs execution performance remain separate via forecast_snapshot on candidates."
+            ),
             "sample_filled": len(wins),
         }
 
     # ── internals ────────────────────────────────────────────────────
 
-    def _broker_for(self, config: AgentConfig) -> BrokerAdapter:
-        if config.mode == "live" and config.live_trading_enabled and self.alpaca is not None:
-            return AlpacaBrokerAdapter(self.alpaca, mode="live")
+    def _broker_for(self, config: AgentConfig, session: Session | None = None) -> BrokerAdapter:
+        # Prefer the user's Alpaca account for both paper and live so agent fills
+        # and cash/equity match the real broker ledger (not a local $25k simulator).
+        if self.alpaca is not None:
+            mode = (
+                "live"
+                if config.mode == "live" and config.live_trading_enabled
+                else "paper"
+            )
+            return AlpacaBrokerAdapter(self.alpaca, mode=mode)
         if config.id not in self._paper_brokers:
             risk = self.resolved_risk_config(config)
             starting = float(risk.get("starting_capital") or config.capital_allocation or 25_000)
-            self._paper_brokers[config.id] = PaperBrokerAdapter(starting_cash=starting)
+            broker = PaperBrokerAdapter(starting_cash=starting)
+            self._paper_brokers[config.id] = broker
+            if session is not None:
+                self._hydrate_paper_broker(session, config, broker)
         return self._paper_brokers[config.id]
+
+    def _hydrate_paper_broker(
+        self, session: Session, config: AgentConfig, broker: PaperBrokerAdapter
+    ) -> None:
+        rows = (
+            session.query(AgentPosition)
+            .filter(AgentPosition.agent_config_id == config.id)
+            .all()
+        )
+        total_realized = 0.0
+        open_cost = 0.0
+        for row in rows:
+            realized = float(row.realized_pnl or 0)
+            total_realized += realized
+            qty = float(row.quantity or 0)
+            if abs(qty) <= 1e-9 and abs(realized) <= 1e-9:
+                continue
+            entry = float(row.average_entry_price or 0)
+            asset_type = str(row.asset_type or "equity")
+            broker.restore_position(
+                symbol=row.symbol,
+                quantity=qty,
+                average_entry_price=entry,
+                current_price=float(row.current_price or 0) or None,
+                realized_pnl=realized,
+                asset_type=asset_type,
+            )
+            if abs(qty) > 1e-9:
+                open_cost += abs(qty) * entry * self._asset_multiplier(asset_type)
+        # Reconstruct cash after restart: buys reduce cash, sells return proceeds.
+        # Equivalently cash = starting - open_cost + realized.
+        broker.cash = float(broker.starting_cash) - open_cost + total_realized
+        broker.realized_pnl = total_realized
+        broker.day_start_realized = total_realized
+
+    def _maybe_auto_adjust_risk(
+        self,
+        session: Session,
+        config: AgentConfig,
+        *,
+        approved: list[dict[str, Any]],
+        rejected: list[dict[str, Any]],
+        market_open: bool,
+    ) -> dict[str, Any] | None:
+        """Loosen thresholds one step when a cycle rejects all entry opportunities."""
+        entry_rejected = [
+            r
+            for r in rejected
+            if str(r.get("strategy") or "") != "intraday_exit"
+        ]
+        entry_approved = [
+            a
+            for a in approved
+            if str(a.get("strategy") or "") != "intraday_exit"
+        ]
+        if entry_approved or not entry_rejected:
+            return None
+
+        reasons = [str(r.get("reason") or "") for r in entry_rejected]
+        if reasons and all("market is closed" in reason.lower() for reason in reasons):
+            return None
+        if not market_open and all("market is closed" in reason.lower() for reason in reasons):
+            return None
+
+        risk = self.resolved_risk_config(config)
+        tz_name = str(risk.get("daily_loss_timezone") or "America/Los_Angeles")
+        reset_hhmm = str(risk.get("daily_loss_reset_time") or "00:00")
+        today = trading_date_for(datetime.now(timezone.utc), tz_name, reset_hhmm).isoformat()
+        overrides = dict(config.risk_config or {})
+        prior_date = str(overrides.get("auto_adjust_date") or "")
+        count = int(overrides.get("auto_adjust_count") or 0) if prior_date == today else 0
+        if count >= 3:
+            self._record_event(
+                session,
+                config,
+                "RISK_AUTO_ADJUST_SKIPPED",
+                f"Skipped auto-adjust: already loosened risk {count} times today after "
+                f"{len(entry_rejected)} rejected opportunities.",
+                "info",
+                {"rejected": len(entry_rejected), "count": count},
+            )
+            return None
+
+        from collections import Counter
+
+        top_reason = Counter(reasons).most_common(1)[0][0] if reasons else "unknown"
+        changes: list[str] = []
+
+        old_conf = float(risk.get("min_forecast_confidence") or 0.55)
+        new_conf = max(0.40, round(old_conf - 0.05, 2))
+        if new_conf < old_conf - 1e-9:
+            overrides["min_forecast_confidence"] = new_conf
+            changes.append(f"min forecast confidence {old_conf:.2f} → {new_conf:.2f}")
+
+        old_ret = float(risk.get("min_expected_return") or 0.005)
+        new_ret = max(0.001, round(old_ret - 0.002, 4))
+        if new_ret < old_ret - 1e-9:
+            overrides["min_expected_return"] = new_ret
+            changes.append(f"min expected return {old_ret:.4f} → {new_ret:.4f}")
+
+        if any("max open positions" in reason.lower() for reason in reasons):
+            old_open = int(risk.get("max_open_positions") or 10)
+            new_open = min(15, old_open + 1)
+            if new_open > old_open:
+                overrides["max_open_positions"] = new_open
+                changes.append(f"max open positions {old_open} → {new_open}")
+
+        if not changes:
+            return None
+
+        overrides["auto_adjust_date"] = today
+        overrides["auto_adjust_count"] = count + 1
+        config.risk_config = overrides
+        config.risk_profile = "custom"
+        config.updated_at = datetime.now(timezone.utc)
+        message = (
+            f"Loosened {'; '.join(changes)} because all {len(entry_rejected)} "
+            f"opportunities were rejected (top reason: {top_reason})."
+        )
+        self._record_event(
+            session,
+            config,
+            "RISK_AUTO_ADJUSTED",
+            message,
+            "warning",
+            {
+                "changes": changes,
+                "rejected_count": len(entry_rejected),
+                "top_reason": top_reason,
+                "auto_adjust_count": count + 1,
+            },
+        )
+        return {"message": message, "changes": changes, "rejected_count": len(entry_rejected)}
 
     def _portfolio_snapshot(
         self, session: Session, config: AgentConfig, broker: BrokerAdapter
@@ -1083,13 +1377,23 @@ class TradingAgentService:
         )
 
     def _sync_positions(self, session: Session, config: AgentConfig, broker: BrokerAdapter) -> None:
-        live = {p.symbol.upper(): p for p in broker.get_positions()}
+        if isinstance(broker, PaperBrokerAdapter):
+            ledger = broker.get_position_ledger()
+        else:
+            ledger = broker.get_positions()
+        live = {p.symbol.upper(): p for p in ledger}
+        open_symbols = {
+            p.symbol.upper()
+            for p in broker.get_positions()
+            if abs(float(getattr(p, "quantity", 0) or 0)) > 1e-9
+        }
         existing = {
             p.symbol.upper(): p
             for p in session.query(AgentPosition).filter(AgentPosition.user_id == config.user_id).all()
         }
         for symbol, pos in live.items():
             row = existing.get(symbol)
+            was_flat = row is None or abs(float(row.quantity or 0)) <= 1e-9
             if row is None:
                 row = AgentPosition(
                     user_id=config.user_id,
@@ -1098,14 +1402,20 @@ class TradingAgentService:
                     asset_type=pos.asset_type,
                 )
                 session.add(row)
+                existing[symbol] = row
             row.quantity = pos.quantity
             row.average_entry_price = pos.average_entry_price
             row.current_price = pos.current_price
             row.unrealized_pnl = pos.unrealized_pnl
             row.realized_pnl = pos.realized_pnl
+            # Reset holding clock when re-opening a flat symbol so max_holding
+            # does not use the first-ever open timestamp from days ago.
+            if abs(float(pos.quantity or 0)) > 1e-9 and was_flat:
+                row.opened_at = datetime.now(timezone.utc)
             row.updated_at = datetime.now(timezone.utc)
         for symbol, row in existing.items():
-            if symbol not in live:
+            if symbol not in live and symbol not in open_symbols:
+                # Fully closed away from ledger: keep realized, clear open mark-to-market.
                 row.quantity = 0
                 row.unrealized_pnl = 0
                 row.updated_at = datetime.now(timezone.utc)

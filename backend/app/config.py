@@ -77,6 +77,12 @@ class Settings(BaseSettings):
     sec_rate_limit_per_minute: int = Field(default=60, ge=0, le=10_000)
     sec_scan_universe_cap: int = Field(default=100, ge=10, le=500)
     sec_scan_on_startup: bool = False
+    agent_scheduler_enabled: bool = True
+    agent_scheduler_tick_seconds: float = Field(default=15.0, ge=1.0, le=300.0)
+    log_level: str = Field(default="INFO", pattern="^(DEBUG|INFO|WARNING|ERROR|CRITICAL)$")
+    elasticsearch_enabled: bool = False
+    elasticsearch_url: str | None = None
+    elasticsearch_index: str = "stockpulse-logs"
     openai_api_key: str | None = Field(default=None, repr=False)
     openai_base_url: str | None = None
     openai_model: str = "gpt-4o-mini"

@@ -453,6 +453,14 @@ class FinnhubService:
         }
 
 
+
+def _enum_value(value: Any) -> str:
+    """Accept both enum members and plain strings from broker adapters."""
+    if value is None:
+        return ""
+    return str(value.value) if hasattr(value, "value") else str(value)
+
+
 class AlpacaService:
     def __init__(self, settings: Settings):
         self.settings = settings
@@ -973,35 +981,46 @@ class AlpacaService:
             StopOrderRequest,
         )
 
-        asset = self.get_asset(order.symbol, order.mode.value)
+        mode = _enum_value(order.mode)
+        side = _enum_value(order.side)
+        order_type = _enum_value(order.type)
+        time_in_force = _enum_value(order.time_in_force)
+        asset = self.get_asset(order.symbol, mode)
         if not getattr(asset, "tradable", False):
             raise ValueError(f"{order.symbol.upper()} is not tradable")
         self._ensure_order_risk(order, option=False)
         common = {
             "symbol": order.symbol.upper(),
-            "side": OrderSide(order.side.value),
-            "time_in_force": TimeInForce(order.time_in_force.value),
+            "side": OrderSide(side),
+            "time_in_force": TimeInForce(time_in_force),
             "qty": order.qty,
             "notional": order.notional,
         }
         common = {k: v for k, v in common.items() if v is not None}
         request_cls: Any = MarketOrderRequest
-        if order.type.value == "limit":
+        if order_type == "limit":
             request_cls, common["limit_price"] = LimitOrderRequest, order.limit_price
-        elif order.type.value == "stop":
-            request_cls, common["stop_price"] = StopOrderRequest, order.stop_price
-        elif order.type.value == "stop_limit":
+        elif order_type == "stop":
+            request_cls, common["stop_price"] = StopOrderRequest, getattr(order, "stop_price", None)
+        elif order_type == "stop_limit":
             request_cls = StopLimitOrderRequest
-            common.update(limit_price=order.limit_price, stop_price=order.stop_price)
-        common["extended_hours"] = order.extended_hours
-        return jsonable(self._trading(order.mode.value).submit_order(request_cls(**common)))
+            common.update(
+                limit_price=order.limit_price,
+                stop_price=getattr(order, "stop_price", None),
+            )
+        common["extended_hours"] = bool(getattr(order, "extended_hours", False))
+        return jsonable(self._trading(mode).submit_order(request_cls(**common)))
+
 
     def submit_option_order(self, order: Any) -> dict[str, Any]:
         from alpaca.trading.enums import OrderSide, PositionIntent, TimeInForce
         from alpaca.trading.requests import LimitOrderRequest, MarketOrderRequest
 
+        mode = _enum_value(order.mode)
+        side = _enum_value(order.side)
+        order_type = _enum_value(getattr(order, "type", "market"))
         try:
-            contract = self._trading(order.mode.value).get_option_contract(
+            contract = self._trading(mode).get_option_contract(
                 order.contract_symbol.upper()
             )
         except ProviderUnavailable:
@@ -1018,24 +1037,29 @@ class AlpacaService:
         except Exception:
             snapshot = {"symbol": str(underlying or order.contract_symbol)}
         self._ensure_order_risk(order, option=True, snapshot=snapshot)
+        intent_raw = getattr(order, "position_intent", None)
         intent_value = (
-            order.position_intent.value
-            if getattr(order, "position_intent", None) is not None
-            else ("buy_to_open" if order.side.value == "buy" else "sell_to_close")
+            _enum_value(intent_raw)
+            if intent_raw is not None
+            else ("buy_to_open" if side == "buy" else "sell_to_close")
         )
         common = {
             "symbol": order.contract_symbol.upper(),
             "qty": order.qty,
-            "side": OrderSide(order.side.value),
+            "side": OrderSide(side),
             "time_in_force": TimeInForce.DAY,
             "position_intent": PositionIntent(intent_value),
         }
         request = (
             LimitOrderRequest(**common, limit_price=order.limit_price)
-            if order.type == "limit"
+            if order_type == "limit"
             else MarketOrderRequest(**common)
         )
-        return jsonable(self._trading(order.mode.value).submit_order(request))
+        return jsonable(self._trading(mode).submit_order(request))
+
+
+    def get_order(self, order_id: str, mode: str) -> dict[str, Any]:
+        return jsonable(self._trading(mode).get_order_by_id(order_id))
 
     def cancel_order(self, order_id: str, mode: str) -> dict[str, Any]:
         self._trading(mode).cancel_order_by_id(order_id)

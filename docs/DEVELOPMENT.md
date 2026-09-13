@@ -140,6 +140,18 @@ npm run build
 npm run dev
 ```
 
+## Observability (Elasticsearch + Kibana)
+
+Structured JSON logs (backend + frontend) can ship to a free local Elastic stack.
+See [logging.md](./logging.md).
+
+```powershell
+docker compose --profile observability up -d elasticsearch kibana
+# then set ELASTICSEARCH_ENABLED=true in backend/.env and restart the API
+```
+
+Kibana: http://127.0.0.1:5601
+
 ## LAN publish (local network)
 
 Canonical LAN URL: **http://192.168.86.197:5173/**

@@ -1,3 +1,5 @@
+import { appLog, setLastRequestId } from './logging'
+
 export type TradingMode = 'paper' | 'live'
 export type OrderStatus = 'accepted' | 'rejected' | 'pending' | 'filled' | 'canceled'
 export type OrderSide = 'buy' | 'sell'
@@ -301,6 +303,8 @@ export interface TradingAgentConfig {
   forecastEnabled: boolean
   liveTradingEnabled: boolean
   universe: string[]
+  cycleIntervalSeconds: number
+  lastCycleAt?: string | null
   dailyLoss: DailyLossState
   createdAt?: string | null
   updatedAt?: string | null
@@ -369,6 +373,14 @@ export interface AgentPerformance {
   totalPnl: number
   realizedPnl: number
   unrealizedPnl: number
+  /** Open long cost basis (qty × avg entry), not mark-to-market. */
+  capitalInvested: number
+  marketValueOpen: number
+  /** Lifetime filled sell notional (cash returned from exits). */
+  proceedsFromExits: number
+  startingCapital: number
+  accountEquity: number
+  equityChange: number
   numberOfTrades: number
   maxDailyLossReachedCount: number
   tradesBlockedByDailyLoss: number
@@ -672,8 +684,13 @@ function normalizeError(payload: unknown, status: number): string {
   return `Request failed (${status})`
 }
 
+function headerGet(response: Response, name: string): string | null {
+  // Tests often mock fetch with a plain object that omits Headers.
+  return response.headers?.get?.(name) ?? null
+}
+
 function retryAfterMs(response: Response): number {
-  const raw = response.headers.get('Retry-After')
+  const raw = headerGet(response, 'Retry-After')
   const seconds = raw ? Number(raw) : NaN
   if (Number.isFinite(seconds) && seconds >= 0) return seconds * 1000
   return 1500
@@ -729,6 +746,8 @@ function mapTradingAgentConfig(raw: unknown): TradingAgentConfig {
     forecastEnabled: payload.forecast_enabled !== false,
     liveTradingEnabled: Boolean(payload.live_trading_enabled),
     universe: list(payload.universe).map((s) => String(s).toUpperCase()),
+    cycleIntervalSeconds: number(payload.cycle_interval_seconds) ?? 300,
+    lastCycleAt: text(payload.last_cycle_at) || null,
     dailyLoss: mapDailyLoss(payload.daily_loss),
     createdAt: text(payload.created_at) || null,
     updatedAt: text(payload.updated_at) || null,
@@ -815,6 +834,12 @@ function mapAgentPerformance(raw: unknown): AgentPerformance {
     totalPnl: number(payload.total_pnl) ?? 0,
     realizedPnl: number(payload.realized_pnl) ?? 0,
     unrealizedPnl: number(payload.unrealized_pnl) ?? 0,
+    capitalInvested: number(payload.capital_invested) ?? 0,
+    marketValueOpen: number(payload.market_value_open) ?? 0,
+    proceedsFromExits: number(payload.proceeds_from_exits) ?? 0,
+    startingCapital: number(payload.starting_capital) ?? 0,
+    accountEquity: number(payload.account_equity) ?? 0,
+    equityChange: number(payload.equity_change) ?? 0,
     numberOfTrades: number(payload.number_of_trades) ?? 0,
     maxDailyLossReachedCount: number(payload.max_daily_loss_reached_count) ?? 0,
     tradesBlockedByDailyLoss: number(payload.trades_blocked_by_daily_loss) ?? 0,
@@ -823,21 +848,37 @@ function mapAgentPerformance(raw: unknown): AgentPerformance {
   }
 }
 
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const token = getAccessToken()
+  const requestId =
+    typeof crypto !== 'undefined' && 'randomUUID' in crypto
+      ? crypto.randomUUID()
+      : `req-${Date.now()}-${Math.random().toString(16).slice(2)}`
   const response = await fetch(`${API_BASE}${path}`, {
     ...init,
     headers: {
       'Content-Type': 'application/json',
+      'X-Request-ID': requestId,
       ...(API_KEY ? { 'X-API-Key': API_KEY } : {}),
       ...(token ? { Authorization: `Bearer ${token}` } : {}),
       ...init?.headers,
     },
   })
+  const echoed = headerGet(response, 'X-Request-ID') || requestId
+  setLastRequestId(echoed)
   const payload: unknown = response.status === 204 ? null : await response.json().catch(() => null)
   if (!response.ok) {
     if (response.status === 401 && !path.startsWith('/auth/login') && !path.startsWith('/auth/register')) {
       setAccessToken(null)
+    }
+    if (response.status >= 500 || path.startsWith('/trading-agent')) {
+      appLog.warn('api_error', {
+        path,
+        status: response.status,
+        request_id: echoed,
+        detail: normalizeError(payload, response.status),
+      })
     }
     throw new ApiError(normalizeError(payload, response.status), response.status, retryAfterMs(response))
   }

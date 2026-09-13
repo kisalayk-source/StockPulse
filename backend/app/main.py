@@ -11,6 +11,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.auth import router as auth_router
 from app.api.favorites import router as favorites_router
+from app.api.logs import router as logs_router
 from app.api.prediction import router as prediction_router
 from app.api.risk_management import router as risk_management_router
 from app.api.routes import router
@@ -20,7 +21,7 @@ from app.auth import require_user
 from app.config import Settings, get_settings
 from app.db import init_db
 from app.dependencies import RateLimiter, Services, build_services, require_api_key
-from app.logging import configure_logging
+from app.logging import configure_logging, shutdown_logging
 
 
 logger = logging.getLogger("app.requests")
@@ -29,7 +30,13 @@ _REQUEST_ID = re.compile(r"^[A-Za-z0-9._-]{1,128}$")
 
 def create_app(settings: Settings | None = None, services: Services | None = None) -> FastAPI:
     settings = settings or get_settings()
-    configure_logging()
+    configure_logging(
+        level=settings.log_level,
+        environment=settings.app_environment,
+        elasticsearch_url=settings.elasticsearch_url,
+        elasticsearch_index=settings.elasticsearch_index,
+        elasticsearch_enabled=settings.elasticsearch_enabled,
+    )
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
@@ -46,14 +53,24 @@ def create_app(settings: Settings | None = None, services: Services | None = Non
                     logger.exception("sec_startup_scan_failed")
 
             threading.Thread(target=_startup_scan, name="sec-startup-scan", daemon=True).start()
-        yield
-        for service_name in ("finnhub", "sec"):
-            service = getattr(app.state.services, service_name, None)
-            client = getattr(service, "client", None) if service is not None else None
-            if client is not None and hasattr(client, "aclose"):
-                await client.aclose()
-            elif service is not None and hasattr(service, "aclose"):
-                await service.aclose()
+
+        from app.trading_agent.scheduler import start_agent_scheduler
+
+        scheduler = start_agent_scheduler(app.state.services, settings)
+        app.state.agent_scheduler = scheduler
+        try:
+            yield
+        finally:
+            if scheduler is not None:
+                scheduler.stop()
+            shutdown_logging()
+            for service_name in ("finnhub", "sec"):
+                service = getattr(app.state.services, service_name, None)
+                client = getattr(service, "client", None) if service is not None else None
+                if client is not None and hasattr(client, "aclose"):
+                    await client.aclose()
+                elif service is not None and hasattr(service, "aclose"):
+                    await service.aclose()
 
     app = FastAPI(
         title=settings.app_name,
@@ -103,6 +120,11 @@ def create_app(settings: Settings | None = None, services: Services | None = Non
 
     app.include_router(
         auth_router,
+        prefix=settings.api_prefix,
+        dependencies=[Depends(require_api_key)],
+    )
+    app.include_router(
+        logs_router,
         prefix=settings.api_prefix,
         dependencies=[Depends(require_api_key)],
     )

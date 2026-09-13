@@ -71,6 +71,19 @@ def _migrate_sqlite(engine: Engine) -> None:
             conn.execute(
                 text("ALTER TABLE users ADD COLUMN research_llm_enabled BOOLEAN NOT NULL DEFAULT 0")
             )
+        agent_columns = {row[1] for row in conn.execute(text("PRAGMA table_info(agent_configs)"))}
+        if agent_columns:
+            if "cycle_interval_seconds" not in agent_columns:
+                conn.execute(
+                    text(
+                        "ALTER TABLE agent_configs ADD COLUMN cycle_interval_seconds "
+                        "INTEGER NOT NULL DEFAULT 300"
+                    )
+                )
+            if "last_cycle_at" not in agent_columns:
+                conn.execute(
+                    text("ALTER TABLE agent_configs ADD COLUMN last_cycle_at DATETIME")
+                )
 
 
 def get_session() -> Generator[Session, None, None]:

@@ -140,7 +140,14 @@ class FakeAlpaca:
         ]
 
     def account(self, mode: str) -> dict:
-        return {"id": "account", "mode": mode}
+        return {
+            "id": "account",
+            "mode": mode,
+            "equity": 100000.0,
+            "cash": 100000.0,
+            "buying_power": 100000.0,
+            "today_realized_pnl": 0.0,
+        }
 
     def realized_pl(self, mode: str) -> dict:
         return {"realized_pl": 42.5, "fill_count": 3, "as_of": "2026-08-25T12:00:00+00:00"}
@@ -161,11 +168,35 @@ class FakeAlpaca:
 
     def submit_equity_order(self, order) -> dict:
         self.submitted.append(order)
-        return {"id": "equity-order", "status": "accepted"}
+        qty = float(getattr(order, "qty", 0) or 0)
+        return {
+            "id": f"equity-order-{len(self.submitted)}",
+            "status": "filled",
+            "filled_qty": qty,
+            "filled_avg_price": 200.0,
+            "filled_at": "2026-08-12T18:00:00+00:00",
+        }
 
     def submit_option_order(self, order) -> dict:
         self.submitted.append(order)
-        return {"id": "option-order", "status": "accepted"}
+        qty = float(getattr(order, "qty", 0) or 0)
+        return {
+            "id": f"option-order-{len(self.submitted)}",
+            "status": "filled",
+            "filled_qty": qty,
+            "filled_avg_price": 5.0,
+            "filled_at": "2026-08-12T18:00:00+00:00",
+        }
+
+    def get_order(self, order_id: str, mode: str) -> dict:
+        return {
+            "id": order_id,
+            "status": "filled",
+            "filled_qty": 1,
+            "filled_avg_price": 200.0,
+            "filled_at": "2026-08-12T18:00:00+00:00",
+            "mode": mode,
+        }
 
     def preview_order(self, order) -> dict:
         return {"ok": True, "estimated_cost": 200.0, "warnings": [], "risk": {"new_buys_halted": False}}

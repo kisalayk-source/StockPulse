@@ -117,8 +117,51 @@ class PaperBrokerAdapter:
         pos = self.positions.get(symbol.upper())
         if pos:
             pos.current_price = float(price)
-            pos.market_value = pos.quantity * pos.current_price
-            pos.unrealized_pnl = (pos.current_price - pos.average_entry_price) * pos.quantity
+            multiplier = 100.0 if pos.asset_type == "option" else 1.0
+            pos.market_value = pos.quantity * pos.current_price * multiplier
+            pos.unrealized_pnl = (
+                (pos.current_price - pos.average_entry_price) * pos.quantity * multiplier
+            )
+
+    def restore_position(
+        self,
+        *,
+        symbol: str,
+        quantity: float,
+        average_entry_price: float,
+        current_price: float | None = None,
+        realized_pnl: float = 0.0,
+        asset_type: str = "equity",
+    ) -> None:
+        """Hydrate a position after process restart (does not adjust cash)."""
+        sym = symbol.upper()
+        qty = float(quantity)
+        mark = float(current_price if current_price and current_price > 0 else average_entry_price)
+        entry = float(average_entry_price)
+        self.prices[sym] = mark if mark > 0 else self.prices.get(sym, entry)
+        if abs(qty) <= 1e-9:
+            # Flat row retained for realized P/L only.
+            self.positions[sym] = Position(
+                symbol=sym,
+                quantity=0.0,
+                average_entry_price=entry,
+                current_price=mark if mark > 0 else entry,
+                unrealized_pnl=0.0,
+                realized_pnl=float(realized_pnl),
+                asset_type=asset_type or "equity",
+                market_value=0.0,
+            )
+            return
+        self.positions[sym] = Position(
+            symbol=sym,
+            quantity=qty,
+            average_entry_price=entry,
+            current_price=mark,
+            unrealized_pnl=(mark - entry) * qty,
+            realized_pnl=float(realized_pnl),
+            asset_type=asset_type or "equity",
+            market_value=qty * mark,
+        )
 
     def submit_order(self, order: OrderRequest) -> OrderResult:
         key = order.idempotency_key or uuid4().hex
@@ -175,15 +218,15 @@ class PaperBrokerAdapter:
                 existing.quantity = total_qty
                 existing.average_entry_price = avg
                 existing.current_price = price
-                existing.market_value = total_qty * price
-                existing.unrealized_pnl = (price - avg) * total_qty
+                existing.market_value = total_qty * price * multiplier
+                existing.unrealized_pnl = (price - avg) * total_qty * multiplier
             else:
                 self.positions[symbol] = Position(
                     symbol=symbol,
                     quantity=fill_qty,
                     average_entry_price=price,
                     current_price=price,
-                    market_value=fill_qty * price,
+                    market_value=fill_qty * price * multiplier,
                     asset_type=order.asset_type,
                 )
         else:
@@ -207,11 +250,17 @@ class PaperBrokerAdapter:
             existing.realized_pnl += realized
             existing.quantity -= sell_qty
             if existing.quantity <= 1e-9:
-                del self.positions[symbol]
+                # Keep a flat row so realized P/L survives sync / performance queries.
+                existing.quantity = 0.0
+                existing.market_value = 0.0
+                existing.unrealized_pnl = 0.0
+                existing.current_price = price
             else:
                 existing.current_price = price
-                existing.market_value = existing.quantity * price
-                existing.unrealized_pnl = (price - existing.average_entry_price) * existing.quantity
+                existing.market_value = existing.quantity * price * multiplier
+                existing.unrealized_pnl = (
+                    (price - existing.average_entry_price) * existing.quantity * multiplier
+                )
             fill_qty = sell_qty
 
         result = OrderResult(
@@ -233,10 +282,15 @@ class PaperBrokerAdapter:
             existing.status = "canceled"
 
     def get_positions(self) -> list[Position]:
+        """Open positions only (qty != 0)."""
+        return [p for p in self.positions.values() if abs(float(p.quantity)) > 1e-9]
+
+    def get_position_ledger(self) -> list[Position]:
+        """Open and flat positions, including realized P/L after full exits."""
         return list(self.positions.values())
 
     def get_account(self) -> AccountSnapshot:
-        positions_value = sum(p.market_value for p in self.positions.values())
+        positions_value = sum(p.market_value for p in self.get_positions())
         equity = self.cash + positions_value
         return AccountSnapshot(
             equity=equity,
@@ -255,6 +309,10 @@ class PaperBrokerAdapter:
 
 class AlpacaBrokerAdapter:
     """Thin adapter over existing AlpacaService for live/paper broker I/O."""
+
+    _TERMINAL_STATUSES = frozenset(
+        {"filled", "canceled", "cancelled", "expired", "rejected", "done_for_day"}
+    )
 
     def __init__(self, alpaca: Any, mode: str = "paper") -> None:
         self.alpaca = alpaca
@@ -286,9 +344,14 @@ class AlpacaBrokerAdapter:
                     notional=None,
                     type=order.order_type,
                     limit_price=order.limit_price,
+                    stop_price=None,
                     time_in_force=order.time_in_force,
+                    extended_hours=False,
                 )
                 raw = self.alpaca.submit_equity_order(payload)
+            if not isinstance(raw, dict):
+                raw = {"result": raw}
+            raw = self._await_fill(raw)
             status = str(raw.get("status") or "accepted")
             return OrderResult(
                 broker_order_id=str(raw.get("id") or uuid4().hex),
@@ -297,7 +360,7 @@ class AlpacaBrokerAdapter:
                 average_fill_price=float(raw["filled_avg_price"]) if raw.get("filled_avg_price") else None,
                 submitted_at=now,
                 filled_at=raw.get("filled_at"),
-                raw=raw if isinstance(raw, dict) else {"result": raw},
+                raw=raw,
             )
         except Exception as exc:
             return OrderResult(
@@ -306,6 +369,31 @@ class AlpacaBrokerAdapter:
                 submitted_at=now,
                 error_message=str(exc),
             )
+
+    def _await_fill(self, raw: dict[str, Any], *, attempts: int = 8, delay: float = 0.25) -> dict[str, Any]:
+        """Poll briefly so paper market orders resolve to filled when Alpaca is fast."""
+        import time
+
+        status = str(raw.get("status") or "").lower()
+        order_id = raw.get("id")
+        if not order_id or status in self._TERMINAL_STATUSES:
+            return raw
+        get_order = getattr(self.alpaca, "get_order", None)
+        if not callable(get_order):
+            return raw
+        latest = raw
+        for _ in range(attempts):
+            time.sleep(delay)
+            try:
+                polled = get_order(str(order_id), self.mode)
+            except Exception:
+                break
+            if isinstance(polled, dict):
+                latest = polled
+                status = str(polled.get("status") or "").lower()
+                if status in self._TERMINAL_STATUSES:
+                    return polled
+        return latest
 
     def cancel_order(self, order_id: str) -> None:
         self.alpaca.cancel_order(order_id, self.mode)

@@ -15,6 +15,7 @@ class AgentConfigUpdate(BaseModel):
     capital_allocation: float | None = Field(default=None, gt=0)
     forecast_enabled: bool | None = None
     universe: list[str] | None = None
+    cycle_interval_seconds: int | None = Field(default=None, ge=60, le=86_400)
     live_trading_enabled: bool | None = None
     live_confirmation: str | None = None
 

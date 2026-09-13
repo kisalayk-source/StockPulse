@@ -62,6 +62,19 @@ KRONOS_MAX_CONTEXT=512
 KRONOS_JOURNAL_PATH=backend/data/forecast-journal.jsonl
 ```
 
+Observability (optional Elastic shipping — see [docs/logging.md](../docs/logging.md)):
+
+```dotenv
+LOG_LEVEL=INFO
+ELASTICSEARCH_ENABLED=false
+ELASTICSEARCH_URL=http://127.0.0.1:9200
+ELASTICSEARCH_INDEX=stockpulse-logs
+```
+
+Browser logs post to `POST /api/v1/logs/client` (rate-limited). With
+`ELASTICSEARCH_ENABLED=true`, console JSON and client events bulk-index into
+Elasticsearch; leave it `false` for normal local runs.
+
 Paper and live credentials are independent. Market-data endpoints use the credential
 set selected by `ALPACA_DATA_CREDENTIALS_MODE` (paper by default).
 `ALPACA_DATA_FEED` defaults to `iex`, which works with standard paper
@@ -129,14 +142,16 @@ All routes use the `/api/v1` prefix.
 - `GET /stocks/{ticker}/risk`
 - `GET /stocks/{ticker}/explanation`
 
-Trading/account requests require an explicit `paper` or `live` mode. Orders are
-manual only; this backend contains no scheduler, signal executor, or automatic order
-path. Quantity/notional, order type, limit/stop price requirements, time-in-force,
-and asset tradability are validated before submission. Provider failures are surfaced
-as generic 502 errors and missing configuration as generic 503 errors; detailed causes
-are logged server-side. Missing Finnhub values remain `null`; the API does not
-synthesize fundamentals. SEC endpoints populate from EDGAR when `SEC_ENABLED=true`;
-SEC failures return partial data with `provider_errors` and do not break other routes.
+Trading/account requests require an explicit `paper` or `live` mode. Manual order
+endpoints never auto-submit. The Autonomous Trading Agent, when Started in paper or
+live mode, auto-runs forecast cycles on a configurable interval (default 5 minutes)
+via a backend scheduler; Pause and Emergency Stop halt auto-cycling. Quantity/notional,
+order type, limit/stop price requirements, time-in-force, and asset tradability are
+validated before submission. Provider failures are surfaced as generic 502 errors and
+missing configuration as generic 503 errors; detailed causes are logged server-side.
+Missing Finnhub values remain `null`; the API does not synthesize fundamentals. SEC
+endpoints populate from EDGAR when `SEC_ENABLED=true`; SEC failures return partial
+data with `provider_errors` and do not break other routes.
 See [docs/SEC_ACCUMULATION.md](../docs/SEC_ACCUMULATION.md) for scoring methodology
 and filing caveats. Responses include `X-Request-ID`; logs contain structured
 request completion and order-submission audit records without credentials or

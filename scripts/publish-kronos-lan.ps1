@@ -69,7 +69,7 @@ foreach ($port in @(8000, 5173)) {
     $listener = Get-NetTCPConnection -State Listen -LocalPort $port -ErrorAction SilentlyContinue
     if ($listener) {
         $owner = Get-CimInstance Win32_Process -Filter "ProcessId = $($listener[0].OwningProcess)" -ErrorAction SilentlyContinue
-        if ($owner.CommandLine -match "app\.main:app|Kronos.*vite\.js") {
+        if ($owner.CommandLine -match "app\.main:app|vite\.js.*preview|StockPulse.*vite\.js|Kronos.*vite\.js") {
             Stop-Process -Id $listener[0].OwningProcess -Force
             Wait-Process -Id $listener[0].OwningProcess -ErrorAction SilentlyContinue
         } else {
