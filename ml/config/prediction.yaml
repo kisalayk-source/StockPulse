@@ -82,5 +82,22 @@ features:
   fundamentals: true
   market_regime: false
 
+evaluation:
+  # Walk-forward / ablation defaults for ml.backtesting.run_backtest
+  walk_forward:
+    mode: expanding
+    train_bars: 120
+    test_bars: 40
+    max_folds: 8
+  shap:
+    enabled: true
+    top_k: 12
+  ablation_groups:
+    - momentum
+    - volatility
+    - volume
+    - structure
+    - trend
+
 registry:
   store_dir: backend/data/model_registry

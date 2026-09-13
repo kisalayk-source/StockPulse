@@ -11,6 +11,7 @@ import numpy as np
 import pandas as pd
 
 from ml import FEATURE_VERSION
+from ml.backtesting.metrics import classification_metrics, summarize_metrics
 from ml.calibration import fit_calibrator
 from ml.config import get_prediction_config, horizon_to_bars, load_prediction_config
 from ml.data.loaders import bars_to_ohlcv, filter_bars_as_of
@@ -363,10 +364,17 @@ class PredictionEngine:
                 )
             params = self.config.get("models", {}).get(model_type, {}).get("params") or {}
             model = model_cls(params=params)
-            artifact = _train_with_holdout_calibration(model, dataset, method=calibration_method)
+            artifact, holdout_metrics = _train_with_holdout_calibration(
+                model, dataset, method=calibration_method
+            )
             training_cutoff = dataset.index.max().to_pydatetime()
             if training_cutoff.tzinfo is None:
                 training_cutoff = training_cutoff.replace(tzinfo=timezone.utc)
+            validation_metrics = {
+                "train_rows": float(getattr(model, "training_rows", 0) or 0),
+                "calibration": 1.0 if artifact.calibrator is not None else 0.0,
+            }
+            validation_metrics.update(summarize_metrics(holdout_metrics))
             record = ModelRecord(
                 model_id=key,
                 model_type=model_type,
@@ -376,10 +384,8 @@ class PredictionEngine:
                 training_period=f"{dataset.index.min().date()}→{dataset.index.max().date()}",
                 training_timestamp=ModelRegistry.utc_now_iso(),
                 training_cutoff=training_cutoff.isoformat(),
-                validation_metrics={
-                    "train_rows": float(getattr(model, "training_rows", 0) or 0),
-                    "calibration": 1.0 if artifact.calibrator is not None else 0.0,
-                },
+                validation_metrics=validation_metrics,
+                test_metrics={},
                 status="active",
             )
             self.registry.save(key, model=artifact, record=record)
@@ -406,18 +412,19 @@ def _train_with_holdout_calibration(
     dataset: pd.DataFrame,
     *,
     method: str,
-) -> CalibratedArtifact:
+) -> tuple[CalibratedArtifact, dict[str, float]]:
     method = str(method or "identity").lower()
     n = len(dataset)
+    empty_metrics: dict[str, float] = {}
     if method == "identity" or n < 40:
         model.train(dataset)
-        return CalibratedArtifact(model=model, calibrator=None, calibration_method="identity")
+        return CalibratedArtifact(model=model, calibrator=None, calibration_method="identity"), empty_metrics
 
     split = max(int(n * 0.8), n - max(12, int(n * 0.2)))
     split = min(split, n - 8)
     if split < 20:
         model.train(dataset)
-        return CalibratedArtifact(model=model, calibrator=None, calibration_method="identity")
+        return CalibratedArtifact(model=model, calibrator=None, calibration_method="identity"), empty_metrics
 
     train_ds = dataset.iloc[:split]
     hold_ds = dataset.iloc[split:]
@@ -436,7 +443,11 @@ def _train_with_holdout_calibration(
 
     calibrator = fit_calibrator(labels, probs, method)
     applied = method if calibrator is not None else "identity"
-    return CalibratedArtifact(model=model, calibrator=calibrator, calibration_method=applied)
+    holdout_metrics = classification_metrics(labels, y_prob=probs) if labels else empty_metrics
+    return (
+        CalibratedArtifact(model=model, calibrator=calibrator, calibration_method=applied),
+        holdout_metrics,
+    )
 
 
 def _technical_score(technical: dict[str, float]) -> float | None:
