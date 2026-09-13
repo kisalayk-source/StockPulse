@@ -24,6 +24,11 @@ class ForecastResult:
     features_snapshot_id: str
     model_name: str
     raw: dict[str, Any] = field(default_factory=dict)
+    # Agent alignment: hybrid owns BUY/SELL; Kronos path owns sizing/targets.
+    signal_source: str = "hybrid"
+    path_expected_return: float | None = None
+    path_target_price: float | None = None
+    path_stop_price: float | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -38,6 +43,10 @@ class ForecastResult:
             "features_snapshot_id": self.features_snapshot_id,
             "model_name": self.model_name,
             "raw": self.raw,
+            "signal_source": self.signal_source,
+            "path_expected_return": self.path_expected_return,
+            "path_target_price": self.path_target_price,
+            "path_stop_price": self.path_stop_price,
         }
 
 

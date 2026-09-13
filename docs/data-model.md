@@ -20,4 +20,5 @@ Every prediction must include ticker, timestamp, feature snapshot id/version,
 model version(s), training data cutoff, horizon, probability, risk score, and
 final signal. Predictions without timestamps or cutoff metadata are rejected.
 
-See also [stock-prediction-architecture.md](./stock-prediction-architecture.md).
+See also [mvp-roadmap.md](./mvp-roadmap.md) (plain language) and
+[stock-prediction-architecture.md](./stock-prediction-architecture.md).

@@ -49,6 +49,9 @@ class FakeSec:
     async def sync_ticker(self, *args, **kwargs):
         return None
 
+    def load_normalized_events(self, session, ticker):
+        return []
+
     def institutional_payload(self, session, ticker):
         return {"ticker": ticker.upper(), "changes": []}
 

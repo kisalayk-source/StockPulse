@@ -10,9 +10,12 @@ prediction:
   feature_version: "1.0.0"
 
 models:
+  # Directional path→P(up) adapter. Off by default (needs Kronos/Torch path stack).
   kronos:
-    enabled: false
+    enabled: true
     weight: 0.40
+    context: 64
+    path_engine: ensemble  # kronos | ensemble
   xgboost:
     enabled: true
     weight: 1.0
@@ -24,16 +27,27 @@ models:
       colsample_bytree: 0.9
       reg_lambda: 1.0
       min_child_weight: 2
+  # Off by default so CI/local remain XGB-only until explicitly enabled.
   lightgbm:
-    enabled: false
+    enabled: true
     weight: 0.30
-    params: {}
+    params:
+      n_estimators: 80
+      max_depth: 4
+      learning_rate: 0.08
+      subsample: 0.9
+      colsample_bytree: 0.9
+      reg_lambda: 1.0
+      min_child_weight: 2
+      verbosity: -1
 
 ensemble:
-  strategy: equal_weight
+  # equal_weight averages present members; performance_weighted uses YAML weights.
+  # Prefer performance_weighted when enabling Kronos + LightGBM alongside XGBoost.
+  strategy: performance_weighted
 
 calibration:
-  method: identity  # identity | platt | isotonic
+  method: platt  # identity | platt | isotonic
 
 decision:
   buy_probability: 0.65
@@ -43,17 +57,49 @@ decision:
   minimum_model_agreement: 0.60
 
 risk:
+  enabled: true
   max_risk_score: 0.70
-  enabled: false
+  downgrade_risk_score: 0.70
+  veto_risk_score: 0.85
+  max_volatility: 0.045
+  max_drawdown: 0.25
+  max_position_concentration: 0.15
+  regime_penalty: 0.10
+  regime_penalty_mild: 0.05
+  weights:
+    volatility: 0.30
+    drawdown: 0.25
+    concentration: 0.20
+    disagreement: 0.15
+    edge: 0.10
 
 llm:
-  enabled: false
+  # When true, API may narrate explanations via OpenAI if RESEARCH_LLM_ENABLED
+  # and the user has "Use AI summaries" on — otherwise template text is kept.
+  enabled: true
 
 features:
   technical: true
-  sec: false
-  fundamentals: false
+  sec: true
+  fundamentals: true
   market_regime: false
+
+evaluation:
+  # Walk-forward / ablation defaults for ml.backtesting.run_backtest
+  walk_forward:
+    mode: expanding
+    train_bars: 120
+    test_bars: 40
+    max_folds: 8
+  shap:
+    enabled: true
+    top_k: 12
+  ablation_groups:
+    - momentum
+    - volatility
+    - volume
+    - structure
+    - trend
 
 registry:
   store_dir: backend/data/model_registry

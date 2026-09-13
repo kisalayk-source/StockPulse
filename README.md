@@ -8,8 +8,9 @@ Paper-first trading workstation for US equities and single-leg options. Forecast
 
 - **Market workspace** — symbol search, session clock, quote, fundamentals, OHLC chart
 - **Path forecasts** — Kronos (single model) or ensemble overlay; short / long horizons; path turns and decision context
-- **Hybrid prediction** — technical features → XGBoost probability → configurable BUY/HOLD/SELL (MVP-1); see [docs/stock-prediction-architecture.md](./docs/stock-prediction-architecture.md)
-- **How forecasts work (non-tech)** — step-by-step plain-language guide: [docs/how-forecast-works.md](./docs/how-forecast-works.md)
+- **Hybrid prediction** — calibrated model stance (BUY/HOLD/SELL) from the `ml/` stack; see [docs/mvp-roadmap.md](./docs/mvp-roadmap.md) (plain language) and [docs/stock-prediction-architecture.md](./docs/stock-prediction-architecture.md)
+- **How forecasts work (non-tech)** — step-by-step chart path vs model stance: [docs/how-forecast-works.md](./docs/how-forecast-works.md)
+- **MVP roadmap (non-tech)** — what MVP-1…7 and agent alignment mean in everyday terms: [docs/mvp-roadmap.md](./docs/mvp-roadmap.md)
 - **Sentiment & news** — public news sentiment plus investor/regime cues; merged news feed
 - **SEC & ownership** — EDGAR 13F / 13D / 13G / Form 4 XML ingestion, explainable **Accumulation Score (0–100)**, background market scan (blue-chip + movers), **Sectors**, **Top Accumulation**, **SEC Records** (6-month filing search with parsed entity/action columns, expandable XML details, and AI analysis), and **AI Research** queries ranked by model stance / chart path (SEC as secondary context)
 - **Favorites** — per-user starred tickers with a Favorites tab; star toggle on the Market quote header
@@ -26,7 +27,7 @@ Paper-first trading workstation for US equities and single-leg options. Forecast
 | Backend | FastAPI, uvicorn (`backend/`) |
 | Broker / data | Alpaca (bars + trading), Finnhub (fundamentals, news, public sentiment), SEC EDGAR (filings, accumulation) |
 | Forecasts | Kronos (`NeoQuasar/Kronos-small`) and optional ensemble under `forecasting/` |
-| Hybrid prediction | `ml/` feature engine + XGBoost (MVP-1); API under `/stocks/{ticker}/prediction` |
+| Hybrid prediction | `ml/` ensemble + features + signal risk; API under `/stocks/{ticker}/prediction` |
 
 ## Quick start
 
@@ -123,7 +124,7 @@ backend/app/sec/   SEC EDGAR client, parsers, accumulation scoring
 backend/configs/   sec_accumulation.yaml (score weights)
 forecasting/       Optional multi-model path-forecast adapters
 scripts/           Start / LAN publish helpers
-docs/              Product & development guides (incl. stock-prediction-architecture.md)
+docs/              Product & development guides (mvp-roadmap, how-forecast-works, architecture)
 model/             Kronos model / tokenizer implementation
 kronos_backtest/   Historical backtester (not used by the live dashboard)
 ```
@@ -136,6 +137,10 @@ kronos_backtest/   Historical backtester (not used by the live dashboard)
 | [backend/README.md](./backend/README.md) | API, config, smoke checklist |
 | [frontend/README.md](./frontend/README.md) | Dashboard commands & API client |
 | [docs/DEVELOPMENT.md](./docs/DEVELOPMENT.md) | Environments, checks, Docker |
+| [docs/mvp-roadmap.md](./docs/mvp-roadmap.md) | Plain-language MVP-1…7 + agent alignment |
+| [docs/explanation.md](./docs/explanation.md) | Grounded template / optional LLM explanations (MVP-7) |
+| [docs/how-forecast-works.md](./docs/how-forecast-works.md) | Chart path vs model stance (non-tech) |
+| [docs/stock-prediction-architecture.md](./docs/stock-prediction-architecture.md) | Hybrid stack architecture & leakage rules |
 | [docs/logging.md](./docs/logging.md) | JSON logs + Elasticsearch/Kibana |
 | [docs/SEC_ACCUMULATION.md](./docs/SEC_ACCUMULATION.md) | SEC EDGAR ingestion, Accumulation Score, API, backtest |
 | [docs/StockPulse.html](./docs/StockPulse.html) | Product & operations guide |

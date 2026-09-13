@@ -10,17 +10,21 @@ predict_probability(features) -> float
 
 This is separate from `forecasting.core.base.ForecastModel` (path adapters).
 
-## MVP-1
+Plain-language MVP overview: [mvp-roadmap.md](./mvp-roadmap.md).
+
+## MVP-1 (implemented)
 
 - `XGBoostModel` — binary classifier on technical features for horizons `1d`/`5d`/`20d`
 - Target: forward return ≥ `return_threshold` (config; default `0.0`)
 - Artifacts cached in `backend/data/model_registry/`
 
-## Scaffolded
+## MVP-2 (implemented)
 
-- `LightGBMModel` — MVP-2
-- `KronosModel` directional adapter — MVP-2
-- Ensemble strategies in `ml/ensemble/` — MVP-2
-- Calibration hooks in `ml/calibration/` — identity passthrough until MVP-2
+- `LightGBMModel` — same feature/target interface as XGBoost
+- `KronosModel` directional adapter — maps path `forecast_change` → P(up) via sigmoid
+- Weighted ensemble (`equal_weight` / `performance_weighted`) over enabled members
+- Calibration: `identity` | `platt` | `isotonic` fitted on chronological holdout and stored with tree artifacts
+- Enable members and weights in `ml/config/prediction.yaml`
+- Prefer `ensemble.strategy: performance_weighted` when running the full trio
 
 Config: `ml/config/prediction.yaml`.

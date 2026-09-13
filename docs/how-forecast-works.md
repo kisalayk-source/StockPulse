@@ -163,4 +163,5 @@ Both are still research overlays. Switching modes can change the shape of the li
 
 ## Want the technical deep dive?
 
-If you prefer architecture detail (data sources, models, and how path forecast differs from hybrid prediction in the codebase), see [stock-prediction-architecture.md](./stock-prediction-architecture.md).
+- **MVP roadmap (plain language):** [mvp-roadmap.md](./mvp-roadmap.md) — what MVP-1…7 and agent alignment mean without code
+- **Architecture:** [stock-prediction-architecture.md](./stock-prediction-architecture.md) — data sources, models, leakage rules

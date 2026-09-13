@@ -79,6 +79,9 @@ class Settings(BaseSettings):
     sec_scan_on_startup: bool = False
     agent_scheduler_enabled: bool = True
     agent_scheduler_tick_seconds: float = Field(default=15.0, ge=1.0, le=300.0)
+    # When True, agent BUY/SELL comes only from calibrated hybrid prediction;
+    # Kronos path is used for expected move / targets / sizing, never direction.
+    agent_require_hybrid_signal: bool = True
     log_level: str = Field(default="INFO", pattern="^(DEBUG|INFO|WARNING|ERROR|CRITICAL)$")
     elasticsearch_enabled: bool = False
     elasticsearch_url: str | None = None

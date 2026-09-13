@@ -56,8 +56,10 @@ Enable/disable models in `forecasting/config/models.yaml`.
 
 **Path forecast vs hybrid prediction:** `POST /forecast` returns an OHLCV path for
 the chart. Hybrid directional signals live under `ml/` and
-`GET /api/v1/stocks/{ticker}/prediction` (technical features → XGBoost in MVP-1).
-See [stock-prediction-architecture.md](./stock-prediction-architecture.md).
+`GET /api/v1/stocks/{ticker}/prediction` (MVP-1…6 implemented; see
+[mvp-roadmap.md](./mvp-roadmap.md) for plain language and
+[stock-prediction-architecture.md](./stock-prediction-architecture.md) for
+architecture).
 
 ```bash
 # from repo root, with the core-model venv
@@ -95,12 +97,13 @@ uvicorn app.main:app --reload
 Copy `backend/.env.example` to `backend/.env` only for local use. Tests use
 fakes; do not put real credentials in fixtures or commits.
 
-### Hybrid directional prediction (MVP-1)
+### Hybrid directional prediction (MVP-1…6)
 
-- Code: `ml/` (features, XGBoost adapter, decision engine, registry)
+- Code: `ml/` (features, XGBoost/LightGBM, Kronos directional adapter, ensemble, calibration, decision, signal risk, walk-forward backtesting, registry)
 - Config: `ml/config/prediction.yaml`
 - API: `GET /api/v1/stocks/{ticker}/prediction` (also `/features`, `/signals`, `/risk`, `/explanation`)
-- Docs: [stock-prediction-architecture.md](./stock-prediction-architecture.md), [api.md](./api.md)
+- Agent: hybrid owns BUY/SELL; Kronos path owns sizing/targets (`agent_require_hybrid_signal`)
+- Docs: [mvp-roadmap.md](./mvp-roadmap.md) (non-tech), [stock-prediction-architecture.md](./stock-prediction-architecture.md), [model-engine.md](./model-engine.md), [feature-engine.md](./feature-engine.md), [risk-engine.md](./risk-engine.md), [backtesting.md](./backtesting.md), [explanation.md](./explanation.md), [kronos.md](./kronos.md)
 
 ```bash
 # from repo root

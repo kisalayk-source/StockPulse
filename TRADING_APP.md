@@ -6,6 +6,10 @@ The trading app is split into:
 - `frontend/`: React/TypeScript dashboard
 - `ml/`: Hybrid directional prediction engine (features → models → decision)
 
+Plain-language MVP roadmap (what each stage means for users):
+[docs/mvp-roadmap.md](./docs/mvp-roadmap.md). Chart path vs model stance:
+[docs/how-forecast-works.md](./docs/how-forecast-works.md).
+
 The legacy Flask demo in `webui/` remains unchanged.
 
 ## Configure
@@ -79,6 +83,8 @@ See [docs/SEC_ACCUMULATION.md](./docs/SEC_ACCUMULATION.md#troubleshooting) for S
 ## Safety
 
 - Kronos forecasts and SEC accumulation scores are display-only and cannot submit orders.
+  Hybrid signals are also research overlays unless you deliberately start the trading agent.
+  See [docs/mvp-roadmap.md](./docs/mvp-roadmap.md) for how path vs stance vs agent alignment work.
 - Accumulation scores are research signals, not probabilities of future returns.
 - Every order requires a review dialog.
 - Live mode requires separate credentials, `ALLOW_LIVE_TRADING=true`, and typing

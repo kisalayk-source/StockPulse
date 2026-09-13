@@ -52,10 +52,13 @@ class RateLimiter:
 
 def build_services(settings: Settings) -> Services:
     alpaca = AlpacaService(settings)
+    kronos = KronosService(settings, alpaca)
+    finnhub = FinnhubService(settings)
+    sec = SecService(settings)
     prediction = None
     if settings.prediction_enabled:
         try:
-            prediction = PredictionService(settings, alpaca)
+            prediction = PredictionService(settings, alpaca, kronos=kronos, finnhub=finnhub, sec=sec)
         except Exception as exc:  # pragma: no cover - keep API up if ML stack is broken
             import logging
 
@@ -67,9 +70,9 @@ def build_services(settings: Settings) -> Services:
     services = Services(
         settings=settings,
         alpaca=alpaca,
-        finnhub=FinnhubService(settings),
-        kronos=KronosService(settings, alpaca),
-        sec=SecService(settings),
+        finnhub=finnhub,
+        kronos=kronos,
+        sec=sec,
         prediction=prediction,
     )
     from app.trading_agent.service import build_trading_agent_service

@@ -46,6 +46,45 @@ TECHNICAL_FEATURE_KEYS = (
     "return_20d",
 )
 
+SEC_FEATURE_KEYS = (
+    "inst_event_count",
+    "inst_net_polarity",
+    "inst_increase_count",
+    "inst_decrease_count",
+    "inst_new_count",
+    "inst_exit_count",
+    "inst_flow_score",
+    "insider_buy_count",
+    "insider_sell_count",
+    "insider_net_count",
+    "insider_buy_value",
+    "insider_sell_value",
+    "insider_net_value",
+    "insider_cluster_buy",
+    "insider_cluster_sell",
+    "insider_ceo_buy",
+    "insider_cfo_buy",
+    "insider_flow_score",
+    "ownership_event_count",
+    "ownership_increase_count",
+    "ownership_decrease_count",
+    "ownership_max_pct",
+    "ownership_activist_increase",
+    "ownership_flow_score",
+)
+
+FUNDAMENTAL_FEATURE_KEYS = (
+    "pe_ratio",
+    "market_cap",
+    "dividend_yield",
+    "eps",
+    "revenue_growth",
+    "eps_growth",
+    "roic",
+    "fcf_margin",
+    "debt_to_equity",
+)
+
 
 def normalize_feature_dict(values: dict[str, float | None]) -> dict[str, float]:
     """Drop nulls and coerce to float for model input / snapshot storage."""
