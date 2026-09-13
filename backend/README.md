@@ -75,8 +75,10 @@ When `API_KEY` is set, every `/api/v1` request except the liveness endpoint must
 the value in the `X-API-Key` header. Leaving it empty preserves the local-development default with no
 API authentication. Comparisons use a constant-time check. CORS permits only
 `CORS_ORIGIN` entries by default; set `CORS_ORIGIN_REGEX` explicitly when LAN browser
-origins are required. The PowerShell launcher binds to `127.0.0.1`; set
-`KRONOS_API_HOST` only when remote access is intentionally required.
+origins are required (for example when opening **http://192.168.86.197:5173/**).
+LAN publish keeps the API on loopback and serves the UI on `0.0.0.0:5173`, so same-origin
+proxy requests usually do not need extra CORS entries. The PowerShell launcher binds to
+`127.0.0.1`; set `KRONOS_API_HOST` only when remote access to the API itself is intentionally required.
 
 Models are not downloaded during import or application startup. The configured small
 model/tokenizer are loaded on the first forecast, put in evaluation mode, and reused.

@@ -235,7 +235,7 @@ The dashboard loads filings first, then fetches analysis in a separate request s
 
 | Symptom | Likely cause | What to do |
 |---------|--------------|------------|
-| **502** on `/api/v1/*` through the UI | Frontend proxy could not reach the API on `127.0.0.1:8000` (startup race or API down) | Confirm backend is listening: `http://127.0.0.1:8000/api/v1/health`. Re-run `scripts/publish-kronos-lan.ps1`. |
+| **502** on `/api/v1/*` through the UI | Frontend proxy could not reach the API on `127.0.0.1:8000` (startup race or API down) | Confirm backend is listening: `http://127.0.0.1:8000/api/v1/health`. Re-run `scripts/publish-kronos-lan.ps1`. After publish, confirm **http://192.168.86.197:5173/api/v1/health**. |
 | Sectors / Top show one ticker (e.g. SPY) or stay empty | Score cache not populated yet | Wait for scan progress to finish; use dashboard **Refresh** or `POST /accumulation/scan`. |
 | AI Research returns no candidates | Scan still running or strict filters | Wait for scan; try a broader query (e.g. “top accumulation stocks”). |
 | SEC Records empty for a valid ticker | EDGAR sync still running, no filings in the last N months, or `SEC_ENABLED=false` | Wait for the loading state to finish; confirm `SEC_USER_AGENT` and network; check `provider_errors` in the response. Re-search the ticker to trigger a fresh sync. |

@@ -50,8 +50,10 @@ npm install
 npm run dev
 ```
 
-Open `http://localhost:5173`. API documentation is at
-`http://localhost:8000/docs`.
+For local `npm run dev`, open `http://localhost:5173`. After LAN publish
+(`scripts/publish-kronos-lan.ps1`), open the canonical URL
+**http://192.168.86.197:5173/** from any device on the network. API documentation is at
+`http://localhost:8000/docs` on the host (or via the UI proxy at `/api/v1/...`).
 
 Use dashboard tabs for **Market** (symbol workspace + SEC Intelligence panel), **Sectors**, **Top Accumulation**, **SEC Records**, and **AI Research**. The first load may take a few minutes while the server scans blue-chip and mover tickers from EDGAR.
 
@@ -66,7 +68,7 @@ SEC_SCAN_ON_STARTUP=false
 
 | Issue | Fix |
 |-------|-----|
-| **502** on API calls through the UI | Backend not reachable on loopback `:8000`. Restart with `scripts/publish-kronos-lan.ps1` (starts API before frontend). Check `runtime-logs/backend.stderr.log`. |
+| **502** on API calls through the UI | Backend not reachable on loopback `:8000`. Restart with `scripts/publish-kronos-lan.ps1` (starts API before frontend). Confirm **http://192.168.86.197:5173/api/v1/health** after publish. Check `runtime-logs/backend.stderr.log`. |
 | Sectors / Top empty or only SPY | Accumulation scan still running — wait for progress banner or call `POST /api/v1/accumulation/scan`. |
 | SEC Records empty | EDGAR sync still running, no filings in the last 6 months, or invalid `SEC_USER_AGENT`. Re-search after sync completes; check API `provider_errors`. |
 | SEC Records entity/action empty | Filing exists but XML not parsed yet | Re-search the ticker to trigger backfill. Set `SEC_USER_AGENT` in `backend/.env`. Expand row with **+** once `details[]` populates. |

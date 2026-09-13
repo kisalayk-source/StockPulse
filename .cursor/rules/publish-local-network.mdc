@@ -9,8 +9,15 @@ After completing user-requested application changes:
 
 1. Run the relevant backend and frontend checks.
 2. If checks pass, run `powershell -ExecutionPolicy Bypass -File scripts/publish-kronos-lan.ps1 -SkipChecks`.
-3. Confirm both the frontend and proxied API health endpoint respond.
-4. Include the local-network URL in the final handoff.
+3. Confirm both the frontend and proxied API health endpoint respond at the canonical LAN URL.
+4. Include this local-network URL in the final handoff (always):
+
+   **http://192.168.86.197:5173/**
 
 Do not publish broken builds. Documentation-only changes do not require republishing.
 The backend stays on loopback; LAN clients access it through the frontend proxy.
+
+Publish must run on the Windows host that owns `192.168.86.197`. Cloud agent VMs
+cannot serve that address; if publish is requested from a cloud agent, update the
+scripts/config as needed and tell the user to run the publish script on that host
+(or use a self-hosted Cursor worker on it).

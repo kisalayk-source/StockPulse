@@ -11,6 +11,9 @@ $runtimeDir = Join-Path $root "runtime-logs"
 $pidFile = Join-Path $runtimeDir "lan-publish-pids.json"
 $watchdogPidFile = Join-Path $runtimeDir "lan-watchdog.pid"
 $python = Join-Path $root ".venv\Scripts\python.exe"
+# Canonical LAN endpoint for this workspace (user's local network host).
+$PreferredLanIp = "192.168.86.197"
+$PreferredLanUrl = "http://${PreferredLanIp}:5173"
 
 if (-not (Test-Path $python)) {
     $pythonCommand = Get-Command python -ErrorAction Stop
@@ -135,6 +138,26 @@ try {
     if (-not $frontendHealth -or -not $apiHealth) {
         throw "Published services did not become healthy before the timeout."
     }
+
+    $addresses = @(
+        Get-NetIPAddress -AddressFamily IPv4 -ErrorAction SilentlyContinue |
+            Where-Object {
+                $_.IPAddress -notlike "127.*" -and
+                $_.IPAddress -notlike "169.254.*" -and
+                $_.InterfaceAlias -notmatch "Loopback|vEthernet|WSL|Docker"
+            } |
+            Select-Object -ExpandProperty IPAddress -Unique
+    )
+
+    if ($addresses -contains $PreferredLanIp) {
+        $lanFrontend = Invoke-WebRequest "$PreferredLanUrl/" -UseBasicParsing -TimeoutSec 3
+        $lanApi = Invoke-WebRequest "$PreferredLanUrl/api/v1/health" -UseBasicParsing -TimeoutSec 3
+        if ($lanFrontend.StatusCode -ne 200 -or $lanApi.StatusCode -ne 200) {
+            throw "Preferred LAN URL $PreferredLanUrl did not return healthy responses."
+        }
+    } else {
+        Write-Warning "Preferred LAN IP $PreferredLanIp is not assigned on this host. Frontend listens on 0.0.0.0:5173; open $PreferredLanUrl from LAN clients when this machine has that address."
+    }
 } catch {
     Stop-Process -Id $backendProcess.Id, $frontendProcess.Id -Force -ErrorAction SilentlyContinue
     Remove-Item $pidFile -Force -ErrorAction SilentlyContinue
@@ -158,16 +181,11 @@ if (-not $watchdogProcess) {
     Set-Content -Path $watchdogPidFile -Value $watchdogProcess.Id -Encoding ASCII
 }
 
-$addresses = Get-NetIPAddress -AddressFamily IPv4 -ErrorAction SilentlyContinue |
-    Where-Object {
-        $_.IPAddress -notlike "127.*" -and
-        $_.IPAddress -notlike "169.254.*" -and
-        $_.InterfaceAlias -notmatch "Loopback|vEthernet|WSL|Docker"
-    } |
-    Select-Object -ExpandProperty IPAddress -Unique
-
 Write-Host "StockPulse published successfully."
 Write-Host "Local: http://localhost:5173"
+Write-Host "LAN:   $PreferredLanUrl"
 foreach ($address in $addresses) {
-    Write-Host "LAN:   http://${address}:5173"
+    if ($address -ne $PreferredLanIp) {
+        Write-Host "LAN:   http://${address}:5173"
+    }
 }
