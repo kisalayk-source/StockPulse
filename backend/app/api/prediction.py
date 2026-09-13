@@ -112,13 +112,35 @@ async def _run_prediction(
     # Resolve credentials before threadpool so DB access stays on the request thread
     # (same keys overview/chart already use via market_provider_call).
     credentials = resolve_market_broker_credentials(session, services.settings, user)
+    service = _prediction_service(services)
+    enriched = await _enrich_feature_inputs(session, service, *args, **kwargs)
     return await run_in_threadpool(
         _prediction_with_credentials,
         credentials,
         function,
         *args,
-        **kwargs,
+        **enriched,
     )
+
+
+async def _enrich_feature_inputs(
+    session: Session,
+    service: Any,
+    *args: Any,
+    **kwargs: Any,
+) -> dict[str, Any]:
+    """Prefetch SEC events + Finnhub metrics on the request thread when flags are on."""
+    flags = service._feature_flags() if hasattr(service, "_feature_flags") else {}
+    ticker = args[0] if args else kwargs.get("ticker")
+    if not ticker:
+        return kwargs
+
+    out = dict(kwargs)
+    if flags.get("sec") and "sec_events" not in out:
+        out["sec_events"] = service.load_sec_event_dicts(session, str(ticker))
+    if flags.get("fundamentals") and "fundamentals_metrics" not in out:
+        out["fundamentals_metrics"] = await service.load_fundamentals_metrics(str(ticker))
+    return out
 
 
 @router.get("/stocks/{ticker}/prediction")

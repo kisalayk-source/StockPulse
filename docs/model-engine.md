@@ -16,11 +16,13 @@ This is separate from `forecasting.core.base.ForecastModel` (path adapters).
 - Target: forward return ≥ `return_threshold` (config; default `0.0`)
 - Artifacts cached in `backend/data/model_registry/`
 
-## Scaffolded
+## MVP-2 (implemented)
 
-- `LightGBMModel` — MVP-2
-- `KronosModel` directional adapter — MVP-2
-- Ensemble strategies in `ml/ensemble/` — MVP-2
-- Calibration hooks in `ml/calibration/` — identity passthrough until MVP-2
+- `LightGBMModel` — same feature/target interface as XGBoost; off by default
+- `KronosModel` directional adapter — maps path `forecast_change` → P(up) via sigmoid; off by default
+- Weighted ensemble (`equal_weight` / `performance_weighted`) over enabled members
+- Calibration: `identity` | `platt` | `isotonic` fitted on chronological holdout and stored with tree artifacts
+- Defaults keep XGB-only so CI/local stay light; enable Kronos/LightGBM in `ml/config/prediction.yaml`
+- Prefer `ensemble.strategy: performance_weighted` when running the full trio
 
 Config: `ml/config/prediction.yaml`.

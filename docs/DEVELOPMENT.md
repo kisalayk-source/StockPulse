@@ -56,7 +56,8 @@ Enable/disable models in `forecasting/config/models.yaml`.
 
 **Path forecast vs hybrid prediction:** `POST /forecast` returns an OHLCV path for
 the chart. Hybrid directional signals live under `ml/` and
-`GET /api/v1/stocks/{ticker}/prediction` (technical features → XGBoost in MVP-1).
+`GET /api/v1/stocks/{ticker}/prediction` (technical features → XGBoost in MVP-1;
+optional LightGBM + Kronos path→P(up) ensemble in MVP-2 when enabled in YAML).
 See [stock-prediction-architecture.md](./stock-prediction-architecture.md).
 
 ```bash
@@ -95,12 +96,12 @@ uvicorn app.main:app --reload
 Copy `backend/.env.example` to `backend/.env` only for local use. Tests use
 fakes; do not put real credentials in fixtures or commits.
 
-### Hybrid directional prediction (MVP-1)
+### Hybrid directional prediction (MVP-2)
 
-- Code: `ml/` (features, XGBoost adapter, decision engine, registry)
-- Config: `ml/config/prediction.yaml`
+- Code: `ml/` (features, XGBoost/LightGBM, Kronos directional adapter, ensemble, calibration, decision, registry)
+- Config: `ml/config/prediction.yaml` (Kronos/LightGBM off by default; set `calibration.method` to `platt`/`isotonic` as needed)
 - API: `GET /api/v1/stocks/{ticker}/prediction` (also `/features`, `/signals`, `/risk`, `/explanation`)
-- Docs: [stock-prediction-architecture.md](./stock-prediction-architecture.md), [api.md](./api.md)
+- Docs: [stock-prediction-architecture.md](./stock-prediction-architecture.md), [model-engine.md](./model-engine.md), [kronos.md](./kronos.md)
 
 ```bash
 # from repo root

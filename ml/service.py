@@ -1,22 +1,26 @@
-"""End-to-end hybrid prediction orchestration (MVP-1)."""
+"""End-to-end hybrid prediction orchestration (MVP-2 ensemble + calibration)."""
 
 from __future__ import annotations
 
 from datetime import datetime, timezone
 from pathlib import Path
 from time import perf_counter
-from typing import Any
+from typing import Any, Callable
 
+import numpy as np
 import pandas as pd
 
 from ml import FEATURE_VERSION
-from ml.calibration import calibrate_probability
+from ml.calibration import fit_calibrator
 from ml.config import get_prediction_config, horizon_to_bars, load_prediction_config
 from ml.data.loaders import bars_to_ohlcv, filter_bars_as_of
 from ml.decision import decide_signal
 from ml.ensemble import combine_probabilities, model_agreement
 from ml.explanation import explain_prediction
 from ml.features.feature_pipeline import build_feature_snapshot, compute_technical_frame
+from ml.models.artifact import CalibratedArtifact
+from ml.models.kronos import KronosModel
+from ml.models.lightgbm_model import LightGBMModel
 from ml.models.targets import add_forward_return_target
 from ml.models.xgboost_model import XGBoostModel
 from ml.observability import log_prediction
@@ -24,9 +28,11 @@ from ml.regime import classify_market_regime
 from ml.registry import ModelRegistry, ModelRecord
 from ml.risk import assess_risk
 
+PathForecastFn = Callable[[str, str, pd.DataFrame], dict[str, Any] | None]
+
 
 class PredictionEngine:
-    """Train/cache XGBoost (and future plugins) and emit signals with lineage."""
+    """Train/cache directional models, ensemble, calibrate, and emit signals."""
 
     def __init__(
         self,
@@ -35,6 +41,7 @@ class PredictionEngine:
         config_path: Path | str | None = None,
         registry: ModelRegistry | None = None,
         root_dir: Path | str | None = None,
+        path_forecast_fn: PathForecastFn | None = None,
     ) -> None:
         if config is not None:
             self.config = config
@@ -48,6 +55,10 @@ class PredictionEngine:
         if not store_path.is_absolute():
             store_path = self.root_dir / store_path
         self.registry = registry or ModelRegistry(store_path)
+        self.path_forecast_fn = path_forecast_fn
+
+    def set_path_forecast_fn(self, fn: PathForecastFn | None) -> None:
+        self.path_forecast_fn = fn
 
     def predict_from_bars(
         self,
@@ -57,9 +68,12 @@ class PredictionEngine:
         horizon: str = "5d",
         as_of: datetime | str | None = None,
         retrain: bool = False,
+        sec_events: list[dict[str, Any]] | None = None,
+        fundamentals_metrics: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         started = perf_counter()
         pred_cfg = self.config.get("prediction", {})
+        feature_flags = self.config.get("features") or {}
         feature_version = str(pred_cfg.get("feature_version") or FEATURE_VERSION)
         horizon_key = horizon.strip().lower()
         horizon_bars = horizon_to_bars(horizon_key)
@@ -76,16 +90,26 @@ class PredictionEngine:
         if len(ohlcv) > lookback:
             ohlcv = ohlcv.iloc[-lookback:].copy()
 
-        snapshot = build_feature_snapshot(ticker, ohlcv, as_of=ohlcv.index.max(), feature_version=feature_version)
+        snapshot = build_feature_snapshot(
+            ticker,
+            ohlcv,
+            as_of=ohlcv.index.max(),
+            feature_version=feature_version,
+            sec_events=sec_events if feature_flags.get("sec", False) else None,
+            fundamentals_metrics=fundamentals_metrics if feature_flags.get("fundamentals", False) else None,
+        )
         regime = classify_market_regime(ohlcv)
         snapshot.market_regime = regime
 
         model_probs: dict[str, float] = {}
         model_versions: dict[str, str] = {}
         training_cutoff = snapshot.data_cutoff
+        cal_method = str(self.config.get("calibration", {}).get("method", "identity")).lower()
 
         if self.config.get("models", {}).get("xgboost", {}).get("enabled", True):
-            xgb_prob, xgb_meta = self._xgboost_probability(
+            xgb_prob, xgb_meta = self._tree_probability(
+                model_type="xgboost",
+                model_cls=XGBoostModel,
                 ticker=ticker.upper(),
                 ohlcv=ohlcv,
                 horizon=horizon_key,
@@ -93,10 +117,39 @@ class PredictionEngine:
                 feature_version=feature_version,
                 snapshot_features=snapshot.technical,
                 retrain=retrain,
+                calibration_method=cal_method,
             )
             model_probs["xgboost"] = xgb_prob
             model_versions["xgboost"] = xgb_meta["model_version"]
             training_cutoff = xgb_meta["training_cutoff"]
+
+        if self.config.get("models", {}).get("lightgbm", {}).get("enabled", False):
+            lgb_prob, lgb_meta = self._tree_probability(
+                model_type="lightgbm",
+                model_cls=LightGBMModel,
+                ticker=ticker.upper(),
+                ohlcv=ohlcv,
+                horizon=horizon_key,
+                horizon_bars=horizon_bars,
+                feature_version=feature_version,
+                snapshot_features=snapshot.technical,
+                retrain=retrain,
+                calibration_method=cal_method,
+            )
+            model_probs["lightgbm"] = lgb_prob
+            model_versions["lightgbm"] = lgb_meta["model_version"]
+            training_cutoff = lgb_meta["training_cutoff"]
+
+        if self.config.get("models", {}).get("kronos", {}).get("enabled", False):
+            kronos_prob, kronos_meta = self._kronos_probability(
+                ticker=ticker.upper(),
+                ohlcv=ohlcv,
+                horizon=horizon_key,
+                volatility=snapshot.technical.get("rolling_volatility"),
+            )
+            if kronos_prob is not None:
+                model_probs["kronos"] = kronos_prob
+                model_versions["kronos"] = kronos_meta["model_version"]
 
         if not model_probs:
             raise RuntimeError("no enabled prediction models")
@@ -107,8 +160,8 @@ class PredictionEngine:
             for name in model_probs
         }
         raw_probability = combine_probabilities(model_probs, weights=weights, strategy=strategy)
-        cal_method = self.config.get("calibration", {}).get("method", "identity")
-        probability = calibrate_probability(raw_probability, method=cal_method)
+        # Tree members are already calibrated; ensemble raw is the final P(up).
+        probability = float(np.clip(raw_probability, 0.0, 1.0))
         agreement = model_agreement(model_probs)
 
         decision = decide_signal(
@@ -142,8 +195,9 @@ class PredictionEngine:
             "model_agreement": round(agreement, 6),
             "market_regime": regime,
             "technical_score": _technical_score(tech),
-            "institutional_score": None,
-            "fundamental_score": None,
+            "institutional_score": _institutional_score(snapshot.sec),
+            "fundamental_score": _fundamental_score(snapshot.fundamentals),
+            "calibration_method": cal_method,
         }
         explanation = explain_prediction(
             structured,
@@ -177,6 +231,7 @@ class PredictionEngine:
             "risk": risk,
             "market_regime": regime,
             "explanation": explanation,
+            "calibration_method": cal_method,
             "latency_ms": latency_ms,
         }
         log_prediction(
@@ -200,14 +255,45 @@ class PredictionEngine:
         bars: list[dict[str, Any]],
         *,
         as_of: datetime | str | None = None,
+        sec_events: list[dict[str, Any]] | None = None,
+        fundamentals_metrics: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
+        feature_flags = self.config.get("features") or {}
         ohlcv = bars_to_ohlcv(bars)
-        snapshot = build_feature_snapshot(ticker, ohlcv, as_of=as_of)
+        snapshot = build_feature_snapshot(
+            ticker,
+            ohlcv,
+            as_of=as_of,
+            sec_events=sec_events if feature_flags.get("sec", False) else None,
+            fundamentals_metrics=fundamentals_metrics if feature_flags.get("fundamentals", False) else None,
+        )
         return snapshot.to_dict()
 
-    def _xgboost_probability(
+    def _kronos_probability(
         self,
         *,
+        ticker: str,
+        ohlcv: pd.DataFrame,
+        horizon: str,
+        volatility: float | None,
+    ) -> tuple[float | None, dict[str, Any]]:
+        if self.path_forecast_fn is None:
+            return None, {"model_version": KronosModel.version}
+        try:
+            path_payload = self.path_forecast_fn(ticker, horizon, ohlcv)
+        except Exception:
+            return None, {"model_version": KronosModel.version}
+        if not path_payload:
+            return None, {"model_version": KronosModel.version}
+        adapter = KronosModel()
+        probability = adapter.set_path(path_payload, volatility=volatility)
+        return probability, {"model_version": adapter.version, "model_id": f"kronos:{ticker}:{horizon}"}
+
+    def _tree_probability(
+        self,
+        *,
+        model_type: str,
+        model_cls: type,
         ticker: str,
         ohlcv: pd.DataFrame,
         horizon: str,
@@ -215,22 +301,19 @@ class PredictionEngine:
         feature_version: str,
         snapshot_features: dict[str, float],
         retrain: bool,
+        calibration_method: str,
     ) -> tuple[float, dict[str, Any]]:
-        key = self.registry.key(ticker, horizon, feature_version, "xgboost")
-        model: XGBoostModel | None = None
+        key = self.registry.key(ticker, horizon, feature_version, model_type)
+        artifact: CalibratedArtifact | None = None
         training_cutoff = ohlcv.index.max().to_pydatetime()
         if training_cutoff.tzinfo is None:
             training_cutoff = training_cutoff.replace(tzinfo=timezone.utc)
 
         if not retrain:
             cached = self.registry.load_artifact(key)
-            if isinstance(cached, XGBoostModel):
-                model = cached
-                record = self.registry.get(key)
-                if record and record.training_cutoff:
-                    training_cutoff = datetime.fromisoformat(record.training_cutoff)
+            artifact = _coerce_artifact(cached, calibration_method=calibration_method)
 
-        if model is None:
+        if artifact is None:
             feature_frame = compute_technical_frame(ohlcv)
             threshold = float(self.config.get("prediction", {}).get("return_threshold", 0.0))
             dataset = add_forward_return_target(
@@ -244,33 +327,82 @@ class PredictionEngine:
                 raise ValueError(
                     f"need at least {min_rows} training rows after features/labels; got {len(dataset)}"
                 )
-            params = self.config.get("models", {}).get("xgboost", {}).get("params") or {}
-            model = XGBoostModel(params=params)
-            model.train(dataset)
-            # Training cutoff is last label row timestamp (no future labels used)
+            params = self.config.get("models", {}).get(model_type, {}).get("params") or {}
+            model = model_cls(params=params)
+            artifact = _train_with_holdout_calibration(model, dataset, method=calibration_method)
             training_cutoff = dataset.index.max().to_pydatetime()
             if training_cutoff.tzinfo is None:
                 training_cutoff = training_cutoff.replace(tzinfo=timezone.utc)
             record = ModelRecord(
                 model_id=key,
-                model_type="xgboost",
-                version=model.version,
+                model_type=model_type,
+                version=getattr(model, "version", "1.0"),
                 feature_version=feature_version,
                 prediction_horizon=horizon,
                 training_period=f"{dataset.index.min().date()}→{dataset.index.max().date()}",
                 training_timestamp=ModelRegistry.utc_now_iso(),
                 training_cutoff=training_cutoff.isoformat(),
-                validation_metrics={"train_rows": float(model.training_rows)},
+                validation_metrics={
+                    "train_rows": float(getattr(model, "training_rows", 0) or 0),
+                    "calibration": 1.0 if artifact.calibrator is not None else 0.0,
+                },
                 status="active",
             )
-            self.registry.save(key, model=model, record=record)
+            self.registry.save(key, model=artifact, record=record)
 
-        probability = model.predict_probability(snapshot_features)
+        probability = artifact.predict_probability(snapshot_features)
         return probability, {
-            "model_version": model.version,
+            "model_version": getattr(artifact.model, "version", "1.0"),
             "training_cutoff": training_cutoff,
             "model_id": key,
         }
+
+
+def _coerce_artifact(cached: Any, *, calibration_method: str) -> CalibratedArtifact | None:
+    if isinstance(cached, CalibratedArtifact):
+        return cached
+    if isinstance(cached, (XGBoostModel, LightGBMModel)):
+        # Legacy pickle from MVP-1 — wrap without calibrator.
+        return CalibratedArtifact(model=cached, calibrator=None, calibration_method="identity")
+    return None
+
+
+def _train_with_holdout_calibration(
+    model: Any,
+    dataset: pd.DataFrame,
+    *,
+    method: str,
+) -> CalibratedArtifact:
+    method = str(method or "identity").lower()
+    n = len(dataset)
+    if method == "identity" or n < 40:
+        model.train(dataset)
+        return CalibratedArtifact(model=model, calibrator=None, calibration_method="identity")
+
+    split = max(int(n * 0.8), n - max(12, int(n * 0.2)))
+    split = min(split, n - 8)
+    if split < 20:
+        model.train(dataset)
+        return CalibratedArtifact(model=model, calibrator=None, calibration_method="identity")
+
+    train_ds = dataset.iloc[:split]
+    hold_ds = dataset.iloc[split:]
+    model.train(train_ds)
+
+    probs: list[float] = []
+    labels: list[float] = []
+    feature_cols = [c for c in hold_ds.columns if c not in {"target", "forward_return"}]
+    for _, row in hold_ds.iterrows():
+        feats = {c: float(row[c]) for c in feature_cols if pd.notna(row[c])}
+        try:
+            probs.append(float(model.predict_probability(feats)))
+            labels.append(float(row["target"]))
+        except Exception:
+            continue
+
+    calibrator = fit_calibrator(labels, probs, method)
+    applied = method if calibrator is not None else "identity"
+    return CalibratedArtifact(model=model, calibrator=calibrator, calibration_method=applied)
 
 
 def _technical_score(technical: dict[str, float]) -> float | None:
@@ -278,7 +410,6 @@ def _technical_score(technical: dict[str, float]) -> float | None:
     present = [technical[k] for k in keys if k in technical]
     if not present:
         return None
-    # Normalize a few features into a rough 0-1 research score (not a trade rule).
     rsi = technical.get("rsi")
     dist = technical.get("distance_from_sma50")
     score = 0.5
@@ -287,3 +418,41 @@ def _technical_score(technical: dict[str, float]) -> float | None:
     if dist is not None:
         score += max(-0.2, min(0.2, dist))
     return round(max(0.0, min(1.0, score)), 4)
+
+
+def _institutional_score(sec: dict[str, float]) -> float | None:
+    """Map SEC flow component scores (0–100) to a 0–1 institutional score."""
+    keys = ("inst_flow_score", "insider_flow_score", "ownership_flow_score")
+    present = [sec[k] for k in keys if k in sec]
+    if not present:
+        return None
+    return round(max(0.0, min(1.0, (sum(present) / len(present)) / 100.0)), 4)
+
+
+def _fundamental_score(fundamentals: dict[str, float]) -> float | None:
+    """Map Finnhub metrics to a 0–1 confirmation-style fundamental score."""
+    if not fundamentals:
+        return None
+    score = 50.0
+    rev_growth = fundamentals.get("revenue_growth")
+    eps_growth = fundamentals.get("eps_growth")
+    roic = fundamentals.get("roic")
+    pe = fundamentals.get("pe_ratio")
+    if rev_growth is not None:
+        if rev_growth > 0.05:
+            score += 10.0
+        elif rev_growth < 0:
+            score -= 10.0
+    if eps_growth is not None:
+        if eps_growth > 0.05:
+            score += 10.0
+        elif eps_growth < 0:
+            score -= 10.0
+    if roic is not None and roic > 0.1:
+        score += 5.0
+    if pe is not None and pe > 35:
+        score -= 8.0
+    return round(max(0.0, min(1.0, max(0.0, min(100.0, score)) / 100.0)), 4)
+
+
+__all__ = ["PredictionEngine"]

@@ -12,6 +12,8 @@ from ml import FEATURE_VERSION
 from ml.data import FeatureSnapshot
 from ml.data.loaders import filter_bars_as_of
 from ml.features.feature_schema import normalize_feature_dict
+from ml.features.fundamentals import compute_fundamental_features
+from ml.features.sec import compute_sec_features
 from ml.features.technical import (
     atr_features,
     atr_series,
@@ -76,6 +78,8 @@ def build_feature_snapshot(
     as_of: datetime | pd.Timestamp | str | None = None,
     sec: dict[str, float] | None = None,
     fundamentals: dict[str, float] | None = None,
+    sec_events: list[dict[str, Any]] | None = None,
+    fundamentals_metrics: dict[str, Any] | None = None,
     market_regime: dict[str, Any] | None = None,
     feature_version: str = FEATURE_VERSION,
 ) -> FeatureSnapshot:
@@ -100,6 +104,15 @@ def build_feature_snapshot(
     ts = point_in_time.index.max().to_pydatetime()
     if ts.tzinfo is None:
         ts = ts.replace(tzinfo=timezone.utc)
+
+    cutoff_dt = cutoff.to_pydatetime() if hasattr(cutoff, "to_pydatetime") else ts
+    if getattr(cutoff_dt, "tzinfo", None) is None:
+        cutoff_dt = cutoff_dt.replace(tzinfo=timezone.utc)
+
+    if sec is None and sec_events is not None:
+        sec = compute_sec_features(sec_events, as_of=cutoff_dt)
+    if fundamentals is None and fundamentals_metrics is not None:
+        fundamentals = compute_fundamental_features(fundamentals_metrics)
 
     return FeatureSnapshot(
         ticker=ticker.upper(),

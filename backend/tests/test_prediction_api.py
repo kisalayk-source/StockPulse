@@ -34,6 +34,9 @@ class FakeSec:
     async def sync_ticker(self, *args, **kwargs):
         return None
 
+    def load_normalized_events(self, session, ticker):
+        return []
+
     def scan_status(self):
         return {"status": "idle", "scanned": 0, "total": 0, "errors": []}
 
@@ -52,7 +55,17 @@ class FakeFinnhub:
         return {}
 
     async def extended_fundamentals(self, symbol: str) -> dict:
-        return {}
+        return {
+            "pe_ratio": 22.0,
+            "market_cap": 1e12,
+            "dividend_yield": 0.005,
+            "eps": 6.0,
+            "revenue_growth": 0.08,
+            "eps_growth": 0.1,
+            "roic": 0.15,
+            "fcf_margin": 0.2,
+            "debt_to_equity": 1.2,
+        }
 
     async def company_news(self, symbol: str, limit: int) -> list[dict]:
         return []
@@ -180,7 +193,16 @@ class RichFakeAlpaca:
 
 
 class FakePrediction:
-    def predict(self, ticker: str, *, horizon: str = "5d", retrain: bool = False) -> dict:
+    def _feature_flags(self) -> dict[str, bool]:
+        return {"sec": False, "fundamentals": False}
+
+    def load_sec_event_dicts(self, session, ticker: str) -> list[dict]:
+        return []
+
+    async def load_fundamentals_metrics(self, ticker: str) -> dict:
+        return {}
+
+    def predict(self, ticker: str, *, horizon: str = "5d", retrain: bool = False, **kwargs) -> dict:
         return {
             "ticker": ticker.upper(),
             "timestamp": "2026-08-12T18:00:00+00:00",
@@ -195,8 +217,8 @@ class FakePrediction:
             "model_confidence": 1.0,
             "data_confidence": 1.0,
             "signal_confidence": 0.76,
-            "model_predictions": {"xgboost": 0.72},
-            "model_versions": {"xgboost": "1.0"},
+            "model_predictions": {"xgboost": 0.72, "kronos": 0.61, "lightgbm": 0.68},
+            "model_versions": {"xgboost": "1.0", "kronos": "1.0", "lightgbm": "1.0"},
             "model_agreement": 1.0,
             "feature_version": "1.0.0",
             "feature_snapshot": {"ticker": ticker.upper(), "technical": {"rsi": 55.0}},
@@ -204,6 +226,7 @@ class FakePrediction:
             "decision": {"signal": "BUY", "probability": 0.72},
             "risk": {"risk_score": 0.31, "confidence_score": 0.76},
             "market_regime": {"regime": "BULL"},
+            "calibration_method": "identity",
             "explanation": {
                 "text": f"{ticker.upper()} is rated BUY with a 72% estimated probability of positive movement over the {horizon} horizon.",
                 "provider": "template",
@@ -212,10 +235,10 @@ class FakePrediction:
             "latency_ms": 1.2,
         }
 
-    def features(self, ticker: str) -> dict:
+    def features(self, ticker: str, **kwargs) -> dict:
         return {"ticker": ticker.upper(), "technical": {"rsi": 55.0}, "feature_version": "1.0.0"}
 
-    def signals(self, ticker: str, *, horizon: str = "5d") -> dict:
+    def signals(self, ticker: str, *, horizon: str = "5d", **kwargs) -> dict:
         result = self.predict(ticker, horizon=horizon)
         return {
             "ticker": result["ticker"],
@@ -228,7 +251,7 @@ class FakePrediction:
             "decision": result["decision"],
         }
 
-    def risk(self, ticker: str, *, horizon: str = "5d") -> dict:
+    def risk(self, ticker: str, *, horizon: str = "5d", **kwargs) -> dict:
         result = self.predict(ticker, horizon=horizon)
         return {
             "ticker": result["ticker"],
@@ -240,7 +263,7 @@ class FakePrediction:
             "note": "Signal risk engine",
         }
 
-    def explanation(self, ticker: str, *, horizon: str = "5d") -> dict:
+    def explanation(self, ticker: str, *, horizon: str = "5d", **kwargs) -> dict:
         result = self.predict(ticker, horizon=horizon)
         return {
             "ticker": result["ticker"],
@@ -282,6 +305,9 @@ def test_prediction_api_endpoints() -> None:
         assert body["signal"] == "BUY"
         assert body["probability"] == 0.72
         assert "xgboost" in body["model_predictions"]
+        assert "kronos" in body["model_predictions"]
+        assert "lightgbm" in body["model_predictions"]
+        assert len(body["model_predictions"]) >= 2
 
         features = client.get("/api/v1/stocks/AAPL/features", headers=headers)
         assert features.status_code == 200
@@ -299,13 +325,13 @@ def test_prediction_uses_saved_user_alpaca_credentials() -> None:
     from app.auth import current_trading_credentials
 
     class CredentialAwarePrediction(FakePrediction):
-        def predict(self, ticker: str, *, horizon: str = "5d", retrain: bool = False) -> dict:
+        def predict(self, ticker: str, *, horizon: str = "5d", retrain: bool = False, **kwargs) -> dict:
             credentials = current_trading_credentials()
             assert credentials is not None
             assert credentials.key == "PKTESTKEY123456"
             return super().predict(ticker, horizon=horizon, retrain=retrain)
 
-        def features(self, ticker: str) -> dict:
+        def features(self, ticker: str, **kwargs) -> dict:
             credentials = current_trading_credentials()
             assert credentials is not None
             return super().features(ticker)

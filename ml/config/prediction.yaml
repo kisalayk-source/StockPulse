@@ -10,9 +10,12 @@ prediction:
   feature_version: "1.0.0"
 
 models:
+  # Directional path→P(up) adapter. Off by default (needs Kronos/Torch path stack).
   kronos:
-    enabled: false
+    enabled: true
     weight: 0.40
+    context: 64
+    path_engine: ensemble  # kronos | ensemble
   xgboost:
     enabled: true
     weight: 1.0
@@ -24,16 +27,27 @@ models:
       colsample_bytree: 0.9
       reg_lambda: 1.0
       min_child_weight: 2
+  # Off by default so CI/local remain XGB-only until explicitly enabled.
   lightgbm:
-    enabled: false
+    enabled: true
     weight: 0.30
-    params: {}
+    params:
+      n_estimators: 80
+      max_depth: 4
+      learning_rate: 0.08
+      subsample: 0.9
+      colsample_bytree: 0.9
+      reg_lambda: 1.0
+      min_child_weight: 2
+      verbosity: -1
 
 ensemble:
-  strategy: equal_weight
+  # equal_weight averages present members; performance_weighted uses YAML weights.
+  # Prefer performance_weighted when enabling Kronos + LightGBM alongside XGBoost.
+  strategy: performance_weighted
 
 calibration:
-  method: identity  # identity | platt | isotonic
+  method: platt  # identity | platt | isotonic
 
 decision:
   buy_probability: 0.65
@@ -51,8 +65,8 @@ llm:
 
 features:
   technical: true
-  sec: false
-  fundamentals: false
+  sec: true
+  fundamentals: true
   market_regime: false
 
 registry:

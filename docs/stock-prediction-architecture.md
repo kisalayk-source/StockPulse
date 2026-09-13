@@ -99,10 +99,10 @@ Unit tests assert that feature computation at `T` ignores later bars/filings.
 
 ## MVP sequence
 
-1. **MVP-1 (current):** Market → technical features → XGBoost → probability → BUY/HOLD/SELL + API
-2. **MVP-2:** Kronos directional adapter, LightGBM, ensemble, calibration
-3. **MVP-3:** SEC flow features (PIT-safe)
-4. **MVP-4:** Fundamental features
+1. **MVP-1:** Market → technical features → XGBoost → probability → BUY/HOLD/SELL + API
+2. **MVP-2 (done):** Kronos directional adapter, LightGBM, weighted ensemble, Platt/isotonic calibration (Kronos/LGBM off by default)
+3. **MVP-3 (done):** SEC flow features (PIT-safe) into `FeatureSnapshot.sec`
+4. **MVP-4 (done):** Fundamental features from Finnhub into `FeatureSnapshot.fundamentals`
 5. **MVP-5:** Independent signal risk engine
 6. **MVP-6:** Walk-forward, ablation, SHAP, registry metrics
 7. **MVP-7:** LLM explanation from structured results only
