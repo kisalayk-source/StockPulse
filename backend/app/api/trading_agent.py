@@ -49,6 +49,7 @@ def _trading_credentials(
     config: Any,
     *,
     requested_mode: str | None = None,
+    required: bool = True,
 ) -> Iterator[None]:
     """Bind Settings Alpaca keys when the agent routes orders through Alpaca."""
     agent = _agent(request)
@@ -57,7 +58,13 @@ def _trading_credentials(
         return
     services = get_services(request)
     mode = _broker_mode(config, requested_mode=requested_mode)
-    credentials = get_user_broker_credentials(session, services.settings, user, mode)
+    try:
+        credentials = get_user_broker_credentials(session, services.settings, user, mode)
+    except HTTPException:
+        if required:
+            raise
+        yield
+        return
     with use_trading_credentials(credentials):
         yield
 
@@ -66,7 +73,8 @@ def _trading_credentials(
 def get_config(request: Request, user: UserDep, session: SessionDep) -> dict[str, Any]:
     agent = _agent(request)
     config = _config(session, user, agent)
-    return agent.config_payload(session, config)
+    with _trading_credentials(request, session, user, config, required=False):
+        return agent.config_payload(session, config)
 
 
 @router.put("/trading-agent/config")
@@ -83,7 +91,8 @@ def put_config(
         agent.update_config(session, config, body.model_dump(exclude_unset=True))
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
-    return agent.config_payload(session, config)
+    with _trading_credentials(request, session, user, config, required=False):
+        return agent.config_payload(session, config)
 
 
 @router.post("/trading-agent/start")
@@ -99,9 +108,9 @@ def start_agent(
     try:
         with _trading_credentials(request, session, user, config, requested_mode=body.mode):
             agent.start(session, config, mode=body.mode, live_confirmation=body.live_confirmation)
+            return agent.config_payload(session, config)
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
-    return agent.config_payload(session, config)
 
 
 @router.post("/trading-agent/pause")
@@ -113,7 +122,8 @@ def pause_agent(request: Request, user: UserDep, session: SessionDep) -> dict[st
         agent.pause(session, config)
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
-    return agent.config_payload(session, config)
+    with _trading_credentials(request, session, user, config, required=False):
+        return agent.config_payload(session, config)
 
 
 @router.post("/trading-agent/resume")
@@ -124,9 +134,9 @@ def resume_agent(request: Request, user: UserDep, session: SessionDep) -> dict[s
     try:
         with _trading_credentials(request, session, user, config):
             agent.resume(session, config)
+            return agent.config_payload(session, config)
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
-    return agent.config_payload(session, config)
 
 
 @router.post("/trading-agent/emergency-stop")
@@ -136,7 +146,7 @@ def emergency_stop(request: Request, user: UserDep, session: SessionDep) -> dict
     config = _config(session, user, agent)
     with _trading_credentials(request, session, user, config):
         agent.emergency_stop(session, config)
-    return agent.config_payload(session, config)
+        return agent.config_payload(session, config)
 
 
 @router.post("/trading-agent/cycle")
@@ -204,7 +214,8 @@ def get_orders(request: Request, user: UserDep, session: SessionDep) -> dict[str
 def get_positions(request: Request, user: UserDep, session: SessionDep) -> dict[str, Any]:
     agent = _agent(request)
     config = _config(session, user, agent)
-    return {"positions": agent.list_positions(session, config)}
+    with _trading_credentials(request, session, user, config, required=False):
+        return {"positions": agent.list_positions(session, config)}
 
 
 @router.get("/trading-agent/events")
@@ -218,14 +229,15 @@ def get_events(request: Request, user: UserDep, session: SessionDep) -> dict[str
 def get_performance(request: Request, user: UserDep, session: SessionDep) -> dict[str, Any]:
     agent = _agent(request)
     config = _config(session, user, agent)
-    return agent.performance(session, config)
+    with _trading_credentials(request, session, user, config, required=False):
+        return agent.performance(session, config)
 
 
 @router.get("/trading-agent/daily-loss")
 def get_daily_loss(request: Request, user: UserDep, session: SessionDep) -> dict[str, Any]:
     agent = _agent(request)
     config = _config(session, user, agent)
-    with _trading_credentials(request, session, user, config):
+    with _trading_credentials(request, session, user, config, required=False):
         return agent.get_daily_loss_snapshot(session, config)
 
 

@@ -11,6 +11,7 @@ from uuid import uuid4
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session
 
+from app.services.providers import ProviderUnavailable
 from app.trading_agent.broker import (
     AlpacaBrokerAdapter,
     BrokerAdapter,
@@ -390,7 +391,10 @@ class TradingAgentService:
         return snapshot.to_dict()
 
     def get_daily_loss_snapshot(self, session: Session, config: AgentConfig) -> dict[str, Any]:
-        return self.refresh_daily_loss(session, config)
+        try:
+            return self.refresh_daily_loss(session, config)
+        except ProviderUnavailable as exc:
+            return self._unavailable_daily_loss(config, str(exc))
 
     def reset_daily_loss(self, session: Session, config: AgentConfig) -> dict[str, Any]:
         self.ensure_daily_loss_record(session, config, reset=True)
@@ -866,7 +870,11 @@ class TradingAgentService:
     # ── queries ──────────────────────────────────────────────────────
 
     def config_payload(self, session: Session, config: AgentConfig) -> dict[str, Any]:
-        daily = self.get_daily_loss_snapshot(session, config)
+        try:
+            daily = self.get_daily_loss_snapshot(session, config)
+        except ProviderUnavailable as exc:
+            # Keep the agent panel loadable when Alpaca keys are missing/unbound.
+            daily = self._unavailable_daily_loss(config, str(exc))
         return {
             "id": config.id,
             "name": config.name,
@@ -885,6 +893,41 @@ class TradingAgentService:
             "daily_loss": daily,
             "created_at": config.created_at.isoformat() if config.created_at else None,
             "updated_at": config.updated_at.isoformat() if config.updated_at else None,
+        }
+
+    def _unavailable_daily_loss(self, config: AgentConfig, reason: str) -> dict[str, Any]:
+        risk = self.resolved_risk_config(config)
+        tz = str(risk.get("daily_loss_timezone") or "America/Los_Angeles")
+        reset = str(risk.get("daily_loss_reset_time") or "00:00")
+        now = datetime.now(timezone.utc)
+        trading_day = trading_date_for(now, tz, reset)
+        starting = float(risk.get("starting_capital") or config.capital_allocation or 0)
+        return {
+            "trading_date": trading_day.isoformat(),
+            "timezone": tz,
+            "starting_equity": starting,
+            "current_equity": starting,
+            "realized_pnl": 0.0,
+            "unrealized_pnl": 0.0,
+            "trading_fees": 0.0,
+            "today_pnl": 0.0,
+            "daily_loss": 0.0,
+            "daily_loss_percent": 0.0,
+            "max_daily_loss_amount": risk.get("max_daily_loss_amount"),
+            "max_daily_loss_percent": risk.get("max_daily_loss_percent"),
+            "effective_limit": None,
+            "remaining_daily_loss": None,
+            "status": "active",
+            "limit_reached": False,
+            "enabled": bool(risk.get("max_daily_loss_enabled", True)),
+            "calculation": str(risk.get("daily_loss_calculation") or "realized_plus_unrealized"),
+            "action": str(risk.get("daily_loss_action") or "cancel_orders_and_pause"),
+            "last_reset_at": None,
+            "next_reset_at": None,
+            "warning_threshold_pct": float(risk.get("daily_loss_warning_threshold_pct") or 50),
+            "critical_threshold_pct": float(risk.get("daily_loss_critical_threshold_pct") or 80),
+            "utilization_pct": 0.0,
+            "warnings": [reason or "Alpaca credentials unavailable"],
         }
 
     def list_candidates(self, session: Session, config: AgentConfig, limit: int = 100) -> list[dict[str, Any]]:
@@ -969,7 +1012,10 @@ class TradingAgentService:
         return payload
 
     def list_positions(self, session: Session, config: AgentConfig) -> list[dict[str, Any]]:
-        self._sync_positions(session, config, self._broker_for(config, session=session))
+        try:
+            self._sync_positions(session, config, self._broker_for(config, session=session))
+        except ProviderUnavailable:
+            pass
         rows = (
             session.query(AgentPosition)
             .filter(AgentPosition.user_id == config.user_id, AgentPosition.quantity != 0)
@@ -1030,7 +1076,12 @@ class TradingAgentService:
         filled = [o for o in orders if o["status"] == "filled"]
         broker = self._broker_for(config, session=session)
         # Persist any flat realized rows before reading.
-        self._sync_positions(session, config, broker)
+        try:
+            self._sync_positions(session, config, broker)
+            account = broker.get_account()
+            account_equity: float | None = float(account.equity)
+        except ProviderUnavailable:
+            account_equity = None
         all_rows = (
             session.query(AgentPosition)
             .filter(AgentPosition.agent_config_id == config.id)
@@ -1038,7 +1089,7 @@ class TradingAgentService:
         )
         open_rows = [r for r in all_rows if abs(float(r.quantity or 0)) > 1e-9]
         realized = sum(float(r.realized_pnl or 0) for r in all_rows)
-        if isinstance(broker, PaperBrokerAdapter):
+        if account_equity is not None and isinstance(broker, PaperBrokerAdapter):
             # Prefer live paper ledger when it is ahead of DB (same process, pre-commit edge).
             broker_realized = float(broker.realized_pnl)
             if abs(broker_realized) >= abs(realized) - 1e-9:
@@ -1066,12 +1117,12 @@ class TradingAgentService:
             px = float(order.get("average_fill_price") or 0)
             if qty > 0 and px > 0:
                 proceeds_from_exits += qty * px
-        account = broker.get_account()
-        if isinstance(broker, PaperBrokerAdapter):
+        if account_equity is not None and isinstance(broker, PaperBrokerAdapter):
             starting_capital = float(broker.starting_cash)
         else:
             starting_capital = float(config.capital_allocation or 0)
-        account_equity = float(account.equity)
+        if account_equity is None:
+            account_equity = starting_capital + realized + unrealized
         equity_change = account_equity - starting_capital
         events = (
             session.query(AgentEvent)

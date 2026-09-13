@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import threading
+from contextlib import nullcontext
 from datetime import datetime, timezone
 from typing import Any
 
@@ -12,6 +13,28 @@ from app.trading_agent.models import AgentConfig
 logger = logging.getLogger("app.trading_agent.scheduler")
 
 DEFAULT_TICK_SECONDS = 15.0
+
+
+def _credentials_for_config(session: Any, settings: Any, config: AgentConfig):
+    """Load Settings-saved Alpaca keys for this agent config, if present."""
+    if settings is None:
+        return None
+    from app.auth import BrokerCredentials
+    from app.models import AlpacaCredential
+    from app.security import decrypt_secret
+
+    mode = "live" if config.mode == "live" and config.live_trading_enabled else "paper"
+    row = (
+        session.query(AlpacaCredential)
+        .filter(
+            AlpacaCredential.user_id == config.user_id,
+            AlpacaCredential.mode == mode,
+        )
+        .one_or_none()
+    )
+    if row is None:
+        return None
+    return BrokerCredentials(key=row.key_id, secret=decrypt_secret(settings, row.secret_encrypted))
 
 
 class AgentCycleScheduler:
@@ -124,24 +147,49 @@ class AgentCycleScheduler:
             if config is None or config.status not in {"paper", "live"} or not config.forecast_enabled:
                 return False
 
-            market_open = True
-            alpaca = getattr(self._services, "alpaca", None)
-            if alpaca is not None:
-                try:
-                    clock = alpaca.market_clock("paper")
-                    market_open = bool(clock.get("is_open")) if isinstance(clock, dict) else True
-                except Exception:
-                    market_open = True
-
             agent = self._services.trading_agent
-            try:
-                agent.run_cycle(session, config, execute=True, market_open=market_open)
-                session.commit()
-                logger.info(
-                    "trading_agent_auto_cycle_completed",
-                    extra={"config_id": config_id, "market_open": market_open},
+            settings = getattr(self._services, "settings", None) or getattr(agent, "settings", None)
+            credentials = _credentials_for_config(session, settings, config)
+            # Real AlpacaService needs bound keys; FakeAlpaca / paper sim do not.
+            needs_creds = getattr(agent, "alpaca", None) is not None and hasattr(
+                getattr(agent, "alpaca", None), "_credentials"
+            )
+            if needs_creds and credentials is None:
+                logger.warning(
+                    "trading_agent_auto_cycle_skipped_no_credentials",
+                    extra={"config_id": config_id, "user_id": config.user_id},
                 )
-                return True
+                return False
+
+            from app.auth import use_trading_credentials
+            from app.services.providers import ProviderUnavailable
+
+            cred_ctx = use_trading_credentials(credentials) if credentials else nullcontext()
+            try:
+                with cred_ctx:
+                    market_open = True
+                    alpaca = getattr(self._services, "alpaca", None)
+                    if alpaca is not None:
+                        try:
+                            clock = alpaca.market_clock("paper")
+                            market_open = bool(clock.get("is_open")) if isinstance(clock, dict) else True
+                        except Exception:
+                            market_open = True
+
+                    agent.run_cycle(session, config, execute=True, market_open=market_open)
+                    session.commit()
+                    logger.info(
+                        "trading_agent_auto_cycle_completed",
+                        extra={"config_id": config_id, "market_open": market_open},
+                    )
+                    return True
+            except ProviderUnavailable:
+                session.rollback()
+                logger.warning(
+                    "trading_agent_auto_cycle_skipped_provider_unavailable",
+                    extra={"config_id": config_id},
+                )
+                return False
             except Exception:
                 session.rollback()
                 # Stamp last_cycle_at so a hard failure does not tight-loop every tick.

@@ -271,6 +271,41 @@ def test_paper_start_requires_alpaca_credentials_when_broker_configured():
         assert "alpaca" in resp.json()["detail"].lower()
 
 
+def test_config_loads_with_alpaca_credentials_bound():
+    client, _agent, _paper, _alpaca = make_agent_client(use_alpaca=True)
+    with client:
+        headers = register_headers(client, with_alpaca=True)
+        resp = client.get("/api/v1/trading-agent/config", headers=headers)
+        assert resp.status_code == 200, resp.text
+        assert "daily_loss" in resp.json()
+        assert "current_equity" in resp.json()["daily_loss"]
+        perf = client.get("/api/v1/trading-agent/performance", headers=headers)
+        assert perf.status_code == 200, perf.text
+        assert "total_pnl" in perf.json()
+        positions = client.get("/api/v1/trading-agent/positions", headers=headers)
+        assert positions.status_code == 200, positions.text
+
+
+def test_config_payload_soft_fails_on_provider_unavailable():
+    from app.services.providers import ProviderUnavailable
+
+    client, agent, _paper, _alpaca = make_agent_client(use_alpaca=True)
+    with client:
+        headers = register_headers(client, with_alpaca=True)
+        me = client.get("/api/v1/auth/me", headers=headers).json()
+        session = _db_session()
+        config = agent.get_or_create_config(session, me["id"])
+
+        def boom(*_args, **_kwargs):
+            raise ProviderUnavailable("alpaca", "Alpaca paper credentials are not configured")
+
+        agent.get_daily_loss_snapshot = boom  # type: ignore[method-assign]
+        payload = agent.config_payload(session, config)
+        warnings = payload["daily_loss"].get("warnings") or []
+        assert any("credential" in str(w).lower() for w in warnings)
+        session.close()
+
+
 def test_duplicate_orders_prevented():
     client, agent, _paper_brokers, _alpaca = make_agent_client()
     with client:
@@ -742,7 +777,7 @@ def test_trades_today_ignores_prior_session_fills():
 
 
 def test_start_resets_last_cycle_at_for_auto_cycle():
-    client, agent, _ = make_agent_client()
+    client, agent, _paper_brokers, _alpaca = make_agent_client()
     with client:
         headers = register_headers(client)
         client.put(
@@ -766,7 +801,7 @@ def test_start_resets_last_cycle_at_for_auto_cycle():
 def test_scheduler_selects_only_running_configs_and_respects_interval():
     from app.trading_agent.scheduler import AgentCycleScheduler
 
-    client, agent, _ = make_agent_client()
+    client, agent, _paper_brokers, _alpaca = make_agent_client()
     with client:
         headers = register_headers(client)
         client.put(
@@ -798,7 +833,7 @@ def test_scheduler_selects_only_running_configs_and_respects_interval():
 def test_scheduler_skips_paused_agent():
     from app.trading_agent.scheduler import AgentCycleScheduler
 
-    client, agent, _ = make_agent_client()
+    client, agent, _paper_brokers, _alpaca = make_agent_client()
     with client:
         headers = register_headers(client)
         client.post("/api/v1/trading-agent/start", json={"mode": "paper"}, headers=headers)
@@ -811,7 +846,7 @@ def test_scheduler_skips_paused_agent():
 def test_scheduler_overlap_guard_skips_busy_config():
     from app.trading_agent.scheduler import AgentCycleScheduler
 
-    client, agent, _ = make_agent_client()
+    client, agent, _paper_brokers, _alpaca = make_agent_client()
     with client:
         headers = register_headers(client)
         start = client.post("/api/v1/trading-agent/start", json={"mode": "paper"}, headers=headers).json()
@@ -827,7 +862,7 @@ def test_scheduler_overlap_guard_skips_busy_config():
 
 
 def test_all_rejected_cycle_auto_adjusts_risk():
-    client, agent, paper_brokers = make_agent_client()
+    client, agent, paper_brokers, _alpaca = make_agent_client()
     with client:
         headers = register_headers(client)
         client.put(
@@ -866,7 +901,7 @@ def test_all_rejected_cycle_auto_adjusts_risk():
 
 
 def test_auto_adjust_skipped_when_only_market_closed_rejects():
-    client, agent, _ = make_agent_client()
+    client, agent, _paper_brokers, _alpaca = make_agent_client()
     with client:
         headers = register_headers(client)
         client.put(
@@ -899,7 +934,7 @@ def test_auto_adjust_skipped_when_only_market_closed_rejects():
 
 
 def test_auto_adjust_respects_daily_cap():
-    client, agent, paper_brokers = make_agent_client()
+    client, agent, paper_brokers, _alpaca = make_agent_client()
     with client:
         headers = register_headers(client)
         client.put(
@@ -949,7 +984,7 @@ def test_auto_adjust_respects_daily_cap():
 
 
 def test_paper_broker_hydrates_positions_after_restart():
-    client, agent, paper_brokers = make_agent_client()
+    client, agent, paper_brokers, _alpaca = make_agent_client()
     with client:
         headers = register_headers(client)
         client.put(
@@ -979,7 +1014,7 @@ def test_paper_broker_hydrates_positions_after_restart():
 
 
 def test_performance_includes_realized_pnl_after_full_exit():
-    client, agent, paper_brokers = make_agent_client()
+    client, agent, paper_brokers, _alpaca = make_agent_client()
     with client:
         headers = register_headers(client)
         client.put(
@@ -1039,7 +1074,7 @@ def test_performance_includes_realized_pnl_after_full_exit():
 
 def test_performance_capital_metrics_when_pnl_is_zero_at_flat_marks():
     """Buy and sell at the same $100 paper mark → $0 P/L but capital still moved."""
-    client, agent, paper_brokers = make_agent_client()
+    client, agent, paper_brokers, _alpaca = make_agent_client()
     with client:
         headers = register_headers(client)
         client.put(
@@ -1092,7 +1127,7 @@ def test_performance_capital_metrics_when_pnl_is_zero_at_flat_marks():
 
 def test_max_holding_uses_latest_buy_not_stale_opened_at():
     """Rebuy after exit must not immediately flatten on next cycle via stale opened_at."""
-    client, agent, paper_brokers = make_agent_client()
+    client, agent, paper_brokers, _alpaca = make_agent_client()
     with client:
         headers = register_headers(client)
         client.put(
