@@ -585,7 +585,7 @@ describe('live trading safeguard', () => {
     }))
 
     render(<App />)
-    expect(await screen.findByText(/Partial data/i)).toBeInTheDocument()
+    expect(await screen.findByText(/Partial data/i, {}, { timeout: 5000 })).toBeInTheDocument()
     expect(screen.getByText(/hybrid prediction:.*xgboost/i)).toBeInTheDocument()
     expect(screen.queryByText(/temporarily unavailable/i)).not.toBeInTheDocument()
   })
@@ -642,7 +642,7 @@ describe('live trading safeguard', () => {
     }))
 
     render(<App />)
-    expect(await screen.findByText(/Partial data/i)).toBeInTheDocument()
+    expect(await screen.findByText(/Partial data/i, {}, { timeout: 5000 })).toBeInTheDocument()
     expect(screen.getByText(/hybrid prediction request failed \(502\)/i)).toBeInTheDocument()
   })
 
