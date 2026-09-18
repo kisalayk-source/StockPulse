@@ -44,6 +44,7 @@ The UI is a single-page workstation with top-level tabs:
 | **Top Accumulation** | Ranked stocks with institutional, insider, and fundamentals component scores (from market scan) |
 | **SEC Records** | Ticker search; filings from the last 6 months with filing entity, action (bought/sold/new investment), expandable parsed XML details (**+**), AI analysis card, stat chips, and EDGAR links (syncs on tab open and search) |
 | **AI Research** | Natural-language query box; candidate table, filters, and evidence-backed narrative |
+| **Trading Agent** | Autonomous paper/live agent: type tickers and **Run forecast cycle** without saving them; optional risk portfolio (max 50) for scheduled auto-cycles; daily loss, candidates, orders, day trades |
 
 On login the UI starts a background market scan (blue-chip + movers) and shows progress on Sectors, Top, and Research tabs until scores populate.
 
@@ -75,11 +76,16 @@ The typed client in `src/api.ts` models:
 - `GET /options/contracts?underlying=&mode=` and `GET /options/chain?underlying=`
 - `POST /orders/preview`, `POST /orders/equity`, `POST /orders/option`
 - `DELETE /orders/:id`, `PATCH /orders/:id`
+- Trading agent: `GET/PUT /trading-agent/config`, lifecycle (`start` / `pause` / `resume` / `emergency-stop`), `POST /trading-agent/cycle` (optional ad-hoc `symbols`), forecasts / candidates / orders / day-trades / positions / events / performance / daily-loss
 
-Components: `SecIntelligencePanel.tsx` (also exports `SectorsPanel`, `TopAccumulationPanel`, `ResearchPanel`, `SecRecordsPanel`).
+Components: `SecIntelligencePanel.tsx` (also exports `SectorsPanel`, `TopAccumulationPanel`, `ResearchPanel`, `SecRecordsPanel`), `TradingAgentPanel.tsx`.
 
 All order and account requests explicitly carry `paper` or `live` mode. The adapters in
 `src/api.ts` normalize the backend's snake_case payloads for the React components.
+
+Manual agent cycles: type tickers in the Trading Agent panel and run — they are **not**
+added to the saved risk portfolio unless you click **Add**. See
+[docs/trading-agent.md](../docs/trading-agent.md).
 
 ## Safety
 
@@ -104,4 +110,5 @@ keyboard-dismissable dialogs, and automatically dismisses order notices.
 Potential gainers and losers appear progressively while the background Kronos universe scan
 runs, with visible scanned/total progress and automatic polling.
 
-See [docs/SEC_ACCUMULATION.md](../docs/SEC_ACCUMULATION.md) for scoring methodology.
+See [docs/SEC_ACCUMULATION.md](../docs/SEC_ACCUMULATION.md) for scoring methodology, and
+[docs/trading-agent.md](../docs/trading-agent.md) for the autonomous agent.

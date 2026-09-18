@@ -84,6 +84,8 @@ See [docs/SEC_ACCUMULATION.md](./docs/SEC_ACCUMULATION.md#troubleshooting) for S
 
 - Kronos forecasts and SEC accumulation scores are display-only and cannot submit orders.
   Hybrid signals are also research overlays unless you deliberately start the trading agent.
+  Manual agent cycles can use any typed ticker; auto-cycles use the saved risk portfolio
+  (see [docs/trading-agent.md](./docs/trading-agent.md)).
   See [docs/mvp-roadmap.md](./docs/mvp-roadmap.md) for how path vs stance vs agent alignment work.
 - Accumulation scores are research signals, not probabilities of future returns.
 - Every order requires a review dialog.

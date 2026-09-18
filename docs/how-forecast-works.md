@@ -164,4 +164,5 @@ Both are still research overlays. Switching modes can change the shape of the li
 ## Want the technical deep dive?
 
 - **MVP roadmap (plain language):** [mvp-roadmap.md](./mvp-roadmap.md) — what MVP-1…7 and agent alignment mean without code
+- **Trading agent:** [trading-agent.md](./trading-agent.md) — ad-hoc cycles vs saved risk portfolio
 - **Architecture:** [stock-prediction-architecture.md](./stock-prediction-architecture.md) — data sources, models, leakage rules

@@ -714,7 +714,10 @@ class TradingAgentService:
             raise ValueError("Forecast provider is not configured")
 
         risk = self.resolved_risk_config(config)
-        tickers = [s.upper() for s in (symbols or config.universe or ["SPY"])]
+        if symbols is not None:
+            tickers = normalize_universe(symbols)
+        else:
+            tickers = [s.upper() for s in (config.universe or ["SPY"])]
         run = AgentRun(
             agent_config_id=config.id,
             status="running",

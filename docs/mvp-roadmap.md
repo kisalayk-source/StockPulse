@@ -167,6 +167,10 @@ inventing a BUY/SELL from the path alone.
 Paper/live agent cycles still respect your risk profile, Forecast Mode toggle,
 and start/pause controls.
 
+**Symbols:** manual **Run forecast cycle** can use any typed tickers (ad-hoc —
+not saved to the risk portfolio). Scheduled auto-cycles use only the saved risk
+portfolio (max 50). Details: [trading-agent.md](./trading-agent.md).
+
 ---
 
 ## What to trust (and what not to)
@@ -195,4 +199,5 @@ and start/pause controls.
 | Features / models / risk / eval (technical) | [feature-engine.md](./feature-engine.md), [model-engine.md](./model-engine.md), [risk-engine.md](./risk-engine.md), [backtesting.md](./backtesting.md), [model-evaluation.md](./model-evaluation.md) |
 | Kronos adapter | [kronos.md](./kronos.md) |
 | Prediction API | [api.md](./api.md) |
+| Trading agent | [trading-agent.md](./trading-agent.md) |
 | Local setup | [DEVELOPMENT.md](./DEVELOPMENT.md) |

@@ -6,6 +6,7 @@ prediction (`ml/`). Python 3.12 is recommended.
 
 User-facing MVP guide: [docs/mvp-roadmap.md](../docs/mvp-roadmap.md).
 Prediction API detail: [docs/api.md](../docs/api.md).
+Trading agent: [docs/trading-agent.md](../docs/trading-agent.md).
 
 ## Setup
 
@@ -144,11 +145,18 @@ All routes use the `/api/v1` prefix.
 - `GET /stocks/{ticker}/signals`
 - `GET /stocks/{ticker}/risk`
 - `GET /stocks/{ticker}/explanation`
+- `GET/PUT /trading-agent/config` — saved risk portfolio (`universe`, max 50), intervals, risk
+- `POST /trading-agent/start` \| `pause` \| `resume` \| `emergency-stop`
+- `POST /trading-agent/cycle` — optional ad-hoc `symbols` (not required in universe); see [docs/trading-agent.md](../docs/trading-agent.md)
+- `GET /trading-agent/forecasts` \| `candidates` \| `orders` \| `day-trades` \| `positions` \| `events` \| `performance` \| `daily-loss`
 
 Trading/account requests require an explicit `paper` or `live` mode. Manual order
 endpoints never auto-submit. The Autonomous Trading Agent, when Started in paper or
 live mode, auto-runs forecast cycles on a configurable interval (default 5 minutes)
-via a backend scheduler; Pause and Emergency Stop halt auto-cycling. Quantity/notional,
+via a backend scheduler using the **saved risk portfolio** (`config.universe`, max 50).
+Manual `POST /trading-agent/cycle` may pass ad-hoc `symbols` for that run only — they
+need not be on the saved list (invalid/empty override → 422). Pause and Emergency Stop
+halt auto-cycling. See [docs/trading-agent.md](../docs/trading-agent.md). Quantity/notional,
 order type, limit/stop price requirements, time-in-force, and asset tradability are
 validated before submission. Provider failures are surfaced as generic 502 errors and
 missing configuration as generic 503 errors; detailed causes are logged server-side.

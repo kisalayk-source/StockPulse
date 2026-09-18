@@ -257,6 +257,50 @@ def test_universe_rejects_invalid_or_empty_tickers():
         assert bad.status_code == 422
 
 
+def test_cycle_accepts_ad_hoc_symbols_not_in_universe():
+    client, _agent, paper_brokers, _alpaca = make_agent_client()
+    with client:
+        headers = register_headers(client)
+        client.put(
+            "/api/v1/trading-agent/config",
+            json={"trading_type": "long_term", "universe": ["NVDA"], "capital_allocation": 10000},
+            headers=headers,
+        )
+        cfg = client.post("/api/v1/trading-agent/start", json={"mode": "paper"}, headers=headers).json()
+        broker = paper_brokers[cfg["id"]]
+        broker.set_price("GOOG", 150.0)
+        cycle = client.post(
+            "/api/v1/trading-agent/cycle",
+            json={"symbols": ["GOOG"], "execute": True},
+            headers=headers,
+        )
+        assert cycle.status_code == 200, cycle.text
+        body = cycle.json()
+        scan_symbols = [row["symbol"] for row in body.get("universe_scan") or []]
+        assert scan_symbols == ["GOOG"]
+        # Saved universe must stay unchanged.
+        config = client.get("/api/v1/trading-agent/config", headers=headers).json()
+        assert config["universe"] == ["NVDA"]
+
+
+def test_cycle_rejects_invalid_or_empty_symbol_override():
+    with make_agent_client()[0] as client:
+        headers = register_headers(client)
+        client.post("/api/v1/trading-agent/start", json={"mode": "paper"}, headers=headers)
+        empty = client.post(
+            "/api/v1/trading-agent/cycle",
+            json={"symbols": [], "execute": True},
+            headers=headers,
+        )
+        assert empty.status_code == 422
+        bad = client.post(
+            "/api/v1/trading-agent/cycle",
+            json={"symbols": ["NOPE!"], "execute": True},
+            headers=headers,
+        )
+        assert bad.status_code == 422
+
+
 def test_cannot_start_live_without_enablement():
     with make_agent_client()[0] as client:
         headers = register_headers(client)

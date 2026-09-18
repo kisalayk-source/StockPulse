@@ -12,7 +12,7 @@ This is the how-to. Architecture notes also live under
 | Source | Examples |
 |--------|----------|
 | Backend HTTP | `request_completed` / `request_failed` with `request_id`, method, path, status, `duration_ms` |
-| Trading agent | Scheduler ticks, auto-cycle, risk auto-adjust, order events |
+| Trading agent | Scheduler ticks, auto-cycle (saved universe), risk auto-adjust, order events — see [trading-agent.md](./trading-agent.md) |
 | Frontend | Boot, API errors (5xx / trading-agent), React error boundary, `window.onerror`, unhandled rejections |
 
 Log lines are ECS-oriented JSON, for example:

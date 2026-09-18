@@ -231,13 +231,26 @@ describe('TradingAgentPanel', () => {
     const { api } = await import('./api')
     render(<TradingAgentPanel />)
     await screen.findByTestId('risk-portfolio')
-    await user.type(screen.getByLabelText(/add tickers to risk portfolio/i), 'msft, goog')
+    await user.type(screen.getByLabelText(/tickers for cycle or risk portfolio/i), 'msft, goog')
     await user.click(screen.getByRole('button', { name: /^Add$/i }))
     await waitFor(() =>
       expect(api.updateTradingAgentConfig).toHaveBeenCalledWith({
         universe: ['NVDA', 'MSFT', 'GOOG'],
       }),
     )
+  })
+
+  it('runs a cycle on typed tickers without saving them to the universe', async () => {
+    const user = userEvent.setup()
+    const { api } = await import('./api')
+    render(<TradingAgentPanel />)
+    await screen.findByTestId('risk-portfolio')
+    await user.type(screen.getByLabelText(/tickers for cycle or risk portfolio/i), 'goog, amzn')
+    await user.click(screen.getByRole('button', { name: /Run forecast cycle \(GOOG, AMZN\)/i }))
+    await waitFor(() =>
+      expect(api.runTradingAgentCycle).toHaveBeenCalledWith(['GOOG', 'AMZN'], true),
+    )
+    expect(api.updateTradingAgentConfig).not.toHaveBeenCalled()
   })
 
   it('imports favorites into the risk portfolio', async () => {

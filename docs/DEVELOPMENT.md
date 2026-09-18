@@ -102,8 +102,8 @@ fakes; do not put real credentials in fixtures or commits.
 - Code: `ml/` (features, XGBoost/LightGBM, Kronos directional adapter, ensemble, calibration, decision, signal risk, walk-forward backtesting, registry)
 - Config: `ml/config/prediction.yaml`
 - API: `GET /api/v1/stocks/{ticker}/prediction` (also `/features`, `/signals`, `/risk`, `/explanation`)
-- Agent: hybrid owns BUY/SELL; Kronos path owns sizing/targets (`agent_require_hybrid_signal`)
-- Docs: [mvp-roadmap.md](./mvp-roadmap.md) (non-tech), [stock-prediction-architecture.md](./stock-prediction-architecture.md), [model-engine.md](./model-engine.md), [feature-engine.md](./feature-engine.md), [risk-engine.md](./risk-engine.md), [backtesting.md](./backtesting.md), [explanation.md](./explanation.md), [kronos.md](./kronos.md)
+- Agent: hybrid owns BUY/SELL; Kronos path owns sizing/targets (`agent_require_hybrid_signal`); ad-hoc cycle symbols vs saved universe — [trading-agent.md](./trading-agent.md)
+- Docs: [mvp-roadmap.md](./mvp-roadmap.md) (non-tech), [stock-prediction-architecture.md](./stock-prediction-architecture.md), [trading-agent.md](./trading-agent.md), [model-engine.md](./model-engine.md), [feature-engine.md](./feature-engine.md), [risk-engine.md](./risk-engine.md), [backtesting.md](./backtesting.md), [explanation.md](./explanation.md), [kronos.md](./kronos.md)
 
 ```bash
 # from repo root

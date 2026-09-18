@@ -2,7 +2,7 @@
 
 Paper-first trading workstation for US equities and single-leg options. Forecasts, charts, news, SEC ownership intelligence, portfolio, and manual order tickets in one dashboard — wired to Alpaca and powered by Kronos path forecasts plus a hybrid directional prediction engine.
 
-**Not investment advice.** Path forecasts, hybrid signals, and accumulation scores are research overlays only. Orders are always manual and never placed by the model.
+**Not investment advice.** Path forecasts, hybrid signals, and accumulation scores are research overlays only. Manual orders require review-before-send. The optional trading agent places paper/live orders only after you deliberately Start it and pass risk gates.
 
 ## Features
 
@@ -17,6 +17,7 @@ Paper-first trading workstation for US equities and single-leg options. Forecast
 - **Movers scan** — background scan of blue-chip names for predicted gainers and losers (display-only)
 - **Portfolio** — open positions, open/realized P/L, hold ideas from the movers scan
 - **Manual trading** — equity and single-leg options tickets with risk preview and review-before-send
+- **Trading agent** — optional autonomous paper/live cycles; type any ticker to run once, or save a risk portfolio (max 50) for auto-cycles; hybrid owns BUY/SELL, path owns sizing — [docs/trading-agent.md](./docs/trading-agent.md)
 - **Paper / live** — paper by default; live requires separate keys, server flag, and typing `LIVE`
 
 ## Stack
@@ -138,6 +139,7 @@ kronos_backtest/   Historical backtester (not used by the live dashboard)
 | [frontend/README.md](./frontend/README.md) | Dashboard commands & API client |
 | [docs/DEVELOPMENT.md](./docs/DEVELOPMENT.md) | Environments, checks, Docker |
 | [docs/mvp-roadmap.md](./docs/mvp-roadmap.md) | Plain-language MVP-1…7 + agent alignment |
+| [docs/trading-agent.md](./docs/trading-agent.md) | Autonomous agent: ad-hoc cycles vs saved risk portfolio |
 | [docs/explanation.md](./docs/explanation.md) | Grounded template / optional LLM explanations (MVP-7) |
 | [docs/how-forecast-works.md](./docs/how-forecast-works.md) | Chart path vs model stance (non-tech) |
 | [docs/stock-prediction-architecture.md](./docs/stock-prediction-architecture.md) | Hybrid stack architecture & leakage rules |

@@ -138,9 +138,14 @@ If hybrid is unavailable, the agent emits `HOLD` (`signal_source=unavailable`)
 rather than inventing direction from the path. Setting:
 `agent_require_hybrid_signal` (default `true`).
 
+**Universe:** scheduled auto-cycles use the saved risk portfolio (`config.universe`,
+max 50). Manual cycles may pass any valid ticker list via `POST /trading-agent/cycle`
+`symbols` without adding them to that list — see [trading-agent.md](./trading-agent.md).
+
 ## Related docs
 
 - [mvp-roadmap.md](./mvp-roadmap.md) — plain-language MVP-1…7 + agent alignment
+- [trading-agent.md](./trading-agent.md) — agent cycles, ad-hoc symbols, API/UI
 - [how-forecast-works.md](./how-forecast-works.md) — everyday chart path vs model stance
 - [DEVELOPMENT.md](./DEVELOPMENT.md) — local setup, path forecast vs prediction
 - [SEC_ACCUMULATION.md](./SEC_ACCUMULATION.md) — EDGAR pipeline

@@ -272,6 +272,21 @@ export function TradingAgentPanel({
     await saveUniverse(mergeUniverse(config?.universe || [], extra))
   }
 
+  async function runForecastCycle() {
+    const typed = parseTickers(tickerInput)
+    const symbols = typed.length > 0 ? typed : config?.universe || []
+    if (symbols.length === 0) {
+      setError('Type one or more tickers to run, or add tickers to the risk portfolio for auto-cycles')
+      return
+    }
+    const invalid = symbols.find((ticker) => !TICKER_PATTERN.test(ticker))
+    if (invalid) {
+      setError(`Invalid ticker: ${invalid}`)
+      return
+    }
+    await run(() => api.runTradingAgentCycle(symbols, true), 'Cycle complete')
+  }
+
   async function generateDayTrades(explicitDate?: string) {
     const requested = explicitDate || dayTradeDate || undefined
     setDayTradesBusy(true)
@@ -356,6 +371,8 @@ export function TradingAgentPanel({
   const universeScan: UniverseScanRow[] = config?.lastUniverseScan || []
   const maxUniverseSize = config?.maxUniverseSize || MAX_UNIVERSE_FALLBACK
   const universeCount = (config?.universe || []).length
+  const typedCycleTickers = parseTickers(tickerInput)
+  const canRunCycle = running && (typedCycleTickers.length > 0 || universeCount > 0)
   const cycleNotice =
     running && accepted.length === 0 && rejected.length > 0
       ? latestRiskAdjust?.message ||
@@ -604,8 +621,8 @@ export function TradingAgentPanel({
           <div className="universe-editor" data-testid="risk-portfolio">
             <span>Risk portfolio</span>
             <p className="agent-subtitle">
-              Symbols the agent forecasts and trades each cycle ({universeCount} / {maxUniverseSize}).
-              Sync favorites to cover your full watchlist.
+              Saved for scheduled auto-cycles ({universeCount} / {maxUniverseSize}).
+              Type tickers below and run a cycle once without adding them here.
             </p>
             <div className="universe-chips" role="list" aria-label="Risk portfolio tickers">
               {!config ? (
@@ -633,8 +650,8 @@ export function TradingAgentPanel({
               <input
                 value={tickerInput}
                 disabled={busy}
-                placeholder="Add tickers (AAPL, MSFT)"
-                aria-label="Add tickers to risk portfolio"
+                placeholder="Tickers to run (AAPL, MSFT) — or Add to save"
+                aria-label="Tickers for cycle or risk portfolio"
                 onChange={(event) => setTickerInput(event.target.value)}
                 onKeyDown={(event) => {
                   if (event.key === 'Enter') {
@@ -700,10 +717,12 @@ export function TradingAgentPanel({
           </label>
           <button
             type="button"
-            disabled={busy || !running}
-            onClick={() => void run(() => api.runTradingAgentCycle(config?.universe, true), 'Cycle complete')}
+            disabled={busy || !canRunCycle}
+            onClick={() => void runForecastCycle()}
           >
-            Run forecast cycle
+            {typedCycleTickers.length > 0
+              ? `Run forecast cycle (${typedCycleTickers.join(', ')})`
+              : 'Run forecast cycle'}
           </button>
         </div>
       </section>
@@ -713,7 +732,7 @@ export function TradingAgentPanel({
           <div className="card-heading compact">
             <h2>Universe scan</h2>
             <p className="agent-subtitle">
-              Last cycle outcome for every risk-portfolio ticker
+              Last cycle outcome for scanned tickers
               {config?.lastCycleAt ? ` · ${formatDateTime(config.lastCycleAt)}` : ''}
             </p>
           </div>

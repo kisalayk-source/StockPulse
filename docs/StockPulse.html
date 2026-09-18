@@ -107,6 +107,7 @@
     <li><a href="#sec">SEC &amp; accumulation</a></li>
     <li><a href="#forecasts">Forecasts and movers</a></li>
     <li><a href="#trading">Trading and safety</a></li>
+    <li><a href="#trading-agent">Autonomous trading agent</a></li>
     <li><a href="#api">API reference</a></li>
     <li><a href="#config">Configuration</a></li>
     <li><a href="#backtest">Historical backtester</a></li>
@@ -115,7 +116,7 @@
   </ol>
 
   <h2 id="overview">1. Overview</h2>
-  <p>StockPulse is a personal trading workstation. It shows live (or paper) market data, Kronos probabilistic forecasts, news and public sentiment, SEC ownership intelligence with an explainable Accumulation Score, a background scan of predicted movers, and your open broker positions. Orders are <strong>manual only</strong>. Forecasts and accumulation scores never submit trades.</p>
+  <p>StockPulse is a personal trading workstation. It shows live (or paper) market data, Kronos probabilistic forecasts, news and public sentiment, SEC ownership intelligence with an explainable Accumulation Score, a background scan of predicted movers, and your open broker positions. Manual orders require review-before-send. Forecasts and accumulation scores never submit trades by themselves. An optional <strong>Trading Agent</strong> can run forecast cycles when you Start it (paper or live).</p>
   <p>The repository also contains Kronos itself (tokenizer, predictor, fine-tuning examples) and a separate production-grade backtester in <code>kronos_backtest/</code>.</p>
   <div class="callout">
     <strong>Not investment advice.</strong> Forecasts are research outputs. Broker acceptance does not guarantee execution. Use paper mode until you understand the risk controls.
@@ -126,8 +127,9 @@
     <thead><tr><th>Layer</th><th>Path</th><th>Role</th></tr></thead>
     <tbody>
       <tr><td>Dashboard</td><td><code>frontend/</code></td><td>React + TypeScript + Vite. Serves the UI and proxies <code>/api</code> to the backend.</td></tr>
-      <tr><td>API</td><td><code>backend/</code></td><td>FastAPI on loopback port 8000. Alpaca, Finnhub, SEC EDGAR, Kronos.</td></tr>
+      <tr><td>API</td><td><code>backend/</code></td><td>FastAPI on loopback port 8000. Alpaca, Finnhub, SEC EDGAR, Kronos, trading agent.</td></tr>
       <tr><td>SEC layer</td><td><code>backend/app/sec/</code></td><td>EDGAR client, form parsers, Accumulation Score engine, SQLite persistence.</td></tr>
+      <tr><td>Trading agent</td><td><code>backend/app/trading_agent/</code></td><td>Forecast cycles, risk gates, paper/live execution; ad-hoc or saved universe.</td></tr>
       <tr><td>Model</td><td><code>model/</code></td><td>Kronos predictor and tokenizer. Loaded lazily on first forecast.</td></tr>
       <tr><td>Backtester</td><td><code>kronos_backtest/</code></td><td>Look-ahead-safe historical engine, walk-forward, costs, reports.</td></tr>
       <tr><td>Legacy demo</td><td><code>webui/</code></td><td>Unchanged Flask demo. Not required for StockPulse.</td></tr>
@@ -164,7 +166,7 @@
   </ul>
 
   <h2 id="dashboard">4. Dashboard</h2>
-  <p>The UI is a single-page workstation with tabs: <strong>Market</strong>, <strong>Sectors</strong>, <strong>Top Accumulation</strong>, <strong>SEC Records</strong>, and <strong>AI Research</strong>.</p>
+  <p>The UI is a single-page workstation with tabs: <strong>Market</strong>, <strong>Sectors</strong>, <strong>Top Accumulation</strong>, <strong>SEC Records</strong>, <strong>AI Research</strong>, and <strong>Trading Agent</strong>.</p>
   <h3>Market tab</h3>
   <ul>
     <li><strong>Search</strong> — symbol or company name; results stay in a scrollable list.</li>
@@ -224,7 +226,8 @@
   <ul>
     <li>Default mode is <strong>paper</strong>. Live is disabled until <code>ALLOW_LIVE_TRADING=true</code> on the server.</li>
     <li>Enabling live in the UI requires typing <code>LIVE</code>. Live orders also send that confirmation token.</li>
-    <li>Every order opens a review dialog. There is no scheduler or signal executor.</li>
+    <li>Manual orders always open a review dialog.</li>
+    <li>The optional <strong>Trading Agent</strong> (next section) can auto-cycle when Started; Pause and Emergency Stop halt it. Manual tickets remain separate.</li>
     <li>Equity sells cannot exceed the long position unless <code>ALLOW_SHORT_SELLING=true</code>.</li>
     <li>Option <code>sell_to_open</code> requires <code>ALLOW_UNCOVERED_OPTIONS=true</code>.</li>
     <li>Risk preview can block buys (position size, spread, daily loss halt).</li>
@@ -246,6 +249,14 @@
     <li>Search <strong>SEC Records</strong> for AAPL and review filings from the last 6 months.</li>
     <li>Confirm a live request returns 403 while live is disabled.</li>
   </ol>
+
+  <h2 id="trading-agent">7a. Autonomous trading agent</h2>
+  <p>Hybrid prediction owns BUY/HOLD/SELL; Kronos path owns sizing and target/stop hints. Full detail: <code>docs/trading-agent.md</code>.</p>
+  <ul>
+    <li><strong>Type-and-run</strong> — type any ticker(s) and click <strong>Run forecast cycle</strong>. Those symbols are used for that cycle only and are <strong>not</strong> required on a saved list (and not written to the risk portfolio).</li>
+    <li><strong>Risk portfolio</strong> — optional saved universe (max 50) used by scheduled auto-cycles when the agent is Started. <strong>Add</strong> / Sync favorites persist into this list.</li>
+    <li>Not tied to the Kronos movers “top 50” scan or Favorites unless you sync favorites into the portfolio.</li>
+  </ul>
 
   <h2 id="api">8. API reference</h2>
   <p>All routes use the prefix <code>/api/v1</code>. Interactive docs: http://127.0.0.1:8000/docs (loopback only). Responses include <code>X-Request-ID</code>.</p>
@@ -278,6 +289,9 @@
       <tr><td>POST</td><td><code>/orders/preview</code></td><td>Risk preview</td></tr>
       <tr><td>POST</td><td><code>/orders/equity</code>, <code>/orders/option</code></td><td>Submit order</td></tr>
       <tr><td>DELETE / PATCH</td><td><code>/orders/{id}</code></td><td>Cancel / replace</td></tr>
+      <tr><td>GET/PUT</td><td><code>/trading-agent/config</code></td><td>Agent config; saved <code>universe</code> (max 50)</td></tr>
+      <tr><td>POST</td><td><code>/trading-agent/cycle</code></td><td>One cycle; optional ad-hoc <code>symbols</code> (not required in universe)</td></tr>
+      <tr><td>POST</td><td><code>/trading-agent/start</code> …</td><td>Lifecycle: start / pause / resume / emergency-stop</td></tr>
     </tbody>
   </table>
   <p>Missing providers return generic 503; upstream failures return generic 502. Details stay in server logs. When using the LAN UI, a **502** on <code>/api/v1/*</code> usually means the Vite proxy could not reach the API on <code>127.0.0.1:8000</code> — restart with <code>scripts/publish-kronos-lan.ps1</code> and check <code>runtime-logs/backend.stderr.log</code>. If <code>API_KEY</code> is set, every route except <code>/health</code> requires header <code>X-API-Key</code>.</p>

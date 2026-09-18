@@ -180,7 +180,15 @@ def run_cycle(
                 market_open=market_open,
             )
     except ValueError as exc:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+        detail = str(exc)
+        # Ticker/universe validation → 422; lifecycle/ops errors stay 400.
+        if (
+            detail.startswith("Invalid ticker")
+            or detail.startswith("universe must")
+            or detail.startswith("universe cannot exceed")
+        ):
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=detail) from exc
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=detail) from exc
 
 
 @router.get("/trading-agent/forecasts")
