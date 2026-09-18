@@ -1912,6 +1912,46 @@ def test_list_candidates_keeps_approved_buys_despite_reject_flood():
         session.close()
 
 
+def test_day_trades_lists_buys_closed_on_a_later_day():
+    client, agent, _paper_brokers, _alpaca = make_agent_client()
+    with client:
+        headers = register_headers(client)
+        session = _db_session()
+        me = client.get("/api/v1/auth/me", headers=headers).json()
+        config = agent.get_or_create_config(session, me["id"])
+        buy_day = datetime(2026, 9, 10, 17, 0, tzinfo=timezone.utc)
+        sell_day = datetime(2026, 9, 11, 17, 0, tzinfo=timezone.utc)
+        _seed_filled_order(session, config=config, side="buy", quantity=5, price=100, filled_at=buy_day)
+        _seed_filled_order(
+            session,
+            config=config,
+            side="sell",
+            quantity=5,
+            price=110,
+            filled_at=sell_day,
+            strategy="intraday_exit",
+        )
+        session.commit()
+        session.close()
+        buy_resp = client.get("/api/v1/trading-agent/day-trades?date=2026-09-10", headers=headers)
+        assert buy_resp.status_code == 200, buy_resp.text
+        buy_data = buy_resp.json()
+        assert buy_data["date"] == "2026-09-10"
+        assert "2026-09-10" in buy_data["available_dates"]
+        assert "2026-09-11" in buy_data["available_dates"]
+        exited = [row for row in buy_data["trades"] if row["status"] == "exited"]
+        assert len(exited) == 1
+        assert exited[0]["result"] == "Closed later"
+        assert buy_data["summary"]["exited"] == 1
+
+        sell_resp = client.get("/api/v1/trading-agent/day-trades?date=2026-09-11", headers=headers)
+        assert sell_resp.status_code == 200, sell_resp.text
+        sell_data = sell_resp.json()
+        sells = [row for row in sell_data["trades"] if row["side"] == "sell"]
+        assert len(sells) == 1
+        assert sells[0]["result"] == "Profit"
+
+
 def test_day_trades_defaults_to_latest_fill_session_day():
     client, agent, _paper_brokers, _alpaca = make_agent_client()
     with client:
@@ -1944,7 +1984,10 @@ def test_day_trades_defaults_to_latest_fill_session_day():
         assert empty_data["date"] == "2026-09-17"
         assert empty_data["latest_date"] == "2026-09-16"
         assert empty_data["trades"] == []
+        assert "2026-09-16" in empty_data["available_dates"]
 
+
+def test_normalize_order_status_strips_alpaca_enum_prefix():
     from app.trading_agent.broker import is_filled_status, normalize_order_status
 
     assert normalize_order_status("OrderStatus.FILLED") == "filled"

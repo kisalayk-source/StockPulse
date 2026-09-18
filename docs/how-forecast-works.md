@@ -140,7 +140,8 @@ Both are still research overlays. Switching modes can change the shape of the li
 
 - Every forecast is a **probability**, not a guarantee. Models can be wrong — often.
 - Patterns from the past do not lock in the future.
-- News, sentiment, and SEC ownership scores are **context**, not proof that a stock will rise or fall.
+- News, sentiment, SEC ownership scores, and government contract scores are
+  **context**, not proof that a stock will rise or fall.
 - A BUY or SELL label is a research classification, **not** an order and **not** personal financial advice.
 - StockPulse does **not** place trades from forecasts or signals. Only you can submit an order through the ticket and review flow.
 

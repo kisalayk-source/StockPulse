@@ -71,12 +71,14 @@ class PredictionService:
         kronos: Any | None = None,
         finnhub: Any | None = None,
         sec: Any | None = None,
+        government: Any | None = None,
     ) -> None:
         self.settings = settings
         self.alpaca = alpaca
         self.kronos = kronos
         self.finnhub = finnhub
         self.sec = sec
+        self.government = government
         _ensure_repo_root_on_path()
         from ml.config import horizon_to_bars
         from ml.service import PredictionEngine
@@ -136,6 +138,7 @@ class PredictionService:
         return {
             "sec": bool(flags.get("sec", False)),
             "fundamentals": bool(flags.get("fundamentals", False)),
+            "government": bool(flags.get("government", False)),
         }
 
     def load_sec_event_dicts(self, session: Any, ticker: str) -> list[dict[str, Any]]:
@@ -148,6 +151,20 @@ class PredictionService:
             return []
         return [serialize_normalized_event(event) for event in events or []]
 
+    def load_government_event_dicts(self, session: Any, ticker: str) -> list[dict[str, Any]]:
+        """Load confident government events already stored for the ticker."""
+        if self.government is None or session is None:
+            return []
+        try:
+            return self.government.events_as_dicts(session, ticker.upper())
+        except Exception:
+            return []
+
+    def government_config(self) -> dict[str, Any]:
+        if self.government is None:
+            return {}
+        return dict(getattr(self.government, "config", None) or {})
+
     async def load_fundamentals_metrics(self, ticker: str) -> dict[str, Any]:
         """Fetch Finnhub extended fundamentals; empty dict on failure."""
         if self.finnhub is None:
@@ -157,6 +174,21 @@ class PredictionService:
         except Exception:
             return {}
         return dict(metrics or {})
+
+    def _annual_revenue_from_metrics(self, metrics: dict[str, Any] | None) -> float | None:
+        if not metrics:
+            return None
+        for key in ("revenue", "annual_revenue", "revenueTTM", "market_cap"):
+            value = metrics.get(key)
+            if value is None:
+                continue
+            try:
+                number = float(value)
+            except (TypeError, ValueError):
+                continue
+            if number > 0:
+                return number
+        return None
 
     def _fetch_daily_bars(self, ticker: str, limit: int = 400) -> list[dict[str, Any]]:
         bars = self.alpaca.bars(
@@ -177,6 +209,9 @@ class PredictionService:
         retrain: bool = False,
         sec_events: list[dict[str, Any]] | None = None,
         fundamentals_metrics: dict[str, Any] | None = None,
+        government_events: list[dict[str, Any]] | None = None,
+        annual_revenue: float | None = None,
+        government_config: dict[str, Any] | None = None,
         position_concentration: float | None = None,
     ) -> dict[str, Any]:
         self._require_ready()
@@ -189,6 +224,11 @@ class PredictionService:
             retrain=retrain,
             sec_events=sec_events,
             fundamentals_metrics=fundamentals_metrics,
+            government_events=government_events,
+            annual_revenue=annual_revenue
+            if annual_revenue is not None
+            else self._annual_revenue_from_metrics(fundamentals_metrics),
+            government_config=government_config if government_config is not None else self.government_config(),
             position_concentration=position_concentration,
         )
 
@@ -198,6 +238,9 @@ class PredictionService:
         *,
         sec_events: list[dict[str, Any]] | None = None,
         fundamentals_metrics: dict[str, Any] | None = None,
+        government_events: list[dict[str, Any]] | None = None,
+        annual_revenue: float | None = None,
+        government_config: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         lookback = int(self.engine.config.get("prediction", {}).get("lookback_bars", 400))
         bars = self._fetch_daily_bars(ticker, limit=lookback)
@@ -206,6 +249,11 @@ class PredictionService:
             bars,
             sec_events=sec_events,
             fundamentals_metrics=fundamentals_metrics,
+            government_events=government_events,
+            annual_revenue=annual_revenue
+            if annual_revenue is not None
+            else self._annual_revenue_from_metrics(fundamentals_metrics),
+            government_config=government_config if government_config is not None else self.government_config(),
         )
 
     def signals(self, ticker: str, *, horizon: str = "5d", **kwargs: Any) -> dict[str, Any]:

@@ -41,7 +41,8 @@ powershell -ExecutionPolicy Bypass -File scripts/build-guide-pdfs.ps1
 ```
 
 Outputs: `docs/StockPulse.pdf`, `docs/StockPulse-Architecture.pdf`,
-`docs/StockPulse-Finance-Glossary.pdf`. See also `docs/SEC_ACCUMULATION.md`.
+`docs/StockPulse-Finance-Glossary.pdf`. See also `docs/SEC_ACCUMULATION.md` and
+`docs/government.md`.
 
 ## Multi-model forecasting (research)
 
@@ -103,7 +104,7 @@ fakes; do not put real credentials in fixtures or commits.
 - Config: `ml/config/prediction.yaml`
 - API: `GET /api/v1/stocks/{ticker}/prediction` (also `/features`, `/signals`, `/risk`, `/explanation`)
 - Agent: hybrid owns BUY/SELL; Kronos path owns sizing/targets (`agent_require_hybrid_signal`); ad-hoc cycle symbols vs saved universe — [trading-agent.md](./trading-agent.md)
-- Docs: [mvp-roadmap.md](./mvp-roadmap.md) (non-tech), [stock-prediction-architecture.md](./stock-prediction-architecture.md), [trading-agent.md](./trading-agent.md), [model-engine.md](./model-engine.md), [feature-engine.md](./feature-engine.md), [risk-engine.md](./risk-engine.md), [backtesting.md](./backtesting.md), [explanation.md](./explanation.md), [kronos.md](./kronos.md)
+- Docs: [mvp-roadmap.md](./mvp-roadmap.md) (non-tech), [stock-prediction-architecture.md](./stock-prediction-architecture.md), [trading-agent.md](./trading-agent.md), [model-engine.md](./model-engine.md), [feature-engine.md](./feature-engine.md), [risk-engine.md](./risk-engine.md), [backtesting.md](./backtesting.md), [explanation.md](./explanation.md), [kronos.md](./kronos.md), [government.md](./government.md)
 
 ```bash
 # from repo root
@@ -129,6 +130,23 @@ To trigger a scan manually (requires running API with credentials):
 ```bash
 curl -X POST http://127.0.0.1:8000/api/v1/accumulation/scan -H "Authorization: Bearer …"
 curl http://127.0.0.1:8000/api/v1/accumulation/scan/status -H "Authorization: Bearer …"
+```
+
+### Government contract analysis
+
+- Code: `backend/app/government/`, `ml/features/government/`, UI `GovernmentPanel`
+- Config: `backend/configs/government.yaml`; Settings `GOVERNMENT_ENABLED`,
+  `SAM_GOV_API_KEY`, `GOVERNMENT_CONFIG_PATH`, `GOVERNMENT_RATE_LIMIT_PER_MINUTE`
+- ML: `features.government` in `ml/config/prediction.yaml` (`feature_version` `1.1.0`)
+- API: `GET/POST /api/v1/stocks/{symbol}/government` (+ `/sync`)
+- Docs: [government.md](./government.md)
+
+```bash
+cd backend
+pytest -q tests/test_government.py
+
+# from repo root
+pytest -q ml/tests/test_government_features.py
 ```
 
 ## StockPulse frontend
@@ -207,3 +225,4 @@ powershell -ExecutionPolicy Bypass -File scripts/build-docs-pdf.ps1
 
 Output: `docs/StockPulse.pdf`. Print-ready HTML: `docs/StockPulse.html`.
 SEC accumulation reference: `docs/SEC_ACCUMULATION.md`.
+Government contracts reference: `docs/government.md`.

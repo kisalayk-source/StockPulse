@@ -309,6 +309,7 @@ describe('TradingAgentPanel', () => {
       date: '2026-09-10',
       timezone: 'America/Los_Angeles',
       latestDate: '2026-09-10',
+      availableDates: ['2026-09-10'],
       trades: [
         {
           id: 11,
@@ -330,6 +331,7 @@ describe('TradingAgentPanel', () => {
         wins: 1,
         losses: 0,
         open: 0,
+        exited: 0,
         netRealizedPnl: 50,
         netUnrealizedPnl: 0,
       },
@@ -344,59 +346,32 @@ describe('TradingAgentPanel', () => {
     expect(screen.getByRole('button', { name: /Download CSV/i })).toBeEnabled()
   })
 
-  it('falls back to the latest session day when the selected day is empty', async () => {
+  it('keeps the selected empty day and lists sessions with fills', async () => {
     const user = userEvent.setup()
     const { api } = await import('./api')
-    vi.mocked(api.getTradingAgentDayTrades)
-      .mockResolvedValueOnce({
-        date: '2026-09-17',
-        timezone: 'America/Los_Angeles',
-        latestDate: '2026-09-16',
-        trades: [],
-        summary: {
-          count: 0,
-          wins: 0,
-          losses: 0,
-          open: 0,
-          netRealizedPnl: 0,
-          netUnrealizedPnl: 0,
-        },
-      })
-      .mockResolvedValueOnce({
-        date: '2026-09-16',
-        timezone: 'America/Los_Angeles',
-        latestDate: '2026-09-16',
-        trades: [
-          {
-            id: 12,
-            symbol: 'AAPL',
-            assetType: 'equity',
-            side: 'sell',
-            status: 'closed',
-            quantity: 5,
-            entryPrice: 100,
-            exitPrice: 105,
-            pnl: 25,
-            result: 'Profit',
-            strategy: 'intraday_exit',
-            filledAt: '2026-09-16T18:00:00Z',
-          },
-        ],
-        summary: {
-          count: 1,
-          wins: 1,
-          losses: 0,
-          open: 0,
-          netRealizedPnl: 25,
-          netUnrealizedPnl: 0,
-        },
-      })
+    vi.mocked(api.getTradingAgentDayTrades).mockResolvedValueOnce({
+      date: '2026-09-17',
+      timezone: 'America/Los_Angeles',
+      latestDate: '2026-09-16',
+      availableDates: ['2026-09-10', '2026-09-16'],
+      trades: [],
+      summary: {
+        count: 0,
+        wins: 0,
+        losses: 0,
+        open: 0,
+        exited: 0,
+        netRealizedPnl: 0,
+        netUnrealizedPnl: 0,
+      },
+    })
     render(<TradingAgentPanel />)
     await screen.findByTestId('daily-trades')
     fireEvent.change(screen.getByLabelText(/session day/i), { target: { value: '2026-09-17' } })
     await user.click(screen.getByRole('button', { name: /^Generate$/i }))
-    await waitFor(() => expect(api.getTradingAgentDayTrades).toHaveBeenCalledWith('2026-09-16'))
-    expect(await screen.findByTestId('daily-trades-summary')).toHaveTextContent('1 wins')
-    expect(screen.getByText(/No fills on 2026-09-17; showing latest session 2026-09-16/i)).toBeInTheDocument()
+    await waitFor(() => expect(api.getTradingAgentDayTrades).toHaveBeenCalledWith('2026-09-17'))
+    expect(api.getTradingAgentDayTrades).toHaveBeenCalledTimes(1)
+    expect(await screen.findByText(/No agent trades on 2026-09-17/i)).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '2026-09-16' })).toBeInTheDocument()
   })
 })

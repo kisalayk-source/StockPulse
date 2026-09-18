@@ -16,7 +16,19 @@ Horizons: `1d`, `5d`, `20d`.
 
 Path forecast remains `POST /forecast` and is unchanged.
 
-Env toggles: `PREDICTION_ENABLED`, `PREDICTION_RATE_LIMIT_PER_MINUTE`.
+### Government contract analysis
+
+| Method | Path | Description |
+|---|---|---|
+| GET | `/stocks/{symbol}/government` | Scores, recent activity, agencies, alert candidates (`?sync=true` to refresh) |
+| POST | `/stocks/{symbol}/government/sync` | Sync SAM.gov / USAspending for the ticker, then return analysis |
+
+See [government.md](./government.md) for payload shape, config, and scoring.
+Feature snapshots may include a `government` bucket when
+`features.government` is enabled (`feature_version` `1.1.0`).
+
+Env toggles: `PREDICTION_ENABLED`, `PREDICTION_RATE_LIMIT_PER_MINUTE`,
+`GOVERNMENT_ENABLED`, `SAM_GOV_API_KEY`, `GOVERNMENT_RATE_LIMIT_PER_MINUTE`.
 Agent alignment: hybrid owns BUY/SELL; path owns sizing/targets
 (`agent_require_hybrid_signal`, default `true`).
 

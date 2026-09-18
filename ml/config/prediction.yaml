@@ -7,7 +7,7 @@ prediction:
   lookback_bars: 400
   min_train_rows: 80
   timeframe: 1Day
-  feature_version: "1.0.0"
+  feature_version: "1.1.0"
 
 models:
   # Directional path→P(up) adapter. Off by default (needs Kronos/Torch path stack).
@@ -82,6 +82,7 @@ features:
   technical: true
   sec: true
   fundamentals: true
+  government: true
   market_regime: false
 
 evaluation:

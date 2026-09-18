@@ -448,6 +448,8 @@ describe('FastAPI contract adapters', () => {
     })
     expect(result.summary.netRealizedPnl).toBe(50)
     expect(result.latestDate).toBeNull()
+    expect(result.availableDates).toEqual([])
+    expect(result.summary.exited).toBe(0)
   })
 
   it('normalizes Alpaca OrderStatus enum strings on agent orders', async () => {

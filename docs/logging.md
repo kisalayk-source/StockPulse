@@ -13,6 +13,7 @@ This is the how-to. Architecture notes also live under
 |--------|----------|
 | Backend HTTP | `request_completed` / `request_failed` with `request_id`, method, path, status, `duration_ms` |
 | Trading agent | Scheduler ticks, auto-cycle (saved universe), risk auto-adjust, order events — see [trading-agent.md](./trading-agent.md) |
+| SEC / government | Provider sync, ingest counts, `government_alert`, `provider_errors` (partial failure) |
 | Frontend | Boot, API errors (5xx / trading-agent), React error boundary, `window.onerror`, unhandled rejections |
 
 Log lines are ECS-oriented JSON, for example:
@@ -104,6 +105,7 @@ logs still go to stdout / files.
 log.logger: "app.trading_agent.scheduler" or message: "trading_agent_auto_cycle*"
 source: "frontend" and log.level: "ERROR"
 url.path: "/api/v1/trading-agent/*"
+log.logger: "app.government" or message: "government_*"
 ```
 
 ## Frontend usage (for developers)

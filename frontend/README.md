@@ -1,6 +1,6 @@
 # StockPulse Frontend
 
-Responsive React/TypeScript dashboard for personal Alpaca trading, Kronos path-forecast research, hybrid BUY/HOLD/SELL signals, and SEC accumulation intelligence.
+Responsive React/TypeScript dashboard for personal Alpaca trading, Kronos path-forecast research, hybrid BUY/HOLD/SELL signals, SEC accumulation intelligence, and government contract analysis.
 
 ## Setup
 
@@ -39,7 +39,7 @@ The UI is a single-page workstation with top-level tabs:
 
 | Tab | Contents |
 |-----|----------|
-| **Market** | Quote, chart, path forecasts, hybrid signal panel, news, **SEC & Ownership Intelligence** panel for the active symbol |
+| **Market** | Quote, chart, path forecasts, hybrid signal panel, news, **SEC & Ownership Intelligence** and **Government Contracts** panels for the active symbol |
 | **Sectors** | Average accumulation score and % increasing/decreasing by sector |
 | **Top Accumulation** | Ranked stocks with institutional, insider, and fundamentals component scores (from market scan) |
 | **SEC Records** | Ticker search; filings from the last 6 months with filing entity, action (bought/sold/new investment), expandable parsed XML details (**+**), AI analysis card, stat chips, and EDGAR links (syncs on tab open and search) |
@@ -49,6 +49,8 @@ The UI is a single-page workstation with top-level tabs:
 On login the UI starts a background market scan (blue-chip + movers) and shows progress on Sectors, Top, and Research tabs until scores populate.
 
 The **SEC Intelligence** panel shows Accumulation Score (0–100), component bars, trend history, recent institutional/insider activity, filing caveats, and a disclaimer that scores are research signals — not trade instructions.
+
+The **Government Contracts** panel (`GovernmentPanel.tsx`) shows government / early-signal scores, 30-day award and obligation stats, recent activity, top agencies, and optional alert banners (API payload only — no push/email).
 
 ## API contract
 
@@ -65,6 +67,8 @@ The typed client in `src/api.ts` models:
 - `GET /stocks/:symbol/accumulation` — score, components, history
 - `GET /stocks/:symbol/filings?months=&limit=` — recent SEC filing history (`filer_name`, `action`, `action_tone`, `details[]`)
 - `GET /stocks/:symbol/filings/analysis?months=` — AI/rule-based filing summary (sentiment, gist, highlights)
+- `GET /stocks/:symbol/government` — government contract analysis (optional `?sync=true`)
+- `POST /stocks/:symbol/government/sync` — refresh providers, then return analysis
 - `GET /sectors` — sector list with ticker counts
 - `GET /sectors/:sector/accumulation` — sector aggregates
 - `GET /accumulation/top?sector=&min_score=&limit=` — ranked stocks
@@ -78,7 +82,7 @@ The typed client in `src/api.ts` models:
 - `DELETE /orders/:id`, `PATCH /orders/:id`
 - Trading agent: `GET/PUT /trading-agent/config`, lifecycle (`start` / `pause` / `resume` / `emergency-stop`), `POST /trading-agent/cycle` (optional ad-hoc `symbols`), forecasts / candidates / orders / day-trades / positions / events / performance / daily-loss
 
-Components: `SecIntelligencePanel.tsx` (also exports `SectorsPanel`, `TopAccumulationPanel`, `ResearchPanel`, `SecRecordsPanel`), `TradingAgentPanel.tsx`.
+Components: `SecIntelligencePanel.tsx` (also exports `SectorsPanel`, `TopAccumulationPanel`, `ResearchPanel`, `SecRecordsPanel`), `GovernmentPanel.tsx`, `TradingAgentPanel.tsx`.
 
 All order and account requests explicitly carry `paper` or `live` mode. The adapters in
 `src/api.ts` normalize the backend's snake_case payloads for the React components.
@@ -90,11 +94,11 @@ added to the saved risk portfolio unless you click **Add**. See
 ## Safety
 
 Live mode requires typing `LIVE` before it can be enabled, remains visibly marked, and every order
-opens a separate final review dialog. Forecasts and accumulation scores are display-only and have
-no path to order submission. This UI does not replace broker-side controls, account permissions,
-or server-side validation.
+opens a separate final review dialog. Forecasts, accumulation scores, and government scores are
+display-only and have no path to order submission. This UI does not replace broker-side controls,
+account permissions, or server-side validation.
 
-SEC panels use muted styling when provider data is partial or stale. Filing caveats remind users
+SEC and government panels use muted styling when provider data is partial or stale. Filing caveats remind users
 that 13F holdings are quarterly reported positions — not real-time trade activity.
 
 ### Troubleshooting
@@ -110,5 +114,6 @@ keyboard-dismissable dialogs, and automatically dismisses order notices.
 Potential gainers and losers appear progressively while the background Kronos universe scan
 runs, with visible scanned/total progress and automatic polling.
 
-See [docs/SEC_ACCUMULATION.md](../docs/SEC_ACCUMULATION.md) for scoring methodology, and
+See [docs/SEC_ACCUMULATION.md](../docs/SEC_ACCUMULATION.md) and
+[docs/government.md](../docs/government.md) for scoring methodology, and
 [docs/trading-agent.md](../docs/trading-agent.md) for the autonomous agent.

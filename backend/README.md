@@ -1,12 +1,13 @@
 # StockPulse API
 
 FastAPI backend for manual Alpaca equity/options trading, Finnhub fundamentals, SEC EDGAR
-accumulation intelligence, lazy-loaded Kronos **path** forecasts, and hybrid directional
-prediction (`ml/`). Python 3.12 is recommended.
+accumulation intelligence, government contract analysis (SAM.gov / USAspending), lazy-loaded
+Kronos **path** forecasts, and hybrid directional prediction (`ml/`). Python 3.12 is recommended.
 
 User-facing MVP guide: [docs/mvp-roadmap.md](../docs/mvp-roadmap.md).
 Prediction API detail: [docs/api.md](../docs/api.md).
 Trading agent: [docs/trading-agent.md](../docs/trading-agent.md).
+Government contracts: [docs/government.md](../docs/government.md).
 
 ## Setup
 
@@ -47,6 +48,12 @@ RESEARCH_LLM_ENABLED=false
 OPENAI_API_KEY=
 OPENAI_BASE_URL=
 OPENAI_MODEL=gpt-4o-mini
+
+GOVERNMENT_ENABLED=true
+SAM_GOV_API_KEY=
+GOVERNMENT_CONFIG_PATH=backend/configs/government.yaml
+GOVERNMENT_RATE_LIMIT_PER_MINUTE=30
+GOVERNMENT_SYNC_ON_STARTUP=false
 
 ALLOW_LIVE_TRADING=false
 LIVE_CONFIRMATION_TOKEN=
@@ -121,6 +128,8 @@ All routes use the `/api/v1` prefix.
 - `GET /stocks/{symbol}/accumulation` — Accumulation Score, history, evidence
 - `GET /stocks/{symbol}/filings?months=6&limit=` — recent SEC filing history with `filer_name`, `action`, `action_tone`, and `details[]` (parsed XML records) per row
 - `GET /stocks/{symbol}/filings/analysis?months=6` — AI or rule-based SEC filing summary (sentiment, gist, highlights)
+- `GET /stocks/{symbol}/government` — government contract analysis (scores, activity, agencies, alert candidates; `?sync=true` to refresh)
+- `POST /stocks/{symbol}/government/sync` — sync SAM.gov / USAspending for the ticker, then return analysis
 - `GET /sectors` — normalized sector list
 - `GET /sectors/{sector}/accumulation` — sector aggregates
 - `GET /accumulation/top?sector=&min_score=&limit=` — ranked accumulation stocks
@@ -162,9 +171,12 @@ validated before submission. Provider failures are surfaced as generic 502 error
 missing configuration as generic 503 errors; detailed causes are logged server-side.
 Missing Finnhub values remain `null`; the API does not synthesize fundamentals. SEC
 endpoints populate from EDGAR when `SEC_ENABLED=true`; SEC failures return partial
-data with `provider_errors` and do not break other routes.
-See [docs/SEC_ACCUMULATION.md](../docs/SEC_ACCUMULATION.md) for scoring methodology
-and filing caveats. Responses include `X-Request-ID`; logs contain structured
+data with `provider_errors` and do not break other routes. Government endpoints
+populate when `GOVERNMENT_ENABLED=true` (SAM.gov needs `SAM_GOV_API_KEY`); failures
+likewise return partial payloads with `provider_errors`.
+See [docs/SEC_ACCUMULATION.md](../docs/SEC_ACCUMULATION.md) and
+[docs/government.md](../docs/government.md) for scoring methodology and caveats.
+Responses include `X-Request-ID`; logs contain structured
 request completion and order-submission audit records without credentials or
 confirmation tokens.
 
@@ -220,7 +232,7 @@ pytest -q
 ```
 
 Tests use only fakes and HTTP mock transports. They never call Alpaca, Finnhub,
-SEC EDGAR, Hugging Face, or submit an order.
+SEC EDGAR, SAM.gov, USAspending, Hugging Face, or submit an order.
 
 SEC-specific tests:
 
@@ -228,9 +240,15 @@ SEC-specific tests:
 pytest -q tests/test_sec_*.py tests/test_research_query.py
 ```
 
+Government-specific tests:
+
+```powershell
+pytest -q tests/test_government.py
+```
+
 ## Paper smoke checklist
 
-1. Configure only `ALPACA_PAPER_KEY`, `ALPACA_PAPER_SECRET`, optionally Finnhub, and `SEC_USER_AGENT`.
+1. Configure only `ALPACA_PAPER_KEY`, `ALPACA_PAPER_SECRET`, optionally Finnhub, `SEC_USER_AGENT`, and (for government) `SAM_GOV_API_KEY`.
 2. Keep `ALLOW_LIVE_TRADING=false`.
 3. Verify `/health` and `/config/status`; ensure no secrets appear.
 4. Search for `AAPL`, open its overview, and request daily bars.
@@ -242,7 +260,8 @@ pytest -q tests/test_sec_*.py tests/test_research_query.py
 10. Open `GET /stocks/AAPL/sec` or the SEC Intelligence panel in the dashboard.
 11. Wait for `GET /accumulation/scan/status` to reach `ready`; confirm Sectors and Top Accumulation list multiple tickers.
 12. Open the **SEC Records** tab, search `AAPL`, and confirm filings show filing entity/action columns, expandable parsed details (**+**), and the AI analysis card (or rule-based fallback when LLM is disabled).
-13. Confirm a live request returns 403 while live trading is disabled.
+13. Open `GET /stocks/LMT/government` or the Government Contracts panel on Market (set `SAM_GOV_API_KEY` for live SAM.gov data).
+14. Confirm a live request returns 403 while live trading is disabled.
 
 This application is for personal tooling, not investment advice. Broker acceptance
 does not guarantee execution, and API-side validation does not replace risk controls.

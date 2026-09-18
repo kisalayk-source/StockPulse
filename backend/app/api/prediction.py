@@ -164,6 +164,8 @@ async def _enrich_feature_inputs(
         out["sec_events"] = service.load_sec_event_dicts(session, str(ticker))
     if flags.get("fundamentals") and "fundamentals_metrics" not in out:
         out["fundamentals_metrics"] = await service.load_fundamentals_metrics(str(ticker))
+    if flags.get("government") and "government_events" not in out:
+        out["government_events"] = service.load_government_event_dicts(session, str(ticker))
     return out
 
 

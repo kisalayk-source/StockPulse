@@ -51,6 +51,7 @@ def build_llm_user_content(structured: dict[str, Any], *, template_text: str) ->
         "technical_score",
         "institutional_score",
         "fundamental_score",
+        "government_score",
         "calibration_method",
         "risk_gate",
     }
@@ -116,6 +117,8 @@ def explain_prediction(structured: dict[str, Any], *, llm_enabled: bool = False)
         drivers.append(f"Institutional / SEC flow score: {format_score(structured['institutional_score'])}")
     if structured.get("fundamental_score") is not None:
         drivers.append(f"Fundamental score: {format_score(structured['fundamental_score'])}")
+    if structured.get("government_score") is not None:
+        drivers.append(f"Government contract score: {format_score(structured['government_score'])}")
     if structured.get("model_agreement") is not None:
         drivers.append(f"Model agreement: {format_pct(structured['model_agreement'])}")
     if confidence is not None:

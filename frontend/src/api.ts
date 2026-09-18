@@ -389,6 +389,7 @@ export interface DayTradesSummary {
   wins: number
   losses: number
   open: number
+  exited: number
   netRealizedPnl: number
   netUnrealizedPnl: number
 }
@@ -398,6 +399,8 @@ export interface DayTradesReport {
   timezone: string
   /** Most recent session day that has agent fills, if any. */
   latestDate?: string | null
+  /** Session days that have at least one agent fill. */
+  availableDates: string[]
   trades: DayTradeRow[]
   summary: DayTradesSummary
 }
@@ -523,6 +526,50 @@ export interface SecIntelligenceResponse {
   major_holder_changes: Array<Record<string, unknown>>
   caveats: string[]
   provider_errors?: Array<{ provider: string; message: string }>
+}
+
+export interface GovernmentSummary {
+  score: number
+  early_signal_score: number
+  awards_30d: number
+  award_value_30d: number
+  obligations_30d: number
+  obligation_value_30d: number
+  opportunity_count_30d: number
+  opportunity_value_30d: number
+  new_customer: boolean
+  sole_source: boolean
+  incumbent: boolean
+  multi_year: boolean
+  revenue_exposure: number | null
+  contract_value: number
+}
+
+export interface GovernmentActivityRow {
+  date?: string
+  agency?: string | null
+  event?: string
+  title?: string | null
+  value?: number | null
+  status?: string
+  source?: string
+  source_url?: string | null
+  sole_source?: boolean
+  market_reaction?: Record<string, number | null>
+}
+
+export interface GovernmentAnalysisResponse {
+  ticker: string
+  as_of: string
+  government: GovernmentSummary
+  recent_activity: GovernmentActivityRow[]
+  open_opportunities: Array<Record<string, any>>
+  recent_awards: Array<Record<string, any>>
+  recent_obligations: Array<Record<string, any>>
+  top_agencies: Array<{ agency: string; value: number }>
+  alerts: Array<{ type: string; severity: string; message: string }>
+  provider_errors?: Array<{ provider: string; message: string }>
+  sync?: Record<string, unknown>
 }
 
 export interface SectorAccumulationResponse {
@@ -909,12 +956,14 @@ function mapDayTradesReport(raw: unknown): DayTradesReport {
     date: text(payload.date),
     timezone: text(payload.timezone, 'America/Los_Angeles'),
     latestDate: text(payload.latest_date) || null,
+    availableDates: list(payload.available_dates).map((value) => String(value)).filter(Boolean),
     trades: list(payload.trades).map((row) => mapDayTrade(row)),
     summary: {
       count: number(summary.count) ?? 0,
       wins: number(summary.wins) ?? 0,
       losses: number(summary.losses) ?? 0,
       open: number(summary.open) ?? 0,
+      exited: number(summary.exited) ?? 0,
       netRealizedPnl: number(summary.net_realized_pnl) ?? 0,
       netUnrealizedPnl: number(summary.net_unrealized_pnl) ?? 0,
     },
@@ -1650,6 +1699,65 @@ export const api = {
       major_holder_changes: list(payload.major_holder_changes) as Array<Record<string, unknown>>,
       caveats: list(payload.caveats).map((value) => text(value)),
       provider_errors: payload.provider_errors as SecIntelligenceResponse['provider_errors'],
+    }
+  },
+  governmentAnalysis: async (symbol: string, sync = false): Promise<GovernmentAnalysisResponse> => {
+    const query = sync ? '?sync=true' : ''
+    const payload = object(
+      await request<unknown>(`/stocks/${encodeURIComponent(symbol)}/government${query}`),
+    )
+    const gov = object(payload.government)
+    return {
+      ticker: text(payload.ticker, symbol.toUpperCase()),
+      as_of: text(payload.as_of),
+      government: {
+        score: number(gov.score) ?? 0,
+        early_signal_score: number(gov.early_signal_score) ?? 0,
+        awards_30d: number(gov.awards_30d) ?? 0,
+        award_value_30d: number(gov.award_value_30d) ?? 0,
+        obligations_30d: number(gov.obligations_30d) ?? 0,
+        obligation_value_30d: number(gov.obligation_value_30d) ?? 0,
+        opportunity_count_30d: number(gov.opportunity_count_30d) ?? 0,
+        opportunity_value_30d: number(gov.opportunity_value_30d) ?? 0,
+        new_customer: Boolean(gov.new_customer),
+        sole_source: Boolean(gov.sole_source),
+        incumbent: Boolean(gov.incumbent),
+        multi_year: Boolean(gov.multi_year),
+        revenue_exposure: number(gov.revenue_exposure),
+        contract_value: number(gov.contract_value) ?? 0,
+      },
+      recent_activity: list(payload.recent_activity).map((row) => {
+        const item = object(row)
+        return {
+          date: text(item.date) || undefined,
+          agency: item.agency == null ? null : text(item.agency),
+          event: text(item.event) || undefined,
+          title: item.title == null ? null : text(item.title),
+          value: number(item.value),
+          status: text(item.status) || undefined,
+          source: text(item.source) || undefined,
+          source_url: item.source_url == null ? null : text(item.source_url),
+          sole_source: Boolean(item.sole_source),
+          market_reaction: item.market_reaction as Record<string, number | null> | undefined,
+        }
+      }),
+      open_opportunities: list(payload.open_opportunities) as Array<Record<string, any>>,
+      recent_awards: list(payload.recent_awards) as Array<Record<string, any>>,
+      recent_obligations: list(payload.recent_obligations) as Array<Record<string, any>>,
+      top_agencies: list(payload.top_agencies).map((row) => {
+        const item = object(row)
+        return { agency: text(item.agency), value: number(item.value) ?? 0 }
+      }),
+      alerts: list(payload.alerts).map((row) => {
+        const item = object(row)
+        return {
+          type: text(item.type),
+          severity: text(item.severity, 'info'),
+          message: text(item.message),
+        }
+      }),
+      provider_errors: payload.provider_errors as GovernmentAnalysisResponse['provider_errors'],
+      sync: payload.sync as Record<string, unknown> | undefined,
     }
   },
   accumulation: async (symbol: string): Promise<AccumulationResponse> =>

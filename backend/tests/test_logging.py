@@ -34,7 +34,7 @@ def _test_settings(**overrides) -> Settings:
 def _client(settings: Settings | None = None) -> TestClient:
     reset_db_state()
     settings = settings or _test_settings()
-    services = Services(settings, FakeAlpaca(), FakeFinnhub(), FakeKronos(), FakeSec(), None, None)
+    services = Services(settings, FakeAlpaca(), FakeFinnhub(), FakeKronos(), FakeSec(), prediction=None, trading_agent=None)
     return TestClient(create_app(settings, services))
 
 

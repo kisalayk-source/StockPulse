@@ -36,6 +36,7 @@ class FeatureSnapshot:
     technical: dict[str, float] = field(default_factory=dict)
     sec: dict[str, float] = field(default_factory=dict)
     fundamentals: dict[str, float] = field(default_factory=dict)
+    government: dict[str, float] = field(default_factory=dict)
     market_regime: dict[str, Any] = field(default_factory=dict)
     snapshot_id: str | None = None
 

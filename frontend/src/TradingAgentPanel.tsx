@@ -293,19 +293,11 @@ export function TradingAgentPanel({
     setError('')
     setNotice('')
     try {
-      let report = await api.getTradingAgentDayTrades(requested)
-      if (
-        report.trades.length === 0
-        && report.latestDate
-        && report.latestDate !== report.date
-        && !explicitDate
-      ) {
-        setDayTradeDate(report.latestDate)
-        setNotice(`No fills on ${report.date}; showing latest session ${report.latestDate}`)
-        report = await api.getTradingAgentDayTrades(report.latestDate)
-      }
+      const report = await api.getTradingAgentDayTrades(requested)
       setDayTrades(report)
-      if (report.latestDate && !dayTradeDateTouchedRef.current) {
+      if (explicitDate) {
+        setDayTradeDate(explicitDate)
+      } else if (report.latestDate && !dayTradeDateTouchedRef.current) {
         setDayTradeDate(report.date)
       }
     } catch (err) {
@@ -945,6 +937,7 @@ export function TradingAgentPanel({
             <p className="daily-trades-summary" data-testid="daily-trades-summary">
               {dayTrades.summary.wins} wins · {dayTrades.summary.losses} losses
               {dayTrades.summary.open ? ` · ${dayTrades.summary.open} open` : ''}
+              {dayTrades.summary.exited ? ` · ${dayTrades.summary.exited} closed later` : ''}
               {' · '}net realized {formatCurrency(dayTrades.summary.netRealizedPnl)}
             </p>
           ) : (
@@ -971,7 +964,28 @@ export function TradingAgentPanel({
                   <tr>
                     <td colSpan={8}>
                       No agent trades on {dayTrades.date}
-                      {dayTrades.latestDate && dayTrades.latestDate !== dayTrades.date ? (
+                      {dayTrades.availableDates.length > 0 ? (
+                        <>
+                          {' · Sessions with fills: '}
+                          {dayTrades.availableDates.map((sessionDay, index) => (
+                            <span key={sessionDay}>
+                              {index > 0 ? ', ' : ''}
+                              <button
+                                type="button"
+                                className="text-button"
+                                disabled={dayTradesBusy}
+                                onClick={() => {
+                                  dayTradeDateTouchedRef.current = true
+                                  setDayTradeDate(sessionDay)
+                                  void generateDayTrades(sessionDay)
+                                }}
+                              >
+                                {sessionDay}
+                              </button>
+                            </span>
+                          ))}
+                        </>
+                      ) : dayTrades.latestDate && dayTrades.latestDate !== dayTrades.date ? (
                         <>
                           {' · '}
                           <button
@@ -997,9 +1011,9 @@ export function TradingAgentPanel({
                     <td>{row.side}</td>
                     <td>{row.quantity}</td>
                     <td>{formatCurrency(row.entryPrice)}</td>
-                    <td>{formatCurrency(row.exitPrice)}</td>
+                    <td>{row.exitPrice == null ? '—' : formatCurrency(row.exitPrice)}</td>
                     <td className={row.pnl < 0 ? 'negative' : row.pnl > 0 ? 'positive' : undefined}>
-                      {formatCurrency(row.pnl)}
+                      {row.status === 'exited' ? '—' : formatCurrency(row.pnl)}
                     </td>
                     <td>{row.result}</td>
                   </tr>

@@ -15,7 +15,7 @@ Technical features from daily OHLCV:
 - Structure: distances from SMAs, breakouts, drawdown, rolling returns
 
 `build_feature_snapshot(ticker, ohlcv, as_of=...)` truncates bars to `as_of`
-before computation (`feature_version` currently `1.0.0`).
+before computation (`feature_version` currently `1.1.0`).
 
 ## MVP-3 (implemented) — SEC flow
 
@@ -42,8 +42,24 @@ Pass `fundamentals_metrics=` from `FinnhubService.extended_fundamentals` (or a
 pre-merged `fundamentals=` dict). Metrics are treated as already as-of; there is
 no separate historical restatement store.
 
-Config toggles: `features.sec` / `features.fundamentals` in `ml/config/prediction.yaml`.
-Tree models still train/predict on technical features only; SEC/fundamentals fill
-`FeatureSnapshot` buckets and explanation scores.
+## Government contracts (implemented)
+
+Point-in-time government features under `ml/features/government/`:
+
+- Window counts/values: awards (7d/30d/90d), obligations, opportunities
+- Scores: `government_score`, `government_early_signal_score`
+- Flags: `government_new_customer`, `government_incumbent`, `government_sole_source`,
+  `government_multi_year`, `government_revenue_ratio`
+
+Builders accept normalized event **dicts** (from `GovernmentService`); only events
+with `event_at <= as_of` **and** `published_at <= as_of` (when present) are used.
+Pass `government_events=` into `build_feature_snapshot` (or a pre-merged
+`government=` dict). See [government.md](./government.md).
+
+Config toggles: `features.sec` / `features.fundamentals` / `features.government` in
+`ml/config/prediction.yaml`. When a category flag is true, that bucket is merged into
+the XGBoost/LightGBM train/predict matrix (`_merge_model_features` /
+`_attach_government_features`). Disabled categories still may appear empty on the
+snapshot but are not trained on.
 
 Indicators are **features**, never hard-coded BUY/SELL rules.

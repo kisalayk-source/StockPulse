@@ -35,6 +35,7 @@ They can disagree. That is normal — they answer different questions.
 | **MVP-5** | Done | Extra safety: soften or block BUY when risk looks too high |
 | **MVP-6** | Done | Prove-it toolkit: fair backtests, “what if we remove this?”, explanations of which clues mattered |
 | **MVP-7** | Done | Clearer plain-language explanations that only use real numbers from the model |
+| **Government contracts** | Done | Public procurement clues (SAM.gov / USAspending) on Market + in the feature snapshot |
 | **Agent alignment** | Done | Agent follows hybrid for BUY/SELL; chart path only helps size and targets |
 
 ---
@@ -95,6 +96,27 @@ inspection and future model use.
 
 **What it is not:** A guarantee that fundamentals alone drive the live stance —
 tree models may still emphasize technicals until training is expanded further.
+
+---
+
+## Government contract analysis (done)
+
+**What it is:** Public U.S. government procurement data (opportunities and awards
+from SAM.gov, obligations from USAspending) mapped to a ticker and summarized into
+a **government score** and an **early-signal score**. Timing respects the same
+kind of **point-in-time** rule as SEC: only events already published by the
+prediction date count. Scores are config-driven numbers, not LLM inventions.
+
+**What you get:** A Government Contracts panel on Market (next to SEC Intelligence),
+API routes to inspect or sync a symbol, optional on-screen alert banners when large
+awards or high scores fire, and a `government` bucket in the hybrid feature
+snapshot (`feature_version` 1.1.0) that tree models can train on when enabled.
+
+**What it is not:** A promise that a contract win means the stock will rise, push
+or email notifications, or a separate trading system — it plugs into the existing
+StockPulse research and prediction stack.
+
+Technical detail: [government.md](./government.md).
 
 ---
 
@@ -185,8 +207,8 @@ portfolio (max 50). Details: [trading-agent.md](./trading-agent.md).
 
 - Assume path “bullish” means the model says BUY
 - Assume a high probability removes risk
-- Expect SEC or fundamentals alone to “confirm” a trade without looking at the
-  full snapshot and risk gates
+- Expect SEC, fundamentals, or government scores alone to “confirm” a trade
+  without looking at the full snapshot and risk gates
 
 ---
 
@@ -197,6 +219,7 @@ portfolio (max 50). Details: [trading-agent.md](./trading-agent.md).
 | Everyday chart use | [how-forecast-works.md](./how-forecast-works.md) |
 | Architecture & leakage rules | [stock-prediction-architecture.md](./stock-prediction-architecture.md) |
 | Features / models / risk / eval (technical) | [feature-engine.md](./feature-engine.md), [model-engine.md](./model-engine.md), [risk-engine.md](./risk-engine.md), [backtesting.md](./backtesting.md), [model-evaluation.md](./model-evaluation.md) |
+| Government contracts | [government.md](./government.md) |
 | Kronos adapter | [kronos.md](./kronos.md) |
 | Prediction API | [api.md](./api.md) |
 | Trading agent | [trading-agent.md](./trading-agent.md) |

@@ -14,6 +14,7 @@ StockPulse is a paper-first trading workstation. Its live API already provides:
 | Path forecast | `POST /api/v1/forecast` via `KronosService` | Predicted OHLCV path (Kronos or path ensemble) |
 | Path ensemble | `forecasting/` | Weighted path adapters (Kronos, Chronos, TimesFM, …) |
 | SEC EDGAR | `backend/app/sec/` | 13F / 13D / 13G / Form 4 → Accumulation Score |
+| Government contracts | `backend/app/government/` | SAM.gov + USAspending → government / early-signal scores |
 | Fundamentals | Finnhub (optional) | Overview metrics merged into quotes |
 | Order risk | `backend/app/services/risk.py` | Pre-trade position / ADV / loss gates |
 | Portfolio backtest | `kronos_backtest/` | Offline look-ahead-safe portfolio engine |
@@ -22,12 +23,12 @@ StockPulse is a paper-first trading workstation. Its live API already provides:
 **Important distinction:** today’s “forecast” answers *where the price path may go*.
 It does **not** emit a calibrated BUY / HOLD / SELL probability with feature lineage.
 
-Orders remain manual. Forecasts and SEC scores never place trades.
+Orders remain manual. Forecasts, SEC scores, and government scores never place trades.
 
 ## Proposed hybrid stack
 
 ```text
-Market + SEC + Fundamentals
+Market + SEC + Fundamentals + Government
             ↓
      Feature engine (ml/features)
             ↓
@@ -62,7 +63,8 @@ Both remain available. Hybrid prediction does not replace the chart path.
 
 - **Alpaca bars** → technical features and training labels
 - **SEC pipeline** → institutional / insider flow features (MVP-3); reuse point-in-time rules from `sec/backtest`
-- **Finnhub** → fundamental features (MVP-4)
+- **Government pipeline** → award / obligation / opportunity features; PIT filter `event_at` + `published_at` ≤ `as_of`
+- **Finnhub** → fundamental features (MVP-4); optional revenue proxy for government materiality
 - **Kronos weights** → directional adapter that derives P(up) from path (MVP-2)
 - **`forecasting/` path ensemble** → stays for chart mode; directional ensemble is separate under `ml/ensemble`
 - **Order `risk.py`** → unchanged; signal risk is `ml/risk` (MVP-5)
@@ -82,9 +84,10 @@ Every prediction must be traceable to:
 - final signal
 
 Entities (dataclasses / optional SQLite rows): `Security`, `MarketBar`,
-`TechnicalFeature` / feature snapshot, `SecInstitutionalFlow`, `SecInsiderFlow`,
-`FundamentalFeature`, `ModelPrediction`, `RiskAssessment`, `TradingSignal`,
-`PredictionExplanation`.
+`TechnicalFeature` / feature snapshot (`technical` / `sec` / `fundamentals` /
+`government`), `SecInstitutionalFlow`, `SecInsiderFlow`, `FundamentalFeature`,
+`GovernmentEvent` / `GovernmentContract` / `GovernmentCompanyMapping`,
+`ModelPrediction`, `RiskAssessment`, `TradingSignal`, `PredictionExplanation`.
 
 ## Leakage rules (highest-priority correctness)
 
@@ -92,10 +95,11 @@ A prediction for timestamp `T` may only use information publicly available at `T
 
 - OHLCV bars with `timestamp <= T`
 - SEC filings with acceptance/publication time `<= T`
+- Government events with `event_at <= T` and `published_at <= T` (when present)
 - Fundamentals as-of `<= T` (no restated future values)
 
 Walk-forward validation must keep train periods strictly before validate/test.
-Unit tests assert that feature computation at `T` ignores later bars/filings.
+Unit tests assert that feature computation at `T` ignores later bars/filings/events.
 
 ## MVP sequence
 
@@ -108,6 +112,10 @@ Plain-language overview for non-engineers: **[mvp-roadmap.md](./mvp-roadmap.md)*
 5. **MVP-5 (done):** Independent signal risk engine (veto/downgrade BUY on vol, drawdown, concentration)
 6. **MVP-6 (done):** Walk-forward, ablation, SHAP, registry metrics
 7. **MVP-7 (done):** LLM explanation from structured results only (template always; OpenAI optional + grounded)
+
+**Government contracts (done):** SAM.gov + USAspending → `FeatureSnapshot.government`
+(`feature_version` `1.1.0`); Market `GovernmentPanel` + API — see
+[government.md](./government.md).
 
 **Agent alignment (done):** hybrid owns BUY/SELL; Kronos path owns sizing/targets only — see [mvp-roadmap.md](./mvp-roadmap.md#agent-alignment-done) and the section below.
 
@@ -144,10 +152,11 @@ max 50). Manual cycles may pass any valid ticker list via `POST /trading-agent/c
 
 ## Related docs
 
-- [mvp-roadmap.md](./mvp-roadmap.md) — plain-language MVP-1…7 + agent alignment
+- [mvp-roadmap.md](./mvp-roadmap.md) — plain-language MVP-1…7 + agent alignment + government
 - [trading-agent.md](./trading-agent.md) — agent cycles, ad-hoc symbols, API/UI
 - [how-forecast-works.md](./how-forecast-works.md) — everyday chart path vs model stance
 - [DEVELOPMENT.md](./DEVELOPMENT.md) — local setup, path forecast vs prediction
 - [SEC_ACCUMULATION.md](./SEC_ACCUMULATION.md) — EDGAR pipeline
+- [government.md](./government.md) — government contract analysis
 - [BACKTEST.md](./BACKTEST.md) — portfolio backtester (`kronos_backtest/`)
 - Feature / model / risk / eval docs under `docs/` (linked from the MVP roadmap)

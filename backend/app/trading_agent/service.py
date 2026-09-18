@@ -1408,6 +1408,7 @@ class TradingAgentService:
             for row in session.query(AgentPosition).filter(AgentPosition.agent_config_id == config.id).all()
         }
         remaining = {key: float(book["qty"]) for key, book in books.items() if book["qty"] > 1e-9}
+        open_by_buy: dict[int, float] = {}
         for buy in reversed(day_buys):
             key = (str(buy["symbol"]), str(buy["asset_type"]))
             left = remaining.get(key, 0.0)
@@ -1415,6 +1416,7 @@ class TradingAgentService:
                 continue
             attrib = min(float(buy["quantity"]), left)
             remaining[key] = left - attrib
+            open_by_buy[int(buy["id"])] = attrib
             pos = marks.get(key)
             mark = float(pos.current_price) if pos and pos.current_price else float(buy["entry_price"])
             entry = float(buy["entry_price"])
@@ -1437,19 +1439,56 @@ class TradingAgentService:
                 }
             )
 
+        # Buys filled this session day that were later fully/partially exited still belong on the report.
+        for buy in day_buys:
+            buy_id = int(buy["id"])
+            still_open = float(open_by_buy.get(buy_id, 0.0))
+            closed_later = float(buy["quantity"]) - still_open
+            if closed_later <= 1e-9:
+                continue
+            filled_at = buy["filled_at"]
+            trades.append(
+                {
+                    "id": buy_id,
+                    "symbol": buy["symbol"],
+                    "asset_type": buy["asset_type"],
+                    "side": "buy",
+                    "status": "exited",
+                    "quantity": closed_later,
+                    "entry_price": float(buy["entry_price"]),
+                    "exit_price": None,
+                    "pnl": 0.0,
+                    "result": "Closed later",
+                    "strategy": buy.get("strategy"),
+                    "filled_at": filled_at.isoformat() if hasattr(filled_at, "isoformat") else str(filled_at),
+                }
+            )
+
+        available_dates: set[str] = set()
+        for order, _candidate in fills:
+            filled_at = order.filled_at
+            if filled_at is None:
+                continue
+            if filled_at.tzinfo is None:
+                filled_at = filled_at.replace(tzinfo=timezone.utc)
+            available_dates.add(trading_date_for(filled_at, tz_name, reset).isoformat())
+
         trades.sort(key=lambda row: (str(row.get("filled_at") or ""), int(row.get("id") or 0)))
         closed = [row for row in trades if row["status"] == "closed"]
         opened = [row for row in trades if row["status"] == "open"]
+        exited = [row for row in trades if row["status"] == "exited"]
         return {
             "date": trading_date.isoformat(),
             "timezone": tz_name,
             "latest_date": latest_session_day.isoformat() if latest_session_day else None,
+            "available_dates": sorted(available_dates),
             "trades": trades,
             "summary": {
                 "count": len(trades),
                 "wins": sum(1 for row in closed if float(row["pnl"]) > 1e-6),
                 "losses": sum(1 for row in closed if float(row["pnl"]) < -1e-6),
                 "open": len(opened),
+                "exited": len(exited),
                 "net_realized_pnl": sum(float(row["pnl"]) for row in closed),
                 "net_unrealized_pnl": sum(float(row["pnl"]) for row in opened),
             },

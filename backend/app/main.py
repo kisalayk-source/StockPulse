@@ -11,6 +11,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.auth import router as auth_router
 from app.api.favorites import router as favorites_router
+from app.api.government import router as government_router
 from app.api.logs import router as logs_router
 from app.api.prediction import router as prediction_router
 from app.api.risk_management import router as risk_management_router
@@ -64,7 +65,7 @@ def create_app(settings: Settings | None = None, services: Services | None = Non
             if scheduler is not None:
                 scheduler.stop()
             shutdown_logging()
-            for service_name in ("finnhub", "sec"):
+            for service_name in ("finnhub", "sec", "government"):
                 service = getattr(app.state.services, service_name, None)
                 client = getattr(service, "client", None) if service is not None else None
                 if client is not None and hasattr(client, "aclose"):
@@ -135,6 +136,11 @@ def create_app(settings: Settings | None = None, services: Services | None = Non
     )
     app.include_router(
         sec_router,
+        prefix=settings.api_prefix,
+        dependencies=[Depends(require_api_key), Depends(require_user)],
+    )
+    app.include_router(
+        government_router,
         prefix=settings.api_prefix,
         dependencies=[Depends(require_api_key), Depends(require_user)],
     )

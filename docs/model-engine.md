@@ -28,3 +28,8 @@ Plain-language MVP overview: [mvp-roadmap.md](./mvp-roadmap.md).
 - Prefer `ensemble.strategy: performance_weighted` when running the full trio
 
 Config: `ml/config/prediction.yaml`.
+
+Feature category toggles (`features.technical` / `sec` / `fundamentals` /
+`government`) control which snapshot buckets merge into the tree-model matrix.
+`feature_version` is currently `1.1.0` (government category added). Directional
+Kronos path→P(up) still uses path outputs, not the government feature vector.
