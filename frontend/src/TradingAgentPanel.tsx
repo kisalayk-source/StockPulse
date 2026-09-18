@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import {
   AlertTriangle,
   OctagonX,
@@ -7,6 +7,7 @@ import {
   RefreshCw,
   ShieldAlert,
   Square,
+  X,
 } from 'lucide-react'
 import {
   ApiError,
@@ -17,9 +18,11 @@ import {
   type AgentPositionRow,
   type AgentTradingType,
   type DailyLossState,
+  type DayTradesReport,
   type RiskProfile,
   type TradeCandidateRow,
   type TradingAgentConfig,
+  type UniverseScanRow,
 } from './api'
 import { formatCurrency, formatDateTime, formatPercent } from './format'
 
@@ -47,6 +50,112 @@ function dailyLossClass(status: string): string {
   return 'daily-loss-card'
 }
 
+const TICKER_PATTERN = /^[A-Z][A-Z0-9.-]{0,9}$/
+
+function parseTickers(raw: string): string[] {
+  const seen = new Set<string>()
+  const tickers: string[] = []
+  for (const part of raw.split(/[\s,;]+/)) {
+    const ticker = part.trim().toUpperCase()
+    if (!ticker || seen.has(ticker)) continue
+    seen.add(ticker)
+    tickers.push(ticker)
+  }
+  return tickers
+}
+
+function mergeUniverse(current: string[], extra: string[]): string[] {
+  const seen = new Set(current)
+  const next = [...current]
+  for (const ticker of extra) {
+    if (seen.has(ticker)) continue
+    seen.add(ticker)
+    next.push(ticker)
+  }
+  return next
+}
+
+function todayInAgentTz(): string {
+  return new Intl.DateTimeFormat('en-CA', { timeZone: 'America/Los_Angeles' }).format(new Date())
+}
+
+function sessionDayInAgentTz(iso: string | null | undefined): string | null {
+  if (!iso) return null
+  const parsed = new Date(iso)
+  if (Number.isNaN(parsed.getTime())) {
+    const prefix = iso.slice(0, 10)
+    return /^\d{4}-\d{2}-\d{2}$/.test(prefix) ? prefix : null
+  }
+  return new Intl.DateTimeFormat('en-CA', { timeZone: 'America/Los_Angeles' }).format(parsed)
+}
+
+function latestFillSessionDay(orders: AgentOrderRow[]): string | null {
+  let best: string | null = null
+  for (const row of orders) {
+    if (row.status !== 'filled' && row.status !== 'partially_filled') continue
+    const day = sessionDayInAgentTz(row.filledAt || row.submittedAt)
+    if (day && (!best || day > best)) best = day
+  }
+  return best
+}
+
+const MAX_UNIVERSE_FALLBACK = 50
+
+function scanOutcomeLabel(outcome: string): string {
+  switch (outcome) {
+    case 'approved':
+      return 'Approved'
+    case 'risk_rejected':
+      return 'Risk rejected'
+    case 'hold':
+      return 'Hold'
+    case 'unavailable':
+      return 'Unavailable'
+    case 'forecast_error':
+      return 'Forecast error'
+    case 'qty_zero':
+      return 'Size zero'
+    case 'no_price':
+      return 'No price'
+    case 'no_position':
+      return 'No position'
+    case 'skipped':
+      return 'Skipped'
+    default:
+      return outcome || '—'
+  }
+}
+
+function csvCell(value: string | number | null | undefined): string {
+  const raw = value == null ? '' : String(value)
+  if (/[",\n]/.test(raw)) return `"${raw.replaceAll('"', '""')}"`
+  return raw
+}
+
+function downloadDayTradesCsv(report: DayTradesReport) {
+  const header = ['time', 'symbol', 'side', 'qty', 'entry', 'exit_or_mark', 'pnl', 'result', 'status']
+  const rows = report.trades.map((row) => [
+    csvCell(row.filledAt),
+    csvCell(row.symbol),
+    csvCell(row.side),
+    csvCell(row.quantity),
+    csvCell(row.entryPrice),
+    csvCell(row.exitPrice),
+    csvCell(row.pnl),
+    csvCell(row.result),
+    csvCell(row.status),
+  ].join(','))
+  const blob = new Blob([`${header.join(',')}\n${rows.join('\n')}\n`], { type: 'text/csv;charset=utf-8' })
+  const url = URL.createObjectURL(blob)
+  const link = document.createElement('a')
+  link.href = url
+  link.download = `day-trades-${report.date}.csv`
+  document.body.appendChild(link)
+  link.click()
+  link.remove()
+  URL.revokeObjectURL(url)
+}
+
 export function TradingAgentPanel({
   onOpenRiskSettings,
 }: {
@@ -66,6 +175,11 @@ export function TradingAgentPanel({
   const [cycleMinutes, setCycleMinutes] = useState('5')
   const [maxLossAmount, setMaxLossAmount] = useState('')
   const [maxLossPercent, setMaxLossPercent] = useState('')
+  const [tickerInput, setTickerInput] = useState('')
+  const [dayTradeDate, setDayTradeDate] = useState(todayInAgentTz)
+  const [dayTrades, setDayTrades] = useState<DayTradesReport | null>(null)
+  const [dayTradesBusy, setDayTradesBusy] = useState(false)
+  const dayTradeDateTouchedRef = useRef(false)
 
   const applyConfig = useCallback((next: TradingAgentConfig) => {
     setConfig(next)
@@ -94,6 +208,10 @@ export function TradingAgentPanel({
       setOrders(ords)
       setEvents(evts)
       setPerformance(perf)
+      if (!dayTradeDateTouchedRef.current) {
+        const latest = latestFillSessionDay(ords)
+        if (latest) setDayTradeDate(latest)
+      }
     } catch (err) {
       setError(err instanceof ApiError ? err.message : 'Unable to load trading agent')
     }
@@ -128,6 +246,99 @@ export function TradingAgentPanel({
     }
   }
 
+  async function saveUniverse(next: string[], success = 'Risk portfolio updated') {
+    const maxSize = config?.maxUniverseSize || MAX_UNIVERSE_FALLBACK
+    const unique = [...new Set(next.map((ticker) => ticker.toUpperCase()).filter(Boolean))]
+    const invalid = unique.find((ticker) => !TICKER_PATTERN.test(ticker))
+    if (invalid) {
+      setError(`Invalid ticker: ${invalid}`)
+      return
+    }
+    if (unique.length === 0) {
+      setError('Risk portfolio must include at least one ticker')
+      return
+    }
+    if (unique.length > maxSize) {
+      setError(`Risk portfolio cannot exceed ${maxSize} tickers`)
+      return
+    }
+    await run(() => api.updateTradingAgentConfig({ universe: unique }), success)
+  }
+
+  async function addTickers() {
+    const extra = parseTickers(tickerInput)
+    if (extra.length === 0) return
+    setTickerInput('')
+    await saveUniverse(mergeUniverse(config?.universe || [], extra))
+  }
+
+  async function generateDayTrades(explicitDate?: string) {
+    const requested = explicitDate || dayTradeDate || undefined
+    setDayTradesBusy(true)
+    setError('')
+    setNotice('')
+    try {
+      let report = await api.getTradingAgentDayTrades(requested)
+      if (
+        report.trades.length === 0
+        && report.latestDate
+        && report.latestDate !== report.date
+        && !explicitDate
+      ) {
+        setDayTradeDate(report.latestDate)
+        setNotice(`No fills on ${report.date}; showing latest session ${report.latestDate}`)
+        report = await api.getTradingAgentDayTrades(report.latestDate)
+      }
+      setDayTrades(report)
+      if (report.latestDate && !dayTradeDateTouchedRef.current) {
+        setDayTradeDate(report.date)
+      }
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : 'Unable to generate day trades')
+    } finally {
+      setDayTradesBusy(false)
+    }
+  }
+
+  async function removeTicker(symbol: string) {
+    await saveUniverse((config?.universe || []).filter((ticker) => ticker !== symbol))
+  }
+
+  async function importFavorites() {
+    setError('')
+    setNotice('')
+    setBusy(true)
+    let extra: string[] = []
+    try {
+      const favorites = await api.listFavorites()
+      extra = favorites.map((row) => row.ticker).filter(Boolean)
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : 'Unable to load favorites')
+      setBusy(false)
+      return
+    }
+    setBusy(false)
+    if (extra.length === 0) {
+      setNotice('No favorites to sync')
+      return
+    }
+    const merged = mergeUniverse(config?.universe || [], extra)
+    const maxSize = config?.maxUniverseSize || MAX_UNIVERSE_FALLBACK
+    if (merged.length > maxSize) {
+      setError(
+        `Favorites sync would exceed ${maxSize} tickers (${merged.length}). Remove some favorites or portfolio tickers first.`,
+      )
+      return
+    }
+    const added = merged.length - (config?.universe || []).length
+    await saveUniverse(
+      merged,
+      added > 0
+        ? `Synced favorites · added ${added} ticker${added === 1 ? '' : 's'}`
+        : 'Risk portfolio already includes all favorites',
+    )
+  }
+
   const daily: DailyLossState | undefined = config?.dailyLoss
   const intervalMinutes = Math.max(1, Math.round((config?.cycleIntervalSeconds || 300) / 60))
   const autoCycleLabel = running
@@ -141,7 +352,10 @@ export function TradingAgentPanel({
     (event) => event.eventType === 'RISK_AUTO_ADJUSTED' || event.eventType === 'RISK_AUTO_ADJUST_SKIPPED',
   )
   const latestRiskAdjust = riskAdjustEvents[0]
-  const filledOrders = orders.filter((row) => row.status === 'filled')
+  const filledOrders = orders.filter((row) => row.status === 'filled' || row.status === 'partially_filled')
+  const universeScan: UniverseScanRow[] = config?.lastUniverseScan || []
+  const maxUniverseSize = config?.maxUniverseSize || MAX_UNIVERSE_FALLBACK
+  const universeCount = (config?.universe || []).length
   const cycleNotice =
     running && accepted.length === 0 && rejected.length > 0
       ? latestRiskAdjust?.message ||
@@ -293,6 +507,14 @@ export function TradingAgentPanel({
             <span className="label">Utilization</span>
             <strong>{formatPercent((daily?.utilizationPct || 0) / 100)}</strong>
           </div>
+          <div data-testid="day-trades-today">
+            <span className="label">Day trades today</span>
+            <strong>
+              {daily?.maxTradesPerDay != null && daily.maxTradesPerDay > 0
+                ? `${daily.tradesToday ?? 0} / ${daily.maxTradesPerDay}`
+                : '—'}
+            </strong>
+          </div>
         </div>
         {daily?.warnings?.length ? (
           <div className="warning-banner compact" role="status">
@@ -379,6 +601,56 @@ export function TradingAgentPanel({
               }}
             />
           </label>
+          <div className="universe-editor" data-testid="risk-portfolio">
+            <span>Risk portfolio</span>
+            <p className="agent-subtitle">
+              Symbols the agent forecasts and trades each cycle ({universeCount} / {maxUniverseSize}).
+              Sync favorites to cover your full watchlist.
+            </p>
+            <div className="universe-chips" role="list" aria-label="Risk portfolio tickers">
+              {!config ? (
+                <span className="agent-subtitle">Loading…</span>
+              ) : (config.universe || []).length === 0 ? (
+                <span className="agent-subtitle">No tickers yet</span>
+              ) : (
+                (config.universe || []).map((ticker) => (
+                  <span key={ticker} className="universe-chip" role="listitem">
+                    {ticker}
+                    <button
+                      type="button"
+                      className="universe-chip-remove"
+                      aria-label={`Remove ${ticker} from risk portfolio`}
+                      disabled={busy || (config?.universe || []).length <= 1}
+                      onClick={() => void removeTicker(ticker)}
+                    >
+                      <X size={12} />
+                    </button>
+                  </span>
+                ))
+              )}
+            </div>
+            <div className="inline-fields">
+              <input
+                value={tickerInput}
+                disabled={busy}
+                placeholder="Add tickers (AAPL, MSFT)"
+                aria-label="Add tickers to risk portfolio"
+                onChange={(event) => setTickerInput(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === 'Enter') {
+                    event.preventDefault()
+                    void addTickers()
+                  }
+                }}
+              />
+              <button type="button" disabled={busy || !parseTickers(tickerInput).length} onClick={() => void addTickers()}>
+                Add
+              </button>
+              <button type="button" disabled={busy} onClick={() => void importFavorites()}>
+                Sync favorites
+              </button>
+            </div>
+          </div>
           <label>
             <span>Auto-cycle interval (minutes)</span>
             <input
@@ -437,27 +709,72 @@ export function TradingAgentPanel({
       </section>
 
       <div className="agent-panels">
-        <section className="card agent-resizable" data-testid="accepted-queue">
-          <div className="card-heading compact"><h2>Accepted opportunities</h2></div>
+        <section className="card agent-resizable" data-testid="universe-scan">
+          <div className="card-heading compact">
+            <h2>Universe scan</h2>
+            <p className="agent-subtitle">
+              Last cycle outcome for every risk-portfolio ticker
+              {config?.lastCycleAt ? ` · ${formatDateTime(config.lastCycleAt)}` : ''}
+            </p>
+          </div>
           <div className="table-wrap">
             <table>
               <thead>
                 <tr>
                   <th>Symbol</th>
+                  <th>Outcome</th>
+                  <th>Signal</th>
+                  <th>Confidence</th>
+                  <th>Mark</th>
+                  <th>Reason</th>
+                </tr>
+              </thead>
+              <tbody>
+                {universeScan.length === 0 ? (
+                  <tr><td colSpan={6}>Run a forecast cycle to see per-symbol scan results</td></tr>
+                ) : universeScan.map((row) => (
+                  <tr key={row.symbol}>
+                    <td>{row.symbol}</td>
+                    <td>{scanOutcomeLabel(row.outcome)}</td>
+                    <td>{row.signal || '—'}</td>
+                    <td>{formatPercent(row.confidence ?? null)}</td>
+                    <td>{row.price != null ? formatCurrency(row.price) : '—'}</td>
+                    <td className="agent-reject-reason">{row.reason || '—'}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </section>
+
+        <section className="card agent-resizable" data-testid="accepted-queue">
+          <div className="card-heading compact">
+            <h2>Accepted opportunities</h2>
+            <p className="agent-subtitle">Recent approved entries and exits (not limited by reject volume)</p>
+          </div>
+          <div className="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Symbol</th>
+                  <th>Side</th>
                   <th>Strategy</th>
                   <th>Signal</th>
+                  <th>Reason</th>
                   <th>Confidence</th>
                   <th>When</th>
                 </tr>
               </thead>
               <tbody>
                 {accepted.length === 0 ? (
-                  <tr><td colSpan={5}>No approved opportunities this cycle window</td></tr>
+                  <tr><td colSpan={7}>No approved opportunities this cycle window</td></tr>
                 ) : accepted.map((row) => (
                   <tr key={row.id}>
                     <td>{row.symbol}</td>
+                    <td>{row.side || '—'}</td>
                     <td>{row.strategy}</td>
                     <td>{String(row.forecastSnapshot.signal || '—')}</td>
+                    <td>{row.exitReason ? String(row.exitReason).replaceAll('_', ' ') : '—'}</td>
                     <td>{formatPercent(Number(row.forecastSnapshot.confidence) || null)}</td>
                     <td>{formatDateTime(row.createdAt)}</td>
                   </tr>
@@ -501,7 +818,7 @@ export function TradingAgentPanel({
           </div>
         </section>
 
-        <section className="card agent-resizable">
+        <section className="card agent-resizable" data-testid="active-positions">
           <div className="card-heading compact"><h2>Active Positions</h2></div>
           <div className="table-wrap">
             <table>
@@ -510,18 +827,20 @@ export function TradingAgentPanel({
                   <th>Symbol</th>
                   <th>Qty</th>
                   <th>Entry</th>
+                  <th>Invested</th>
                   <th>Mark</th>
                   <th>Unrealized</th>
                 </tr>
               </thead>
               <tbody>
                 {positions.length === 0 ? (
-                  <tr><td colSpan={5}>No open agent positions</td></tr>
+                  <tr><td colSpan={6}>No open agent positions</td></tr>
                 ) : positions.map((row) => (
                   <tr key={row.id}>
                     <td>{row.symbol}</td>
                     <td>{row.quantity}</td>
                     <td>{formatCurrency(row.averageEntryPrice)}</td>
+                    <td>{formatCurrency(row.quantity * row.averageEntryPrice)}</td>
                     <td>{formatCurrency(row.currentPrice)}</td>
                     <td className={row.unrealizedPnl < 0 ? 'negative' : 'positive'}>{formatCurrency(row.unrealizedPnl)}</td>
                   </tr>
@@ -562,6 +881,108 @@ export function TradingAgentPanel({
                     <td>{formatCurrency(row.averageFillPrice)}</td>
                     <td><span className={`status ${row.status}`}>{row.status}</span></td>
                     <td>{formatDateTime(row.filledAt || row.submittedAt)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </section>
+
+        <section className="card agent-resizable" data-testid="daily-trades">
+          <div className="card-heading compact">
+            <h2>Daily trades</h2>
+            <p className="agent-subtitle">
+              Session-day fills labeled profit or loss using average cost
+              {dayTrades?.timezone ? ` · ${dayTrades.timezone}` : ''}
+            </p>
+          </div>
+          <div className="daily-trades-toolbar">
+            <label>
+              Session day
+              <input
+                type="date"
+                value={dayTradeDate}
+                onChange={(event) => {
+                  dayTradeDateTouchedRef.current = true
+                  setDayTradeDate(event.target.value)
+                }}
+                aria-label="Session day"
+              />
+            </label>
+            <div className="agent-controls">
+              <button type="button" disabled={dayTradesBusy} onClick={() => void generateDayTrades()}>
+                Generate
+              </button>
+              <button
+                type="button"
+                disabled={!dayTrades}
+                onClick={() => dayTrades && downloadDayTradesCsv(dayTrades)}
+              >
+                Download CSV
+              </button>
+            </div>
+          </div>
+          {dayTrades ? (
+            <p className="daily-trades-summary" data-testid="daily-trades-summary">
+              {dayTrades.summary.wins} wins · {dayTrades.summary.losses} losses
+              {dayTrades.summary.open ? ` · ${dayTrades.summary.open} open` : ''}
+              {' · '}net realized {formatCurrency(dayTrades.summary.netRealizedPnl)}
+            </p>
+          ) : (
+            <p className="daily-trades-summary">Choose a day and generate the session P/L report.</p>
+          )}
+          <div className="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Time</th>
+                  <th>Symbol</th>
+                  <th>Side</th>
+                  <th>Qty</th>
+                  <th>Entry</th>
+                  <th>Exit / mark</th>
+                  <th>P/L</th>
+                  <th>Result</th>
+                </tr>
+              </thead>
+              <tbody>
+                {!dayTrades ? (
+                  <tr><td colSpan={8}>No report generated yet</td></tr>
+                ) : dayTrades.trades.length === 0 ? (
+                  <tr>
+                    <td colSpan={8}>
+                      No agent trades on {dayTrades.date}
+                      {dayTrades.latestDate && dayTrades.latestDate !== dayTrades.date ? (
+                        <>
+                          {' · '}
+                          <button
+                            type="button"
+                            className="text-button"
+                            disabled={dayTradesBusy}
+                            onClick={() => {
+                              dayTradeDateTouchedRef.current = true
+                              setDayTradeDate(dayTrades.latestDate!)
+                              void generateDayTrades(dayTrades.latestDate!)
+                            }}
+                          >
+                            Open latest session {dayTrades.latestDate}
+                          </button>
+                        </>
+                      ) : null}
+                    </td>
+                  </tr>
+                ) : dayTrades.trades.map((row) => (
+                  <tr key={`${row.status}-${row.id}`}>
+                    <td>{formatDateTime(row.filledAt)}</td>
+                    <td>{row.symbol}</td>
+                    <td>{row.side}</td>
+                    <td>{row.quantity}</td>
+                    <td>{formatCurrency(row.entryPrice)}</td>
+                    <td>{formatCurrency(row.exitPrice)}</td>
+                    <td className={row.pnl < 0 ? 'negative' : row.pnl > 0 ? 'positive' : undefined}>
+                      {formatCurrency(row.pnl)}
+                    </td>
+                    <td>{row.result}</td>
                   </tr>
                 ))}
               </tbody>

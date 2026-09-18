@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 from contextlib import contextmanager
+from datetime import date
 from typing import Annotated, Any, Iterator
 
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from sqlalchemy.orm import Session
 
 from app.auth import get_current_user, get_user_broker_credentials, use_trading_credentials
@@ -208,6 +209,18 @@ def get_orders(request: Request, user: UserDep, session: SessionDep) -> dict[str
     agent = _agent(request)
     config = _config(session, user, agent)
     return {"orders": agent.list_orders(session, config)}
+
+
+@router.get("/trading-agent/day-trades")
+def get_day_trades(
+    request: Request,
+    user: UserDep,
+    session: SessionDep,
+    trading_date: date | None = Query(default=None, alias="date"),
+) -> dict[str, Any]:
+    agent = _agent(request)
+    config = _config(session, user, agent)
+    return agent.day_trades(session, config, trading_date)
 
 
 @router.get("/trading-agent/positions")

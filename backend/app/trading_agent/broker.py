@@ -4,8 +4,29 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from enum import Enum
 from typing import Any, Protocol
 from uuid import uuid4
+
+_FILLED_STATUSES = frozenset({"filled", "partially_filled"})
+
+
+def normalize_order_status(status: Any, *, default: str = "accepted") -> str:
+    """Normalize broker statuses to lowercase values (e.g. filled, not OrderStatus.FILLED)."""
+    if status is None:
+        return default
+    if isinstance(status, Enum):
+        status = status.value
+    text = str(status).strip()
+    if not text:
+        return default
+    if "." in text:
+        text = text.rsplit(".", 1)[-1]
+    return text.lower().replace(" ", "_")
+
+
+def is_filled_status(status: Any) -> bool:
+    return normalize_order_status(status, default="") in _FILLED_STATUSES
 
 
 @dataclass
@@ -352,14 +373,17 @@ class AlpacaBrokerAdapter:
             if not isinstance(raw, dict):
                 raw = {"result": raw}
             raw = self._await_fill(raw)
-            status = str(raw.get("status") or "accepted")
+            status = normalize_order_status(raw.get("status"), default="accepted")
+            filled_at = raw.get("filled_at")
+            if is_filled_status(status) and not filled_at:
+                filled_at = now
             return OrderResult(
                 broker_order_id=str(raw.get("id") or uuid4().hex),
                 status=status,
                 filled_quantity=float(raw.get("filled_qty") or 0),
                 average_fill_price=float(raw["filled_avg_price"]) if raw.get("filled_avg_price") else None,
                 submitted_at=now,
-                filled_at=raw.get("filled_at"),
+                filled_at=filled_at,
                 raw=raw,
             )
         except Exception as exc:
@@ -374,7 +398,7 @@ class AlpacaBrokerAdapter:
         """Poll briefly so paper market orders resolve to filled when Alpaca is fast."""
         import time
 
-        status = str(raw.get("status") or "").lower()
+        status = normalize_order_status(raw.get("status"), default="")
         order_id = raw.get("id")
         if not order_id or status in self._TERMINAL_STATUSES:
             return raw
@@ -390,7 +414,7 @@ class AlpacaBrokerAdapter:
                 break
             if isinstance(polled, dict):
                 latest = polled
-                status = str(polled.get("status") or "").lower()
+                status = normalize_order_status(polled.get("status"), default="")
                 if status in self._TERMINAL_STATUSES:
                     return polled
         return latest
@@ -439,4 +463,10 @@ class AlpacaBrokerAdapter:
 
     def get_open_orders(self) -> list[dict[str, Any]]:
         rows = self.alpaca.orders(self.mode, status="open", limit=100)
-        return [r if isinstance(r, dict) else {"id": getattr(r, "id", None)} for r in rows or []]
+        out: list[dict[str, Any]] = []
+        for row in rows or []:
+            data = row if isinstance(row, dict) else {"id": getattr(row, "id", None), "status": getattr(row, "status", None)}
+            if "status" in data:
+                data = {**data, "status": normalize_order_status(data.get("status"))}
+            out.append(data)
+        return out

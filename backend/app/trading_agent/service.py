@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
+import re
 from datetime import date, datetime, time, timedelta, timezone
-from zoneinfo import ZoneInfo
 from time import sleep
 from typing import Any, Callable, TypeVar
 from uuid import uuid4
+from zoneinfo import ZoneInfo
 
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session
@@ -17,6 +18,8 @@ from app.trading_agent.broker import (
     BrokerAdapter,
     OrderRequest,
     PaperBrokerAdapter,
+    is_filled_status,
+    normalize_order_status,
 )
 from app.trading_agent.daily_loss import DailyLossService, trading_date_for
 from app.trading_agent.forecast_provider import ForecastProvider, KronosForecastProvider
@@ -32,11 +35,40 @@ from app.trading_agent.models import (
 )
 from app.trading_agent.risk_engine import PortfolioSnapshot, RiskEngine
 from app.trading_agent.risk_profiles import get_risk_config, merge_risk_config, validate_risk_config
-from app.trading_agent.strategies import StrategyCandidate, build_intraday_exit_candidates, strategies_for_mode
+from app.trading_agent.strategies import (
+    StrategyCandidate,
+    build_intraday_exit_candidates,
+    classify_empty_generate,
+    strategies_for_mode,
+)
 
 
 ACTIVE_STATUSES = {"paper", "live", "paused", "configured"}
+DEFAULT_UNIVERSE = ["SPY", "AAPL", "MSFT", "NVDA", "AMZN"]
+MAX_UNIVERSE_SIZE = 50
+_TICKER_RE = re.compile(r"^[A-Z][A-Z0-9.-]{0,9}$")
 T = TypeVar("T")
+
+
+def normalize_universe(symbols: list[Any] | None) -> list[str]:
+    """Uppercase, dedupe, and validate agent tickers."""
+    cleaned: list[str] = []
+    seen: set[str] = set()
+    for raw in symbols or []:
+        ticker = str(raw or "").strip().upper()
+        if not ticker:
+            continue
+        if not _TICKER_RE.match(ticker):
+            raise ValueError(f"Invalid ticker: {raw}")
+        if ticker in seen:
+            continue
+        seen.add(ticker)
+        cleaned.append(ticker)
+    if not cleaned:
+        raise ValueError("universe must include at least one ticker")
+    if len(cleaned) > MAX_UNIVERSE_SIZE:
+        raise ValueError(f"universe cannot exceed {MAX_UNIVERSE_SIZE} tickers")
+    return cleaned
 
 
 def _retry_locked(fn: Callable[[], T], *, attempts: int = 8, delay: float = 0.15) -> T:
@@ -102,7 +134,7 @@ class TradingAgentService:
                 capital_allocation=float(risk.get("capital_allocation") or 10_000),
                 forecast_enabled=True,
                 live_trading_enabled=False,
-                universe=["SPY", "AAPL", "MSFT", "NVDA", "AMZN"],
+                universe=list(DEFAULT_UNIVERSE),
                 cycle_interval_seconds=300,
             )
             session.add(created)
@@ -126,7 +158,7 @@ class TradingAgentService:
         if "forecast_enabled" in payload and payload["forecast_enabled"] is not None:
             config.forecast_enabled = bool(payload["forecast_enabled"])
         if "universe" in payload and payload["universe"] is not None:
-            config.universe = [str(s).upper() for s in payload["universe"]]
+            config.universe = normalize_universe(payload["universe"])
         if "cycle_interval_seconds" in payload and payload["cycle_interval_seconds"] is not None:
             interval = int(payload["cycle_interval_seconds"])
             if interval < 60 or interval > 86_400:
@@ -388,13 +420,39 @@ class TradingAgentService:
 
         if snapshot.limit_reached and config.status in {"paper", "live"}:
             self._enforce_daily_loss_action(session, config, risk)
-        return snapshot.to_dict()
+        payload = snapshot.to_dict()
+        payload.update(self._day_trade_usage(session, config, risk))
+        return payload
 
     def get_daily_loss_snapshot(self, session: Session, config: AgentConfig) -> dict[str, Any]:
         try:
             return self.refresh_daily_loss(session, config)
         except ProviderUnavailable as exc:
             return self._unavailable_daily_loss(config, str(exc))
+
+    def _trades_today_count(self, session: Session, config: AgentConfig, risk: dict[str, Any]) -> int:
+        """Filled agent orders since the session-day reset (matches risk-engine trades_today)."""
+        self._repair_order_statuses(session)
+        return (
+            session.query(AgentOrder)
+            .join(TradePlan)
+            .join(TradeCandidate)
+            .join(AgentRun)
+            .filter(
+                AgentRun.agent_config_id == config.id,
+                AgentOrder.status.in_(("filled", "partially_filled")),
+                AgentOrder.filled_at >= self._session_day_start_utc(risk),
+            )
+            .count()
+        )
+
+    def _day_trade_usage(
+        self, session: Session, config: AgentConfig, risk: dict[str, Any]
+    ) -> dict[str, int]:
+        return {
+            "max_trades_per_day": int(risk.get("max_trades_per_day") or 0),
+            "trades_today": self._trades_today_count(session, config, risk),
+        }
 
     def reset_daily_loss(self, session: Session, config: AgentConfig) -> dict[str, Any]:
         self.ensure_daily_loss_record(session, config, reset=True)
@@ -448,7 +506,14 @@ class TradingAgentService:
         return window_start <= eastern <= close + timedelta(minutes=5)
 
     def _open_plan_levels(self, session: Session, config: AgentConfig, symbol: str) -> tuple[float | None, float | None, float | None]:
-        """Return (entry, stop_loss, take_profit) from the latest approved/executed plan."""
+        """Return (entry, stop_loss, take_profit) from the latest entry plan (not exits)."""
+        entry, stop, take, _strategy, _mode = self._entry_plan_for_symbol(session, config, symbol)
+        return entry, stop, take
+
+    def _entry_plan_for_symbol(
+        self, session: Session, config: AgentConfig, symbol: str
+    ) -> tuple[float | None, float | None, float | None, str | None, str | None]:
+        """Latest approved/executed entry plan: entry, stop, take, strategy, trading_mode."""
         plan = (
             session.query(TradePlan)
             .join(TradeCandidate)
@@ -456,14 +521,26 @@ class TradingAgentService:
             .filter(
                 AgentRun.agent_config_id == config.id,
                 TradeCandidate.symbol == symbol.upper(),
+                TradeCandidate.strategy != "intraday_exit",
                 TradePlan.status.in_(("approved", "executed")),
             )
             .order_by(TradePlan.id.desc())
             .first()
         )
         if plan is None:
-            return None, None, None
-        return plan.entry_price, plan.stop_loss, plan.take_profit
+            return None, None, None, None, None
+        candidate = (
+            session.query(TradeCandidate).filter(TradeCandidate.id == plan.trade_candidate_id).first()
+        )
+        strategy = str(candidate.strategy) if candidate is not None else None
+        mode = None
+        if isinstance(plan.plan_payload, dict):
+            mode = plan.plan_payload.get("mode") or plan.plan_payload.get("trading_mode")
+        if mode is None and strategy == "buy_and_hold":
+            mode = "long_term"
+        elif mode is None and strategy in {"intraday_momentum", "day_trading"}:
+            mode = "day_trading"
+        return plan.entry_price, plan.stop_loss, plan.take_profit, strategy, str(mode) if mode else None
 
     def _position_opened_at(self, session: Session, config: AgentConfig, symbol: str) -> datetime | None:
         """Return when the current open lot started (latest buy fill), not first-ever row create time."""
@@ -488,7 +565,7 @@ class TradingAgentService:
                 AgentRun.agent_config_id == config.id,
                 AgentOrder.symbol == symbol.upper(),
                 AgentOrder.side == "buy",
-                AgentOrder.status == "filled",
+                AgentOrder.status.in_(("filled", "partially_filled")),
             )
             .order_by(AgentOrder.filled_at.desc(), AgentOrder.id.desc())
             .first()
@@ -525,11 +602,17 @@ class TradingAgentService:
             agent_status=config.status,
             live_trading_enabled=config.live_trading_enabled,
         )
-        forecast_snapshot = forecast.to_dict() if forecast is not None and hasattr(forecast, "to_dict") else {
-            "symbol": candidate.symbol,
-            "signal": "EXIT",
-            "confidence": 1.0,
-        }
+        if forecast is not None and hasattr(forecast, "to_dict"):
+            forecast_snapshot = forecast.to_dict()
+        else:
+            meta = candidate.metadata or {}
+            forecast_snapshot = {
+                "symbol": candidate.symbol,
+                "signal": "EXIT",
+                "confidence": 1.0,
+                "exit_reason": meta.get("exit_reason"),
+                "exit_reasons": meta.get("exit_reasons"),
+            }
         tc = TradeCandidate(
             agent_run_id=run.id,
             symbol=candidate.symbol.upper(),
@@ -576,6 +659,7 @@ class TradingAgentService:
                 "symbol": candidate.symbol.upper(),
                 "mode": candidate.trading_mode,
                 "strategy": candidate.strategy,
+                "side": candidate.side,
                 "forecast_signal": getattr(forecast, "signal", "EXIT") if forecast is not None else "EXIT",
                 "forecast_confidence": getattr(forecast, "confidence", 1.0) if forecast is not None else 1.0,
                 "entry_price": candidate.entry_price,
@@ -649,8 +733,10 @@ class TradingAgentService:
         daily = self.refresh_daily_loss(session, config)
         self._sync_positions(session, config, broker)
         portfolio = self._portfolio_snapshot(session, config, broker)
+        sizing_capital = self._sizing_capital(config, broker)
         approved: list[dict[str, Any]] = []
         rejected: list[dict[str, Any]] = []
+        universe_scan: list[dict[str, Any]] = []
         clock = now or datetime.now(timezone.utc)
         close_flag = self._near_equity_close(clock) if near_close is None else bool(near_close)
 
@@ -668,7 +754,12 @@ class TradingAgentService:
                 mark = float(prices[symbol])
             if mark <= 0:
                 continue
-            entry, stop, take = self._open_plan_levels(session, config, symbol)
+            entry, stop, take, entry_strategy, entry_mode = self._entry_plan_for_symbol(
+                session, config, symbol
+            )
+            # Long-term / buy-and-hold lots are not day-traded: skip intraday stop/TP/max-hold/EOD.
+            if entry_strategy == "buy_and_hold" or entry_mode == "long_term":
+                continue
             entry_price = float(entry or getattr(pos, "average_entry_price", 0) or mark)
             if stop is None and entry_price > 0:
                 stop_pct = float(risk.get("default_stop_loss_pct") or 0)
@@ -705,6 +796,15 @@ class TradingAgentService:
                 )
 
         for symbol in tickers:
+            scan: dict[str, Any] = {
+                "symbol": symbol,
+                "outcome": "hold",
+                "signal": None,
+                "confidence": None,
+                "reason": None,
+                "price": None,
+                "sizing_capital": sizing_capital,
+            }
             try:
                 forecast = self.forecast_provider.get_forecast(symbol, "1Day")
             except Exception as exc:
@@ -715,7 +815,12 @@ class TradingAgentService:
                     f"Forecast failed for {symbol}: {exc}",
                     "warning",
                 )
+                scan["outcome"] = "forecast_error"
+                scan["reason"] = str(exc)
+                universe_scan.append(scan)
                 continue
+            scan["signal"] = getattr(forecast, "signal", None)
+            scan["confidence"] = getattr(forecast, "confidence", None)
             price = (prices or {}).get(symbol.upper())
             if price is None:
                 if isinstance(broker, PaperBrokerAdapter) and symbol.upper() in broker.prices:
@@ -733,9 +838,16 @@ class TradingAgentService:
                 price = 100.0
                 broker.set_price(symbol, price)
             if not price:
+                scan["outcome"] = "no_price"
+                scan["reason"] = "No usable mark price"
+                universe_scan.append(scan)
                 continue
+            scan["price"] = float(price)
 
             held_qty = float(portfolio.position_qty(symbol))
+            generated = 0
+            approved_before = len(approved)
+            rejected_before = len(rejected)
             for engine in strategies_for_mode(config.trading_type):
                 # Filter mixed mode by trading_type preference already handled
                 if config.trading_type != "mixed" and engine.name != config.trading_type:
@@ -745,12 +857,19 @@ class TradingAgentService:
                     forecast,
                     float(price),
                     risk,
-                    float(config.capital_allocation),
+                    sizing_capital,
                     held_qty=held_qty,
                 ):
+                    generated += 1
                     # Avoid opening a new buy when we already flat-exited this symbol in this cycle.
                     if candidate.side.lower() == "buy" and any(
                         a.get("symbol") == symbol and a.get("strategy") == "intraday_exit" for a in approved
+                    ):
+                        continue
+                    # One buy per symbol per cycle — don't stack buy_and_hold + intraday_momentum.
+                    if candidate.side.lower() == "buy" and any(
+                        a.get("symbol") == symbol and a.get("strategy") != "intraday_exit"
+                        for a in approved
                     ):
                         continue
                     portfolio = self._process_candidate(
@@ -769,6 +888,28 @@ class TradingAgentService:
                     )
                     held_qty = float(portfolio.position_qty(symbol))
 
+            if generated == 0:
+                outcome, reason = classify_empty_generate(
+                    forecast=forecast,
+                    price=float(price),
+                    capital=sizing_capital,
+                    risk_config=risk,
+                    held_qty=held_qty,
+                )
+                scan["outcome"] = outcome
+                scan["reason"] = reason
+            elif len(approved) > approved_before:
+                scan["outcome"] = "approved"
+                scan["reason"] = "Candidate approved"
+            elif len(rejected) > rejected_before:
+                last = rejected[-1] if rejected else {}
+                scan["outcome"] = "risk_rejected"
+                scan["reason"] = str(last.get("reason") or "Risk rejected") if isinstance(last, dict) else "Risk rejected"
+            else:
+                scan["outcome"] = "skipped"
+                scan["reason"] = "Candidate skipped (duplicate buy or exit already taken)"
+            universe_scan.append(scan)
+
         run.status = "completed"
         run.ended_at = datetime.now(timezone.utc)
         run.summary = {
@@ -776,6 +917,8 @@ class TradingAgentService:
             "approved": len(approved),
             "rejected": len(rejected),
             "daily_loss": daily,
+            "sizing_capital": sizing_capital,
+            "universe_scan": universe_scan,
         }
         config.last_cycle_at = run.ended_at
         config.updated_at = run.ended_at
@@ -795,6 +938,8 @@ class TradingAgentService:
             "approved": approved,
             "rejected": rejected,
             "auto_adjust": auto_adjust,
+            "universe_scan": universe_scan,
+            "sizing_capital": sizing_capital,
             "daily_loss": self.refresh_daily_loss(session, config),
             "performance": self.performance(session, config),
         }
@@ -835,13 +980,23 @@ class TradingAgentService:
         )
         result = broker.submit_order(order_req)
         now = datetime.now(timezone.utc)
+        status = normalize_order_status(result.status)
+        filled_at = None
+        if is_filled_status(status):
+            filled_at = now
+            if result.filled_at:
+                try:
+                    parsed = datetime.fromisoformat(str(result.filled_at).replace("Z", "+00:00"))
+                    filled_at = parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+                except ValueError:
+                    pass
         row = AgentOrder(
             trade_plan_id=plan.id,
             broker_order_id=result.broker_order_id,
             idempotency_key=idempotency_key,
-            status=result.status,
+            status=status,
             submitted_at=now,
-            filled_at=now if result.status == "filled" else None,
+            filled_at=filled_at,
             filled_quantity=result.filled_quantity,
             average_fill_price=result.average_fill_price,
             side=candidate.side,
@@ -851,21 +1006,22 @@ class TradingAgentService:
             error_message=result.error_message,
         )
         session.add(row)
-        if result.status == "filled":
+        if status == "filled":
             plan.status = "executed"
-        elif result.status == "rejected":
+        elif status == "rejected":
             plan.status = "rejected"
             # Do not create a filled position on rejection
         session.flush()
+        payload = {**result.to_dict(), "status": status, "filled_at": filled_at.isoformat() if filled_at else None}
         self._record_event(
             session,
             config,
-            "ORDER_SUBMITTED" if result.status != "rejected" else "ORDER_REJECTED",
-            f"{candidate.symbol} {candidate.side} → {result.status}",
-            "info" if result.status != "rejected" else "warning",
-            result.to_dict(),
+            "ORDER_SUBMITTED" if status != "rejected" else "ORDER_REJECTED",
+            f"{candidate.symbol} {candidate.side} → {status}",
+            "info" if status != "rejected" else "warning",
+            payload,
         )
-        return {"id": row.id, **result.to_dict()}
+        return {"id": row.id, **payload}
 
     # ── queries ──────────────────────────────────────────────────────
 
@@ -888,12 +1044,41 @@ class TradingAgentService:
             "forecast_enabled": config.forecast_enabled,
             "live_trading_enabled": config.live_trading_enabled,
             "universe": config.universe or [],
+            "max_universe_size": MAX_UNIVERSE_SIZE,
             "cycle_interval_seconds": int(config.cycle_interval_seconds or 300),
             "last_cycle_at": config.last_cycle_at.isoformat() if config.last_cycle_at else None,
+            "last_universe_scan": self._latest_universe_scan(session, config),
             "daily_loss": daily,
             "created_at": config.created_at.isoformat() if config.created_at else None,
             "updated_at": config.updated_at.isoformat() if config.updated_at else None,
         }
+
+    def _sizing_capital(self, config: AgentConfig, broker: BrokerAdapter) -> float:
+        """Prefer live broker equity for position sizing so high-priced names are not stuck at 0 shares."""
+        allocation = float(config.capital_allocation or 0)
+        try:
+            account = broker.get_account()
+            equity = float(getattr(account, "equity", 0) or 0)
+            buying_power = float(getattr(account, "buying_power", 0) or 0)
+        except Exception:
+            return allocation
+        sized = equity if equity > 0 else allocation
+        if buying_power > 0:
+            sized = min(sized, buying_power)
+        return sized if sized > 0 else allocation
+
+    @staticmethod
+    def _latest_universe_scan(session: Session, config: AgentConfig) -> list[dict[str, Any]]:
+        run = (
+            session.query(AgentRun)
+            .filter(AgentRun.agent_config_id == config.id, AgentRun.status == "completed")
+            .order_by(AgentRun.id.desc())
+            .first()
+        )
+        if run is None or not isinstance(run.summary, dict):
+            return []
+        rows = run.summary.get("universe_scan")
+        return list(rows) if isinstance(rows, list) else []
 
     def _unavailable_daily_loss(self, config: AgentConfig, reason: str) -> dict[str, Any]:
         risk = self.resolved_risk_config(config)
@@ -928,30 +1113,81 @@ class TradingAgentService:
             "critical_threshold_pct": float(risk.get("daily_loss_critical_threshold_pct") or 80),
             "utilization_pct": 0.0,
             "warnings": [reason or "Alpaca credentials unavailable"],
+            "max_trades_per_day": int(risk.get("max_trades_per_day") or 0),
+            "trades_today": 0,
         }
 
     def list_candidates(self, session: Session, config: AgentConfig, limit: int = 100) -> list[dict[str, Any]]:
-        rows = (
-            session.query(TradeCandidate)
-            .join(AgentRun)
-            .filter(AgentRun.agent_config_id == config.id)
-            .order_by(TradeCandidate.id.desc())
-            .limit(limit)
-            .all()
-        )
-        return [
-            {
-                "id": r.id,
-                "symbol": r.symbol,
-                "asset_type": r.asset_type,
-                "strategy": r.strategy,
-                "status": r.status,
-                "forecast_snapshot": r.forecast_snapshot,
-                "risk_decision": r.risk_decision,
-                "created_at": r.created_at.isoformat() if r.created_at else None,
-            }
-            for r in rows
-        ]
+        """Return recent candidates for the agent queues.
+
+        Approved and rejected are fetched separately so a flood of recent
+        rejections cannot push earlier BUY approvals out of the Accepted panel.
+        """
+        per_status = max(1, int(limit))
+
+        def _rows_for(status: str) -> list[TradeCandidate]:
+            return (
+                session.query(TradeCandidate)
+                .join(AgentRun)
+                .filter(AgentRun.agent_config_id == config.id, TradeCandidate.status == status)
+                .order_by(TradeCandidate.id.desc())
+                .limit(per_status)
+                .all()
+            )
+
+        rows = _rows_for("approved") + _rows_for("rejected")
+        payload: list[dict[str, Any]] = []
+        for r in rows:
+            exit_reason = None
+            plan = (
+                session.query(TradePlan)
+                .filter(TradePlan.trade_candidate_id == r.id)
+                .order_by(TradePlan.id.desc())
+                .first()
+            )
+            side = None
+            if plan is not None and isinstance(plan.plan_payload, dict):
+                meta = plan.plan_payload.get("metadata") or {}
+                if isinstance(meta, dict):
+                    exit_reason = meta.get("exit_reason")
+                side = plan.plan_payload.get("side")
+            if exit_reason is None and isinstance(r.forecast_snapshot, dict):
+                exit_reason = r.forecast_snapshot.get("exit_reason")
+            if not side:
+                order = (
+                    session.query(AgentOrder)
+                    .filter(AgentOrder.trade_plan_id == plan.id)
+                    .order_by(AgentOrder.id.desc())
+                    .first()
+                    if plan is not None
+                    else None
+                )
+                if order is not None and order.side:
+                    side = order.side
+            if not side:
+                signal = ""
+                if isinstance(r.forecast_snapshot, dict):
+                    signal = str(r.forecast_snapshot.get("signal") or "").upper()
+                if r.strategy == "intraday_exit" or signal == "EXIT" or "SELL" in signal:
+                    side = "sell"
+                elif "BUY" in signal:
+                    side = "buy"
+            payload.append(
+                {
+                    "id": r.id,
+                    "symbol": r.symbol,
+                    "asset_type": r.asset_type,
+                    "strategy": r.strategy,
+                    "status": r.status,
+                    "side": side,
+                    "forecast_snapshot": r.forecast_snapshot,
+                    "risk_decision": r.risk_decision,
+                    "exit_reason": exit_reason,
+                    "created_at": r.created_at.isoformat() if r.created_at else None,
+                }
+            )
+        payload.sort(key=lambda row: -int(row["id"]))
+        return payload
 
     def list_trade_plans(self, session: Session, config: AgentConfig, limit: int = 50) -> list[dict[str, Any]]:
         rows = (
@@ -981,6 +1217,7 @@ class TradingAgentService:
         ]
 
     def list_orders(self, session: Session, config: AgentConfig, limit: int = 200) -> list[dict[str, Any]]:
+        self._repair_order_statuses(session)
         rows = (
             session.query(AgentOrder)
             .join(TradePlan)
@@ -1008,8 +1245,212 @@ class TradingAgentService:
             for r in rows
         ]
         # Prefer filled orders first so Performance trade count aligns with visible history.
-        payload.sort(key=lambda o: (0 if o["status"] == "filled" else 1, -int(o["id"])))
+        payload.sort(key=lambda o: (0 if is_filled_status(o["status"]) else 1, -int(o["id"])))
         return payload
+
+    @staticmethod
+    def _repair_order_statuses(session: Session) -> int:
+        """Normalize legacy Alpaca enum strings and backfill missing filled_at."""
+        dirty = (
+            session.query(AgentOrder)
+            .filter(
+                (AgentOrder.status.like("OrderStatus.%"))
+                | (
+                    AgentOrder.filled_at.is_(None)
+                    & AgentOrder.status.in_(("filled", "partially_filled", "OrderStatus.FILLED", "OrderStatus.PARTIALLY_FILLED"))
+                    & (AgentOrder.filled_quantity > 0)
+                )
+            )
+            .all()
+        )
+        if not dirty:
+            return 0
+        fixed = 0
+        for row in dirty:
+            normalized = normalize_order_status(row.status)
+            changed = False
+            if normalized != row.status:
+                row.status = normalized
+                changed = True
+            if is_filled_status(row.status) and row.filled_at is None and float(row.filled_quantity or 0) > 0:
+                row.filled_at = row.submitted_at or datetime.now(timezone.utc)
+                changed = True
+            if changed:
+                fixed += 1
+        if fixed:
+            _retry_locked(session.flush)
+        return fixed
+
+    @staticmethod
+    def _pnl_result(pnl: float, *, open_lot: bool) -> str:
+        if open_lot:
+            if pnl > 1e-6:
+                return "Open (profit)"
+            if pnl < -1e-6:
+                return "Open (loss)"
+            return "Open (flat)"
+        if pnl > 1e-6:
+            return "Profit"
+        if pnl < -1e-6:
+            return "Loss"
+        return "Breakeven"
+
+    def day_trades(
+        self,
+        session: Session,
+        config: AgentConfig,
+        trading_date: date | None = None,
+    ) -> dict[str, Any]:
+        """Replay filled agent orders with average cost and list P/L for one session day."""
+        self._repair_order_statuses(session)
+        risk = self.resolved_risk_config(config)
+        tz_name = str(risk.get("daily_loss_timezone") or "America/Los_Angeles")
+        reset = str(risk.get("daily_loss_reset_time") or "00:00")
+        fills = (
+            session.query(AgentOrder, TradeCandidate)
+            .join(TradePlan, AgentOrder.trade_plan_id == TradePlan.id)
+            .join(TradeCandidate, TradePlan.trade_candidate_id == TradeCandidate.id)
+            .join(AgentRun, TradeCandidate.agent_run_id == AgentRun.id)
+            .filter(
+                AgentRun.agent_config_id == config.id,
+                AgentOrder.status.in_(("filled", "partially_filled")),
+                AgentOrder.filled_at.isnot(None),
+            )
+            .order_by(AgentOrder.filled_at.asc(), AgentOrder.id.asc())
+            .all()
+        )
+        latest_session_day: date | None = None
+        for order, _candidate in reversed(fills):
+            filled_at = order.filled_at
+            if filled_at is None:
+                continue
+            if filled_at.tzinfo is None:
+                filled_at = filled_at.replace(tzinfo=timezone.utc)
+            latest_session_day = trading_date_for(filled_at, tz_name, reset)
+            break
+        if trading_date is None:
+            trading_date = latest_session_day or trading_date_for(
+                datetime.now(timezone.utc), tz_name, reset
+            )
+
+        books: dict[tuple[str, str], dict[str, float]] = {}
+        day_buys: list[dict[str, Any]] = []
+        trades: list[dict[str, Any]] = []
+
+        for order, candidate in fills:
+            filled_at = order.filled_at
+            if filled_at is None:
+                continue
+            if filled_at.tzinfo is None:
+                filled_at = filled_at.replace(tzinfo=timezone.utc)
+            fill_day = trading_date_for(filled_at, tz_name, reset)
+            symbol = str(order.symbol or candidate.symbol or "").upper()
+            asset_type = str(candidate.asset_type or "equity")
+            side = str(order.side or "").lower()
+            qty = float(order.filled_quantity or 0)
+            price = float(order.average_fill_price or 0)
+            if not symbol or qty <= 0 or price <= 0:
+                continue
+            multiplier = self._asset_multiplier(asset_type)
+            book = books.setdefault((symbol, asset_type), {"qty": 0.0, "avg": 0.0})
+            if side == "buy":
+                total = book["qty"] + qty
+                book["avg"] = (book["avg"] * book["qty"] + price * qty) / total if total else price
+                book["qty"] = total
+                if fill_day == trading_date:
+                    day_buys.append(
+                        {
+                            "id": order.id,
+                            "symbol": symbol,
+                            "asset_type": asset_type,
+                            "quantity": qty,
+                            "entry_price": price,
+                            "filled_at": filled_at,
+                            "strategy": candidate.strategy,
+                        }
+                    )
+                continue
+            if side != "sell":
+                continue
+            sell_qty = min(qty, book["qty"]) if book["qty"] > 0 else 0.0
+            if sell_qty <= 0:
+                continue
+            entry = float(book["avg"] or 0)
+            realized = (price - entry) * sell_qty * multiplier
+            book["qty"] -= sell_qty
+            if book["qty"] <= 1e-9:
+                book["qty"] = 0.0
+                book["avg"] = 0.0
+            if fill_day != trading_date:
+                continue
+            trades.append(
+                {
+                    "id": order.id,
+                    "symbol": symbol,
+                    "asset_type": asset_type,
+                    "side": "sell",
+                    "status": "closed",
+                    "quantity": sell_qty,
+                    "entry_price": entry,
+                    "exit_price": price,
+                    "pnl": realized,
+                    "result": self._pnl_result(realized, open_lot=False),
+                    "strategy": candidate.strategy,
+                    "filled_at": filled_at.isoformat(),
+                }
+            )
+
+        marks = {
+            (str(row.symbol or "").upper(), str(row.asset_type or "equity")): row
+            for row in session.query(AgentPosition).filter(AgentPosition.agent_config_id == config.id).all()
+        }
+        remaining = {key: float(book["qty"]) for key, book in books.items() if book["qty"] > 1e-9}
+        for buy in reversed(day_buys):
+            key = (str(buy["symbol"]), str(buy["asset_type"]))
+            left = remaining.get(key, 0.0)
+            if left <= 1e-9:
+                continue
+            attrib = min(float(buy["quantity"]), left)
+            remaining[key] = left - attrib
+            pos = marks.get(key)
+            mark = float(pos.current_price) if pos and pos.current_price else float(buy["entry_price"])
+            entry = float(buy["entry_price"])
+            unreal = (mark - entry) * attrib * self._asset_multiplier(str(buy["asset_type"]))
+            filled_at = buy["filled_at"]
+            trades.append(
+                {
+                    "id": buy["id"],
+                    "symbol": buy["symbol"],
+                    "asset_type": buy["asset_type"],
+                    "side": "buy",
+                    "status": "open",
+                    "quantity": attrib,
+                    "entry_price": entry,
+                    "exit_price": mark,
+                    "pnl": unreal,
+                    "result": self._pnl_result(unreal, open_lot=True),
+                    "strategy": buy.get("strategy"),
+                    "filled_at": filled_at.isoformat() if hasattr(filled_at, "isoformat") else str(filled_at),
+                }
+            )
+
+        trades.sort(key=lambda row: (str(row.get("filled_at") or ""), int(row.get("id") or 0)))
+        closed = [row for row in trades if row["status"] == "closed"]
+        opened = [row for row in trades if row["status"] == "open"]
+        return {
+            "date": trading_date.isoformat(),
+            "timezone": tz_name,
+            "latest_date": latest_session_day.isoformat() if latest_session_day else None,
+            "trades": trades,
+            "summary": {
+                "count": len(trades),
+                "wins": sum(1 for row in closed if float(row["pnl"]) > 1e-6),
+                "losses": sum(1 for row in closed if float(row["pnl"]) < -1e-6),
+                "open": len(opened),
+                "net_realized_pnl": sum(float(row["pnl"]) for row in closed),
+                "net_unrealized_pnl": sum(float(row["pnl"]) for row in opened),
+            },
+        }
 
     def list_positions(self, session: Session, config: AgentConfig) -> list[dict[str, Any]]:
         try:
@@ -1073,7 +1514,7 @@ class TradingAgentService:
 
     def performance(self, session: Session, config: AgentConfig) -> dict[str, Any]:
         orders = self.list_orders(session, config, limit=500)
-        filled = [o for o in orders if o["status"] == "filled"]
+        filled = [o for o in orders if is_filled_status(o["status"])]
         broker = self._broker_for(config, session=session)
         # Persist any flat realized rows before reading.
         try:
@@ -1363,16 +1804,7 @@ class TradingAgentService:
             trading_fees_today=float(account.raw.get("fees") or (record.trading_fees if record else 0)),
             starting_daily_equity=starting,
             peak_equity=max(starting, account.equity),
-            trades_today=session.query(AgentOrder)
-            .join(TradePlan)
-            .join(TradeCandidate)
-            .join(AgentRun)
-            .filter(
-                AgentRun.agent_config_id == config.id,
-                AgentOrder.status == "filled",
-                AgentOrder.filled_at >= self._session_day_start_utc(self.resolved_risk_config(config)),
-            )
-            .count(),
+            trades_today=self._trades_today_count(session, config, self.resolved_risk_config(config)),
             gross_exposure=sum(abs(p.market_value) for p in positions),
         )
 

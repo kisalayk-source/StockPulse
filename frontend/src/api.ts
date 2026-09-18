@@ -288,6 +288,20 @@ export interface DailyLossState {
   criticalThresholdPct?: number
   utilizationPct?: number
   warnings: string[]
+  /** Filled agent orders since the session-day reset. */
+  tradesToday?: number
+  /** Day-trading entry cap from risk profile (`max_trades_per_day`). */
+  maxTradesPerDay?: number | null
+}
+
+export interface UniverseScanRow {
+  symbol: string
+  outcome: string
+  signal?: string | null
+  confidence?: number | null
+  reason?: string | null
+  price?: number | null
+  sizingCapital?: number | null
 }
 
 export interface TradingAgentConfig {
@@ -303,8 +317,10 @@ export interface TradingAgentConfig {
   forecastEnabled: boolean
   liveTradingEnabled: boolean
   universe: string[]
+  maxUniverseSize: number
   cycleIntervalSeconds: number
   lastCycleAt?: string | null
+  lastUniverseScan: UniverseScanRow[]
   dailyLoss: DailyLossState
   createdAt?: string | null
   updatedAt?: string | null
@@ -316,8 +332,12 @@ export interface TradeCandidateRow {
   assetType: string
   strategy: string
   status: string
+  /** buy | sell when known (from plan/order or inferred from signal). */
+  side?: string | null
   forecastSnapshot: Record<string, unknown>
   riskDecision: Record<string, unknown> | null
+  /** Present for intraday_exit rows: stop_loss | take_profit | max_holding | eod_flatten */
+  exitReason?: string | null
   createdAt?: string | null
 }
 
@@ -347,6 +367,39 @@ export interface AgentOrderRow {
   errorMessage?: string | null
   submittedAt?: string | null
   filledAt?: string | null
+}
+
+export interface DayTradeRow {
+  id: number
+  symbol: string
+  assetType: string
+  side: string
+  status: string
+  quantity: number
+  entryPrice: number
+  exitPrice: number | null
+  pnl: number
+  result: string
+  strategy?: string | null
+  filledAt?: string | null
+}
+
+export interface DayTradesSummary {
+  count: number
+  wins: number
+  losses: number
+  open: number
+  netRealizedPnl: number
+  netUnrealizedPnl: number
+}
+
+export interface DayTradesReport {
+  date: string
+  timezone: string
+  /** Most recent session day that has agent fills, if any. */
+  latestDate?: string | null
+  trades: DayTradeRow[]
+  summary: DayTradesSummary
 }
 
 export interface AgentPositionRow {
@@ -728,6 +781,21 @@ function mapDailyLoss(raw: unknown): DailyLossState {
     criticalThresholdPct: number(payload.critical_threshold_pct) ?? undefined,
     utilizationPct: number(payload.utilization_pct) ?? undefined,
     warnings: list(payload.warnings).map((w) => String(w)),
+    tradesToday: number(payload.trades_today) ?? 0,
+    maxTradesPerDay: number(payload.max_trades_per_day),
+  }
+}
+
+function mapUniverseScanRow(raw: unknown): UniverseScanRow {
+  const payload = object(raw)
+  return {
+    symbol: text(payload.symbol),
+    outcome: text(payload.outcome),
+    signal: text(payload.signal) || null,
+    confidence: number(payload.confidence),
+    reason: text(payload.reason) || null,
+    price: number(payload.price),
+    sizingCapital: number(payload.sizing_capital),
   }
 }
 
@@ -746,8 +814,10 @@ function mapTradingAgentConfig(raw: unknown): TradingAgentConfig {
     forecastEnabled: payload.forecast_enabled !== false,
     liveTradingEnabled: Boolean(payload.live_trading_enabled),
     universe: list(payload.universe).map((s) => String(s).toUpperCase()),
+    maxUniverseSize: number(payload.max_universe_size) ?? 50,
     cycleIntervalSeconds: number(payload.cycle_interval_seconds) ?? 300,
     lastCycleAt: text(payload.last_cycle_at) || null,
+    lastUniverseScan: list(payload.last_universe_scan).map((row) => mapUniverseScanRow(row)),
     dailyLoss: mapDailyLoss(payload.daily_loss),
     createdAt: text(payload.created_at) || null,
     updatedAt: text(payload.updated_at) || null,
@@ -756,14 +826,19 @@ function mapTradingAgentConfig(raw: unknown): TradingAgentConfig {
 
 function mapTradeCandidate(raw: unknown): TradeCandidateRow {
   const payload = object(raw)
+  const snapshot = object(payload.forecast_snapshot)
+  const exitFromPayload = text(payload.exit_reason) || null
+  const exitFromSnapshot = text(snapshot.exit_reason) || null
   return {
     id: number(payload.id) ?? 0,
     symbol: text(payload.symbol),
     assetType: text(payload.asset_type, 'equity'),
     strategy: text(payload.strategy),
     status: text(payload.status),
-    forecastSnapshot: object(payload.forecast_snapshot),
+    side: text(payload.side) || null,
+    forecastSnapshot: snapshot,
     riskDecision: payload.risk_decision ? object(payload.risk_decision) : null,
+    exitReason: exitFromPayload || exitFromSnapshot,
     createdAt: text(payload.created_at) || null,
   }
 }
@@ -785,12 +860,19 @@ function mapTradePlan(raw: unknown): TradePlanRow {
   }
 }
 
+function normalizeOrderStatus(status: string): string {
+  const raw = status.trim()
+  if (!raw) return raw
+  const leaf = raw.includes('.') ? raw.slice(raw.lastIndexOf('.') + 1) : raw
+  return leaf.toLowerCase().replace(/\s+/g, '_')
+}
+
 function mapAgentOrder(raw: unknown): AgentOrderRow {
   const payload = object(raw)
   return {
     id: number(payload.id) ?? 0,
     brokerOrderId: text(payload.broker_order_id) || null,
-    status: text(payload.status),
+    status: normalizeOrderStatus(text(payload.status)),
     symbol: text(payload.symbol),
     side: text(payload.side),
     filledQuantity: number(payload.filled_quantity) ?? 0,
@@ -799,6 +881,43 @@ function mapAgentOrder(raw: unknown): AgentOrderRow {
     errorMessage: text(payload.error_message) || null,
     submittedAt: text(payload.submitted_at) || null,
     filledAt: text(payload.filled_at) || null,
+  }
+}
+
+function mapDayTrade(raw: unknown): DayTradeRow {
+  const payload = object(raw)
+  return {
+    id: number(payload.id) ?? 0,
+    symbol: text(payload.symbol),
+    assetType: text(payload.asset_type, 'equity'),
+    side: text(payload.side),
+    status: text(payload.status),
+    quantity: number(payload.quantity) ?? 0,
+    entryPrice: number(payload.entry_price) ?? 0,
+    exitPrice: number(payload.exit_price),
+    pnl: number(payload.pnl) ?? 0,
+    result: text(payload.result),
+    strategy: text(payload.strategy) || null,
+    filledAt: text(payload.filled_at) || null,
+  }
+}
+
+function mapDayTradesReport(raw: unknown): DayTradesReport {
+  const payload = object(raw)
+  const summary = object(payload.summary)
+  return {
+    date: text(payload.date),
+    timezone: text(payload.timezone, 'America/Los_Angeles'),
+    latestDate: text(payload.latest_date) || null,
+    trades: list(payload.trades).map((row) => mapDayTrade(row)),
+    summary: {
+      count: number(summary.count) ?? 0,
+      wins: number(summary.wins) ?? 0,
+      losses: number(summary.losses) ?? 0,
+      open: number(summary.open) ?? 0,
+      netRealizedPnl: number(summary.net_realized_pnl) ?? 0,
+      netUnrealizedPnl: number(summary.net_unrealized_pnl) ?? 0,
+    },
   }
 }
 
@@ -892,10 +1011,17 @@ async function requestWithRetry<T>(path: string, init?: RequestInit, attempts = 
       return await request<T>(path, init)
     } catch (error) {
       lastError = error
-      if (!(error instanceof ApiError) || error.status !== 429 || attempt === attempts - 1) {
+      const retryable =
+        error instanceof ApiError
+        && (error.status === 429 || error.status === 502 || error.status === 503)
+      if (!retryable || attempt === attempts - 1) {
         throw error
       }
-      await sleep(Math.min(error.retryAfterMs || 1500, 5_000))
+      const delayMs =
+        error.status === 429
+          ? Math.min(error.retryAfterMs || 1500, 5_000)
+          : 400 * (attempt + 1)
+      await sleep(delayMs)
     }
   }
   throw lastError
@@ -1808,6 +1934,10 @@ export const api = {
   getTradingAgentOrders: async (): Promise<AgentOrderRow[]> => {
     const payload = object(await request<unknown>('/trading-agent/orders'))
     return list(payload.orders).map((row) => mapAgentOrder(row))
+  },
+  getTradingAgentDayTrades: async (tradingDate?: string): Promise<DayTradesReport> => {
+    const suffix = tradingDate ? `?${query({ date: tradingDate })}` : ''
+    return mapDayTradesReport(await request<unknown>(`/trading-agent/day-trades${suffix}`))
   },
   getTradingAgentPositions: async (): Promise<AgentPositionRow[]> => {
     const payload = object(await request<unknown>('/trading-agent/positions'))
