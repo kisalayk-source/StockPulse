@@ -594,6 +594,57 @@ button.danger {
   gap: 8px;
 }
 .inline-fields input { flex: 1; }
+.universe-editor {
+  grid-column: 1 / -1;
+  display: grid;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--muted);
+}
+.universe-editor > span {
+  font-size: 12px;
+  color: var(--muted);
+}
+.universe-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.universe-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 8px 6px 10px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--panel-2);
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 650;
+  letter-spacing: 0.04em;
+}
+.agent-settings .universe-chip-remove {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  min-width: 18px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+}
+.agent-settings .universe-chip-remove:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+.agent-settings .universe-chip-remove:hover:not(:disabled) {
+  color: var(--text);
+  background: #1c2533;
+}
 .agent-panels {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -619,6 +670,31 @@ button.danger {
   max-height: 360px;
   overflow: auto;
   padding: 0 18px 18px;
+}
+.daily-trades-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 10px;
+  padding: 0 18px 12px;
+}
+.daily-trades-toolbar label {
+  display: grid;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--muted);
+}
+.daily-trades-toolbar input[type="date"] {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: #0c1119;
+  color: var(--text);
+  padding: 8px 10px;
+}
+.daily-trades-summary {
+  margin: 0 18px 10px;
+  font-size: 12px;
+  color: var(--muted);
 }
 .agent-panels .card { min-height: 220px; }
 .agent-reject-reason {

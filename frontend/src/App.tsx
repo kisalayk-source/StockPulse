@@ -10,7 +10,7 @@ import {
   getAccessToken,
   onAuthChange,
   type Account, type AppConfig, type AuthUser, type ChartInterval, type ChartResponse, type ForecastResponse, type HybridPrediction, type MarketClock, type NewsItem,
-  type ResearchQueryResponse, type SecFilingsAnalysisResponse, type SecFilingsResponse, type SecIntelligenceResponse, type SectorAccumulationResponse, type TopAccumulationResponse,
+  type ResearchQueryResponse, type SecFilingsAnalysisResponse, type SecFilingsResponse, type SecIntelligenceResponse, type GovernmentAnalysisResponse, type SectorAccumulationResponse, type TopAccumulationResponse,
   type AccumulationScanStatus,
   type OptionChain, type OptionContract, type OptionPositionIntent, type Order, type OrderSide, type OrderType,
   type Position, type PublicSentiment, type Quote, type SearchResult, type SentimentLabel,
@@ -29,6 +29,7 @@ import { SettingsModal } from './SettingsModal'
 import { TradingAgentPanel } from './TradingAgentPanel'
 import { RiskManagementPanel } from './RiskManagementPanel'
 import { FavoritesPanel, ResearchPanel, SecIntelligencePanel, SecRecordsPanel, SectorsPanel, TopAccumulationPanel } from './SecIntelligencePanel'
+import { GovernmentPanel } from './GovernmentPanel'
 import { calculateChopper, calculateChopperOnForecast, type ChopperPoint } from './chopper'
 import './App.css'
 
@@ -403,6 +404,9 @@ function App() {
   const [dashboardView, setDashboardView] = useState<DashboardView>(() => viewFromPath(window.location.pathname) || 'market')
   const [secData, setSecData] = useState<SecIntelligenceResponse | null>(null)
   const [secState, setSecState] = useState<LoadState>('idle')
+  const [govData, setGovData] = useState<GovernmentAnalysisResponse | null>(null)
+  const [govState, setGovState] = useState<LoadState>('idle')
+  const [govError, setGovError] = useState('')
   const [secError, setSecError] = useState('')
 
   useEffect(() => {
@@ -457,6 +461,20 @@ function App() {
       setSecData(null)
       setSecError(error instanceof Error ? error.message : 'SEC data unavailable')
       setSecState('error')
+    }
+  }, [symbol])
+
+  const loadGovernment = useCallback(async () => {
+    setGovState('loading')
+    setGovError('')
+    try {
+      const payload = await api.governmentAnalysis(symbol, false)
+      setGovData(payload)
+      setGovState('ready')
+    } catch (error) {
+      setGovData(null)
+      setGovError(error instanceof Error ? error.message : 'Government data unavailable')
+      setGovState('error')
     }
   }, [symbol])
 
@@ -763,6 +781,10 @@ function App() {
     if (!authUser) return
     void loadSec()
   }, [loadSec, authUser])
+  useEffect(() => {
+    if (!authUser) return
+    void loadGovernment()
+  }, [loadGovernment, authUser])
   useEffect(() => {
     if (!authUser) return
     void loadSectorPanels()
@@ -1084,7 +1106,7 @@ function App() {
               {quote?.isStale && <span className="stale"><Clock3 size={13} /> Stale data</span>}
             </div>
           </div>
-          <button className="icon-button" aria-label="Refresh dashboard" onClick={() => { void loadMarket(); void loadPortfolio(); void loadClock(); void loadSec(); void refreshMarketScan() }}><RefreshCw size={18} /></button>
+          <button className="icon-button" aria-label="Refresh dashboard" onClick={() => { void loadMarket(); void loadPortfolio(); void loadClock(); void loadSec(); void loadGovernment(); void refreshMarketScan() }}><RefreshCw size={18} /></button>
         </section>
 
         <div className="dashboard-tabs" role="tablist" aria-label="Dashboard views">
@@ -1251,6 +1273,7 @@ function App() {
             </section>
 
             <SecIntelligencePanel data={secData} loading={secState === 'loading'} error={secState === 'error' ? secError : undefined} />
+            <GovernmentPanel data={govData} loading={govState === 'loading'} error={govState === 'error' ? govError : undefined} />
           </div>
 
           <aside className="side-column">

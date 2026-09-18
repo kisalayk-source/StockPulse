@@ -1,8 +1,8 @@
 # StockPulse
 
-Paper-first trading workstation for US equities and single-leg options. Forecasts, charts, news, SEC ownership intelligence, portfolio, and manual order tickets in one dashboard — wired to Alpaca and powered by Kronos path forecasts plus a hybrid directional prediction engine.
+Paper-first trading workstation for US equities and single-leg options. Forecasts, charts, news, SEC ownership intelligence, government contract analysis, portfolio, and manual order tickets in one dashboard — wired to Alpaca and powered by Kronos path forecasts plus a hybrid directional prediction engine.
 
-**Not investment advice.** Path forecasts, hybrid signals, and accumulation scores are research overlays only. Orders are always manual and never placed by the model.
+**Not investment advice.** Path forecasts, hybrid signals, accumulation scores, and government scores are research overlays only. Manual orders require review-before-send. The optional trading agent places paper/live orders only after you deliberately Start it and pass risk gates.
 
 ## Features
 
@@ -13,10 +13,12 @@ Paper-first trading workstation for US equities and single-leg options. Forecast
 - **MVP roadmap (non-tech)** — what MVP-1…7 and agent alignment mean in everyday terms: [docs/mvp-roadmap.md](./docs/mvp-roadmap.md)
 - **Sentiment & news** — public news sentiment plus investor/regime cues; merged news feed
 - **SEC & ownership** — EDGAR 13F / 13D / 13G / Form 4 XML ingestion, explainable **Accumulation Score (0–100)**, background market scan (blue-chip + movers), **Sectors**, **Top Accumulation**, **SEC Records** (6-month filing search with parsed entity/action columns, expandable XML details, and AI analysis), and **AI Research** queries ranked by model stance / chart path (SEC as secondary context)
+- **Government contracts** — SAM.gov + USAspending ingestion, deterministic **government_score** / early-signal score, Market **GovernmentPanel** (alerts as UI banners only), and `FeatureSnapshot.government` for hybrid prediction when enabled; see [docs/government.md](./docs/government.md)
 - **Favorites** — per-user starred tickers with a Favorites tab; star toggle on the Market quote header
 - **Movers scan** — background scan of blue-chip names for predicted gainers and losers (display-only)
 - **Portfolio** — open positions, open/realized P/L, hold ideas from the movers scan
 - **Manual trading** — equity and single-leg options tickets with risk preview and review-before-send
+- **Trading agent** — optional autonomous paper/live cycles; type any ticker to run once, or save a risk portfolio (max 50) for auto-cycles; hybrid owns BUY/SELL, path owns sizing — [docs/trading-agent.md](./docs/trading-agent.md)
 - **Paper / live** — paper by default; live requires separate keys, server flag, and typing `LIVE`
 
 ## Stack
@@ -25,7 +27,7 @@ Paper-first trading workstation for US equities and single-leg options. Forecast
 |-------|------|
 | Frontend | React, TypeScript, Vite (`frontend/`) |
 | Backend | FastAPI, uvicorn (`backend/`) |
-| Broker / data | Alpaca (bars + trading), Finnhub (fundamentals, news, public sentiment), SEC EDGAR (filings, accumulation) |
+| Broker / data | Alpaca (bars + trading), Finnhub (fundamentals, news, public sentiment), SEC EDGAR (filings, accumulation), SAM.gov / USAspending (government contracts) |
 | Forecasts | Kronos (`NeoQuasar/Kronos-small`) and optional ensemble under `forecasting/` |
 | Hybrid prediction | `ml/` ensemble + features + signal risk; API under `/stocks/{ticker}/prediction` |
 
@@ -38,6 +40,7 @@ Paper-first trading workstation for US equities and single-leg options. Forecast
 - Alpaca paper API keys (live keys only if you intentionally enable live trading)
 - Optional: Finnhub API key for fundamentals / public sentiment
 - SEC EDGAR: set `SEC_USER_AGENT` to `AppName contact@example.com` (required by SEC fair-access policy); no API key
+- Optional: `SAM_GOV_API_KEY` when government contract analysis is enabled
 
 ### Configure
 
@@ -57,6 +60,8 @@ FINNHUB_API_KEY=...
 SEC_USER_AGENT=StockPulse contact@example.com
 SEC_ENABLED=true
 SEC_SCAN_UNIVERSE_CAP=100
+GOVERNMENT_ENABLED=true
+SAM_GOV_API_KEY=
 CORS_ORIGIN=http://localhost:5173
 ```
 
@@ -117,11 +122,12 @@ Same ports: UI `5173`, API `8000`.
 ## Repository layout
 
 ```text
-backend/           FastAPI service (Alpaca, Finnhub, SEC, Kronos, risk, prediction API)
+backend/           FastAPI service (Alpaca, Finnhub, SEC, government, Kronos, risk, prediction API)
 frontend/          React dashboard
 ml/                Hybrid directional prediction (features, models, decision, registry)
 backend/app/sec/   SEC EDGAR client, parsers, accumulation scoring
-backend/configs/   sec_accumulation.yaml (score weights)
+backend/app/government/  SAM.gov + USAspending clients, mapping, scoring
+backend/configs/   sec_accumulation.yaml, government.yaml (score weights)
 forecasting/       Optional multi-model path-forecast adapters
 scripts/           Start / LAN publish helpers
 docs/              Product & development guides (mvp-roadmap, how-forecast-works, architecture)
@@ -138,11 +144,13 @@ kronos_backtest/   Historical backtester (not used by the live dashboard)
 | [frontend/README.md](./frontend/README.md) | Dashboard commands & API client |
 | [docs/DEVELOPMENT.md](./docs/DEVELOPMENT.md) | Environments, checks, Docker |
 | [docs/mvp-roadmap.md](./docs/mvp-roadmap.md) | Plain-language MVP-1…7 + agent alignment |
+| [docs/trading-agent.md](./docs/trading-agent.md) | Autonomous agent: ad-hoc cycles vs saved risk portfolio |
 | [docs/explanation.md](./docs/explanation.md) | Grounded template / optional LLM explanations (MVP-7) |
 | [docs/how-forecast-works.md](./docs/how-forecast-works.md) | Chart path vs model stance (non-tech) |
 | [docs/stock-prediction-architecture.md](./docs/stock-prediction-architecture.md) | Hybrid stack architecture & leakage rules |
 | [docs/logging.md](./docs/logging.md) | JSON logs + Elasticsearch/Kibana |
 | [docs/SEC_ACCUMULATION.md](./docs/SEC_ACCUMULATION.md) | SEC EDGAR ingestion, Accumulation Score, API, backtest |
+| [docs/government.md](./docs/government.md) | Government contract analysis (SAM.gov / USAspending) |
 | [docs/StockPulse.html](./docs/StockPulse.html) | Product & operations guide |
 | [CHANGELOG.md](./CHANGELOG.md) | Release notes |
 

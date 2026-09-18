@@ -385,4 +385,93 @@ describe('FastAPI contract adapters', () => {
     expect(fetch.mock.calls.length).toBeGreaterThanOrEqual(2)
     expect(fetch.mock.calls.length).toBeLessThan(4)
   })
+
+  it('retries a transient forecast gateway 502 then succeeds', async () => {
+    const payload = {
+      symbol: 'AAPL',
+      as_of: '2026-08-12T20:00:00Z',
+      model: { id: 'Kronos' },
+      trend: { direction: 'flat', forecast_change: 0 },
+      forecast: [{ timestamp: '2026-08-13T13:30:00Z', close: 201 }],
+    }
+    const fetch = vi.fn()
+      .mockResolvedValueOnce(new Response('Bad Gateway', { status: 502 }))
+      .mockResolvedValue(response(payload))
+    vi.stubGlobal('fetch', fetch)
+
+    const result = await api.forecast('MSFT', 'short')
+    expect(result.points[0].value).toBe(201)
+    expect(fetch).toHaveBeenCalledTimes(2)
+  })
+
+  it('maps trading agent day trades with average-cost P/L', async () => {
+    const fetch = vi.fn().mockResolvedValue(response({
+      date: '2026-09-10',
+      timezone: 'America/Los_Angeles',
+      trades: [{
+        id: 11,
+        symbol: 'NVDA',
+        asset_type: 'equity',
+        side: 'sell',
+        status: 'closed',
+        quantity: 5,
+        entry_price: 100,
+        exit_price: 110,
+        pnl: 50,
+        result: 'Profit',
+        strategy: 'intraday_exit',
+        filled_at: '2026-09-10T18:00:00Z',
+      }],
+      summary: {
+        count: 1,
+        wins: 1,
+        losses: 0,
+        open: 0,
+        net_realized_pnl: 50,
+        net_unrealized_pnl: 0,
+      },
+    }))
+    vi.stubGlobal('fetch', fetch)
+
+    const result = await api.getTradingAgentDayTrades('2026-09-10')
+    expect(fetch).toHaveBeenCalledWith(
+      expect.stringContaining('/trading-agent/day-trades?date=2026-09-10'),
+      expect.anything(),
+    )
+    expect(result.date).toBe('2026-09-10')
+    expect(result.trades[0]).toMatchObject({
+      symbol: 'NVDA',
+      result: 'Profit',
+      pnl: 50,
+      entryPrice: 100,
+      exitPrice: 110,
+    })
+    expect(result.summary.netRealizedPnl).toBe(50)
+    expect(result.latestDate).toBeNull()
+    expect(result.availableDates).toEqual([])
+    expect(result.summary.exited).toBe(0)
+  })
+
+  it('normalizes Alpaca OrderStatus enum strings on agent orders', async () => {
+    const fetch = vi.fn().mockResolvedValue(response({
+      orders: [{
+        id: 7,
+        broker_order_id: 'abc',
+        status: 'OrderStatus.FILLED',
+        symbol: 'AAPL',
+        side: 'buy',
+        filled_quantity: 4,
+        average_fill_price: 200,
+        requested_quantity: 4,
+        error_message: null,
+        submitted_at: '2026-09-16T18:00:00Z',
+        filled_at: null,
+      }],
+    }))
+    vi.stubGlobal('fetch', fetch)
+
+    const result = await api.getTradingAgentOrders()
+    expect(result[0].status).toBe('filled')
+    expect(result[0].symbol).toBe('AAPL')
+  })
 })

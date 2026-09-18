@@ -295,3 +295,7 @@ Fixtures live under `backend/tests/fixtures/sec/`. Tests use HTTP mock transport
 - CUSIP→ticker mapping may be incomplete for some issuers
 - SEC outages degrade SEC panels without breaking trading or forecasts
 - Accumulation scores are one input to research — not probabilities of future returns
+
+## Related
+
+- [government.md](./government.md) — SAM.gov / USAspending contract analysis (Market panel + ML features)

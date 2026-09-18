@@ -38,6 +38,7 @@ def _seed_open_long_plan(
     stop_loss: float | None = 95,
     take_profit: float | None = 110,
     opened_at: datetime | None = None,
+    strategy: str = "intraday_momentum",
 ) -> None:
     run = AgentRun(agent_config_id=config.id, status="completed", forecast_version="seed")
     session.add(run)
@@ -46,12 +47,13 @@ def _seed_open_long_plan(
         agent_run_id=run.id,
         symbol="NVDA",
         asset_type="equity",
-        strategy="intraday_momentum",
+        strategy=strategy,
         forecast_snapshot={"signal": "BUY"},
         status="approved",
     )
     session.add(tc)
     session.flush()
+    mode = "long_term" if strategy == "buy_and_hold" else "day_trading"
     session.add(
         TradePlan(
             trade_candidate_id=tc.id,
@@ -60,7 +62,7 @@ def _seed_open_long_plan(
             take_profit=take_profit,
             position_size=quantity,
             status="executed",
-            plan_payload={"symbol": "NVDA"},
+            plan_payload={"symbol": "NVDA", "mode": mode, "strategy": strategy},
         )
     )
     session.add(
@@ -76,6 +78,60 @@ def _seed_open_long_plan(
         )
     )
     session.commit()
+
+
+def _seed_filled_order(
+    session,
+    *,
+    config,
+    symbol: str = "NVDA",
+    side: str = "buy",
+    quantity: float = 5,
+    price: float = 100,
+    filled_at: datetime | None = None,
+    strategy: str = "long_equity",
+    asset_type: str = "equity",
+) -> AgentOrder:
+    when = filled_at or datetime.now(timezone.utc)
+    run = AgentRun(agent_config_id=config.id, status="completed", forecast_version="day-trades")
+    session.add(run)
+    session.flush()
+    tc = TradeCandidate(
+        agent_run_id=run.id,
+        symbol=symbol,
+        asset_type=asset_type,
+        strategy=strategy,
+        forecast_snapshot={"signal": "BUY" if side == "buy" else "SELL"},
+        status="approved",
+    )
+    session.add(tc)
+    session.flush()
+    plan = TradePlan(
+        trade_candidate_id=tc.id,
+        entry_price=price,
+        position_size=quantity,
+        status="executed",
+        plan_payload={"symbol": symbol, "strategy": strategy},
+    )
+    session.add(plan)
+    session.flush()
+    order = AgentOrder(
+        trade_plan_id=plan.id,
+        broker_order_id=f"seed-{uuid4().hex[:8]}",
+        idempotency_key=f"day-trade-{uuid4().hex}",
+        status="filled",
+        submitted_at=when,
+        filled_at=when,
+        filled_quantity=quantity,
+        average_fill_price=price,
+        side=side,
+        order_type="market",
+        requested_quantity=quantity,
+        symbol=symbol,
+    )
+    session.add(order)
+    session.flush()
+    return order
 
 
 def settings(**overrides) -> Settings:
@@ -125,7 +181,16 @@ def make_agent_client(*, use_alpaca: bool = False):
         paper_brokers=paper_brokers,
         settings=config,
     )
-    services = Services(config, alpaca or FakeAlpaca(), FakeFinnhub(), FakeKronos(), FakeSec(), None, agent)
+    services = Services(
+        config,
+        alpaca or FakeAlpaca(),
+        FakeFinnhub(),
+        FakeKronos(),
+        FakeSec(),
+        government=None,
+        prediction=None,
+        trading_agent=agent,
+    )
     client = TestClient(create_app(config, services))
     return client, agent, paper_brokers, alpaca
 
@@ -154,6 +219,86 @@ def test_agent_starts_in_paper_mode():
         assert data["status"] == "paper"
         assert data["mode"] == "paper"
         assert data["live_trading_enabled"] is False
+
+
+def test_new_agent_uses_default_universe():
+    with make_agent_client()[0] as client:
+        headers = register_headers(client)
+        data = client.get("/api/v1/trading-agent/config", headers=headers).json()
+        assert data["universe"] == ["SPY", "AAPL", "MSFT", "NVDA", "AMZN"]
+
+
+def test_universe_can_be_updated_from_api():
+    with make_agent_client()[0] as client:
+        headers = register_headers(client)
+        updated = client.put(
+            "/api/v1/trading-agent/config",
+            json={"universe": [" aapl ", "MSFT", "aapl", "BRK.B"]},
+            headers=headers,
+        )
+        assert updated.status_code == 200, updated.text
+        assert updated.json()["universe"] == ["AAPL", "MSFT", "BRK.B"]
+
+
+def test_universe_rejects_invalid_or_empty_tickers():
+    with make_agent_client()[0] as client:
+        headers = register_headers(client)
+        empty = client.put(
+            "/api/v1/trading-agent/config",
+            json={"universe": []},
+            headers=headers,
+        )
+        assert empty.status_code == 422
+        bad = client.put(
+            "/api/v1/trading-agent/config",
+            json={"universe": ["NOPE!"]},
+            headers=headers,
+        )
+        assert bad.status_code == 422
+
+
+def test_cycle_accepts_ad_hoc_symbols_not_in_universe():
+    client, _agent, paper_brokers, _alpaca = make_agent_client()
+    with client:
+        headers = register_headers(client)
+        client.put(
+            "/api/v1/trading-agent/config",
+            json={"trading_type": "long_term", "universe": ["NVDA"], "capital_allocation": 10000},
+            headers=headers,
+        )
+        cfg = client.post("/api/v1/trading-agent/start", json={"mode": "paper"}, headers=headers).json()
+        broker = paper_brokers[cfg["id"]]
+        broker.set_price("GOOG", 150.0)
+        cycle = client.post(
+            "/api/v1/trading-agent/cycle",
+            json={"symbols": ["GOOG"], "execute": True},
+            headers=headers,
+        )
+        assert cycle.status_code == 200, cycle.text
+        body = cycle.json()
+        scan_symbols = [row["symbol"] for row in body.get("universe_scan") or []]
+        assert scan_symbols == ["GOOG"]
+        # Saved universe must stay unchanged.
+        config = client.get("/api/v1/trading-agent/config", headers=headers).json()
+        assert config["universe"] == ["NVDA"]
+
+
+def test_cycle_rejects_invalid_or_empty_symbol_override():
+    with make_agent_client()[0] as client:
+        headers = register_headers(client)
+        client.post("/api/v1/trading-agent/start", json={"mode": "paper"}, headers=headers)
+        empty = client.post(
+            "/api/v1/trading-agent/cycle",
+            json={"symbols": [], "execute": True},
+            headers=headers,
+        )
+        assert empty.status_code == 422
+        bad = client.post(
+            "/api/v1/trading-agent/cycle",
+            json={"symbols": ["NOPE!"], "execute": True},
+            headers=headers,
+        )
+        assert bad.status_code == 422
 
 
 def test_cannot_start_live_without_enablement():
@@ -451,6 +596,34 @@ def test_max_daily_loss_config_roundtrip():
         cfg = client.get("/api/v1/trading-agent/config", headers=headers).json()
         assert cfg["risk_config"]["max_daily_loss_amount"] == 500
         assert cfg["daily_loss"]["effective_limit"] is not None
+        assert "max_trades_per_day" in cfg["daily_loss"]
+        assert "trades_today" in cfg["daily_loss"]
+        assert cfg["daily_loss"]["max_trades_per_day"] == cfg["risk_config"]["max_trades_per_day"]
+        assert cfg["daily_loss"]["trades_today"] >= 0
+
+
+def test_daily_loss_includes_trades_today_after_fill():
+    client, agent, paper_brokers, _alpaca = make_agent_client()
+    with client:
+        headers = register_headers(client)
+        client.put(
+            "/api/v1/trading-agent/config",
+            json={"trading_type": "long_term", "universe": ["NVDA"], "capital_allocation": 10000},
+            headers=headers,
+        )
+        cfg = client.post("/api/v1/trading-agent/start", json={"mode": "paper"}, headers=headers).json()
+        broker = paper_brokers[cfg["id"]]
+        broker.set_price("NVDA", 180.0)
+        cycle = client.post(
+            "/api/v1/trading-agent/cycle",
+            json={"symbols": ["NVDA"], "execute": True},
+            headers=headers,
+        )
+        assert cycle.status_code == 200, cycle.text
+        daily = client.get("/api/v1/trading-agent/daily-loss", headers=headers).json()
+        assert daily["trades_today"] >= 1
+        assert daily["max_trades_per_day"] == cfg["risk_config"]["max_trades_per_day"]
+
 
 def _forecast(signal: str, *, expected_return: float = 0.03) -> ForecastResult:
     return ForecastResult(
@@ -494,6 +667,7 @@ def test_intraday_exit_triggers_for_stop_take_hold_and_eod():
     now = datetime(2026, 9, 10, 19, 50, tzinfo=timezone.utc)
     risk = {
         "max_position_holding_minutes": 30,
+        "min_exit_holding_minutes": 0,
         "close_positions_before_market_close": True,
     }
     stop = build_intraday_exit_candidates(
@@ -509,6 +683,19 @@ def test_intraday_exit_triggers_for_stop_take_hold_and_eod():
     )
     assert stop and stop[0].metadata["exit_reason"] == "stop_loss"
     assert stop[0].quantity == 5
+
+    gated = build_intraday_exit_candidates(
+        symbol="NVDA",
+        quantity=5,
+        mark_price=94,
+        entry_price=100,
+        stop_loss=95,
+        take_profit=110,
+        opened_at=now - timedelta(minutes=5),
+        risk_config={**risk, "min_exit_holding_minutes": 30},
+        now=now,
+    )
+    assert gated == []
 
     take = build_intraday_exit_candidates(
         symbol="NVDA",
@@ -531,10 +718,23 @@ def test_intraday_exit_triggers_for_stop_take_hold_and_eod():
         stop_loss=90,
         take_profit=120,
         opened_at=now - timedelta(minutes=45),
-        risk_config=risk,
+        risk_config={**risk, "max_holding_enabled": True},
         now=now,
     )
     assert held and held[0].metadata["exit_reason"] == "max_holding"
+
+    skipped_hold = build_intraday_exit_candidates(
+        symbol="NVDA",
+        quantity=5,
+        mark_price=101,
+        entry_price=100,
+        stop_loss=90,
+        take_profit=120,
+        opened_at=now - timedelta(minutes=45),
+        risk_config=risk,
+        now=now,
+    )
+    assert skipped_hold == []
 
     eod = build_intraday_exit_candidates(
         symbol="NVDA",
@@ -544,11 +744,31 @@ def test_intraday_exit_triggers_for_stop_take_hold_and_eod():
         stop_loss=90,
         take_profit=120,
         opened_at=now - timedelta(minutes=5),
-        risk_config=risk,
+        risk_config={**risk, "min_exit_holding_minutes": 30},
         now=now,
         near_close=True,
     )
     assert eod and eod[0].metadata["exit_reason"] == "eod_flatten"
+
+
+def test_legacy_max_holding_minutes_do_not_force_exits():
+    from app.trading_agent.risk_profiles import get_risk_config, merge_risk_config
+
+    now = datetime(2026, 9, 10, 19, 50, tzinfo=timezone.utc)
+    risk = merge_risk_config(get_risk_config("medium"), {"max_position_holding_minutes": 240})
+    assert risk["max_holding_enabled"] is False
+    exits = build_intraday_exit_candidates(
+        symbol="NVDA",
+        quantity=5,
+        mark_price=101,
+        entry_price=100,
+        stop_loss=90,
+        take_profit=120,
+        opened_at=now - timedelta(hours=5),
+        risk_config=risk,
+        now=now,
+    )
+    assert exits == []
 
 
 def _start_day_trading_with_long(agent, paper_brokers, client, headers, *, qty: float = 5, price: float = 100.0):
@@ -576,6 +796,10 @@ def test_cycle_sells_open_long_when_stop_is_hit():
     with client:
         headers = register_headers(client)
         session, config, broker = _start_day_trading_with_long(agent, paper_brokers, client, headers)
+        risk = dict(agent.resolved_risk_config(config))
+        risk["min_exit_holding_minutes"] = 0
+        config.risk_config = risk
+        session.commit()
         _seed_open_long_plan(session, config=config, stop_loss=95, take_profit=110)
 
         broker.set_price("NVDA", 94.0)
@@ -591,6 +815,9 @@ def test_cycle_sells_open_long_when_stop_is_hit():
         sell_orders = [row for row in result["approved"] if row["strategy"] == "intraday_exit"]
         assert sell_orders, result
         assert sell_orders[0]["metadata"]["exit_reason"] == "stop_loss"
+        listed = [c for c in agent.list_candidates(session, config) if c["strategy"] == "intraday_exit"]
+        assert listed and listed[0]["exit_reason"] == "stop_loss"
+        assert listed[0]["forecast_snapshot"].get("exit_reason") == "stop_loss"
         assert broker.get_positions() == []
         session.close()
 
@@ -601,6 +828,10 @@ def test_cycle_sells_open_long_when_take_profit_is_hit():
     with client:
         headers = register_headers(client)
         session, config, broker = _start_day_trading_with_long(agent, paper_brokers, client, headers)
+        risk = dict(agent.resolved_risk_config(config))
+        risk["min_exit_holding_minutes"] = 0
+        config.risk_config = risk
+        session.commit()
         _seed_open_long_plan(session, config=config, stop_loss=95, take_profit=110)
 
         broker.set_price("NVDA", 111.0)
@@ -627,6 +858,7 @@ def test_cycle_sells_when_max_holding_minutes_elapsed():
         headers = register_headers(client)
         session, config, broker = _start_day_trading_with_long(agent, paper_brokers, client, headers)
         risk = dict(agent.resolved_risk_config(config))
+        risk["max_holding_enabled"] = True
         risk["max_position_holding_minutes"] = 30
         risk["close_positions_before_market_close"] = False
         config.risk_config = risk
@@ -653,6 +885,42 @@ def test_cycle_sells_when_max_holding_minutes_elapsed():
         assert sell_orders, result
         assert sell_orders[0]["metadata"]["exit_reason"] == "max_holding"
         assert broker.get_positions() == []
+        session.close()
+
+
+def test_cycle_does_not_sell_when_max_holding_is_disabled():
+    client, agent, paper_brokers, _alpaca = make_agent_client()
+    agent.forecast_provider = StaticForecastProvider({"NVDA": _forecast("HOLD", expected_return=0.0)})
+    with client:
+        headers = register_headers(client)
+        session, config, broker = _start_day_trading_with_long(agent, paper_brokers, client, headers)
+        risk = dict(agent.resolved_risk_config(config))
+        risk["max_holding_enabled"] = False
+        risk["max_position_holding_minutes"] = 30
+        risk["close_positions_before_market_close"] = False
+        config.risk_config = risk
+        session.commit()
+        _seed_open_long_plan(
+            session,
+            config=config,
+            stop_loss=50,
+            take_profit=200,
+            opened_at=datetime.now(timezone.utc) - timedelta(minutes=45),
+        )
+
+        result = agent.run_cycle(
+            session,
+            config,
+            symbols=["NVDA"],
+            execute=True,
+            market_open=True,
+            prices={"NVDA": 100.0},
+            near_close=False,
+        )
+        session.commit()
+        sell_orders = [row for row in result["approved"] if row["strategy"] == "intraday_exit"]
+        assert sell_orders == []
+        assert broker.get_positions(), "position should remain open when max holding is off"
         session.close()
 
 
@@ -683,6 +951,145 @@ def test_cycle_sells_near_market_close():
         assert sell_orders, result
         assert sell_orders[0]["metadata"]["exit_reason"] == "eod_flatten"
         assert broker.get_positions() == []
+        session.close()
+
+
+def test_cycle_does_not_intraday_exit_buy_and_hold_on_stop():
+    client, agent, paper_brokers, _alpaca = make_agent_client()
+    agent.forecast_provider = StaticForecastProvider({"NVDA": _forecast("HOLD", expected_return=0.0)})
+    with client:
+        headers = register_headers(client)
+        client.put(
+            "/api/v1/trading-agent/config",
+            json={"trading_type": "long_term", "universe": ["NVDA"], "capital_allocation": 10_000},
+            headers=headers,
+        )
+        cfg = client.post("/api/v1/trading-agent/start", json={"mode": "paper"}, headers=headers).json()
+        broker = paper_brokers[cfg["id"]]
+        broker.set_price("NVDA", 100.0)
+        buy = broker.submit_order(
+            OrderRequest(symbol="NVDA", side="buy", quantity=5, idempotency_key=f"bh-{uuid4().hex[:8]}")
+        )
+        assert buy.status == "filled"
+        session = _db_session()
+        me = client.get("/api/v1/auth/me", headers=headers).json()
+        config = agent.get_or_create_config(session, me["id"])
+        risk = dict(agent.resolved_risk_config(config))
+        risk["min_exit_holding_minutes"] = 0
+        config.risk_config = risk
+        session.commit()
+        _seed_open_long_plan(
+            session,
+            config=config,
+            stop_loss=95,
+            take_profit=110,
+            strategy="buy_and_hold",
+            opened_at=datetime.now(timezone.utc) - timedelta(minutes=45),
+        )
+        broker.set_price("NVDA", 94.0)
+        result = agent.run_cycle(
+            session,
+            config,
+            symbols=["NVDA"],
+            execute=True,
+            market_open=True,
+            prices={"NVDA": 94.0},
+        )
+        session.commit()
+        exits = [row for row in result["approved"] if row["strategy"] == "intraday_exit"]
+        assert exits == [], result
+        assert broker.get_positions()
+        session.close()
+
+
+def test_cycle_respects_min_exit_holding_before_stop():
+    client, agent, paper_brokers, _alpaca = make_agent_client()
+    agent.forecast_provider = StaticForecastProvider({"NVDA": _forecast("HOLD", expected_return=0.0)})
+    with client:
+        headers = register_headers(client)
+        session, config, broker = _start_day_trading_with_long(agent, paper_brokers, client, headers)
+        risk = dict(agent.resolved_risk_config(config))
+        risk["min_exit_holding_minutes"] = 30
+        risk["close_positions_before_market_close"] = False
+        config.risk_config = risk
+        session.commit()
+        _seed_open_long_plan(
+            session,
+            config=config,
+            stop_loss=95,
+            take_profit=110,
+            opened_at=datetime.now(timezone.utc) - timedelta(minutes=5),
+        )
+        broker.set_price("NVDA", 94.0)
+        blocked = agent.run_cycle(
+            session,
+            config,
+            symbols=["NVDA"],
+            execute=True,
+            market_open=True,
+            prices={"NVDA": 94.0},
+            near_close=False,
+        )
+        session.commit()
+        assert [r for r in blocked["approved"] if r["strategy"] == "intraday_exit"] == [], blocked
+
+        pos = (
+            session.query(AgentPosition)
+            .filter(AgentPosition.agent_config_id == config.id, AgentPosition.symbol == "NVDA")
+            .order_by(AgentPosition.id.desc())
+            .first()
+        )
+        assert pos is not None
+        pos.opened_at = datetime.now(timezone.utc) - timedelta(minutes=45)
+        session.commit()
+
+        broker.set_price("NVDA", 94.0)
+        allowed = agent.run_cycle(
+            session,
+            config,
+            symbols=["NVDA"],
+            execute=True,
+            market_open=True,
+            prices={"NVDA": 94.0},
+            near_close=False,
+        )
+        session.commit()
+        sells = [r for r in allowed["approved"] if r["strategy"] == "intraday_exit"]
+        assert sells, allowed
+        assert sells[0]["metadata"]["exit_reason"] == "stop_loss"
+        session.close()
+
+
+def test_mixed_cycle_approves_only_one_buy_per_symbol():
+    client, agent, paper_brokers, _alpaca = make_agent_client()
+    with client:
+        headers = register_headers(client)
+        client.put(
+            "/api/v1/trading-agent/config",
+            json={"trading_type": "mixed", "universe": ["NVDA"], "capital_allocation": 10_000},
+            headers=headers,
+        )
+        cfg = client.post("/api/v1/trading-agent/start", json={"mode": "paper"}, headers=headers).json()
+        broker = paper_brokers[cfg["id"]]
+        broker.set_price("NVDA", 180.0)
+        session = _db_session()
+        me = client.get("/api/v1/auth/me", headers=headers).json()
+        config = agent.get_or_create_config(session, me["id"])
+        result = agent.run_cycle(
+            session,
+            config,
+            symbols=["NVDA"],
+            execute=True,
+            market_open=True,
+            prices={"NVDA": 180.0},
+        )
+        session.commit()
+        buys = [
+            row
+            for row in result["approved"]
+            if row["strategy"] in {"buy_and_hold", "intraday_momentum"}
+        ]
+        assert len(buys) == 1, result
         session.close()
 
 
@@ -1138,6 +1545,7 @@ def test_max_holding_uses_latest_buy_not_stale_opened_at():
                 "capital_allocation": 10_000,
                 "risk_profile": "custom",
                 "risk_config": {
+                    "max_holding_enabled": True,
                     "max_position_holding_minutes": 240,
                     "close_positions_before_market_close": False,
                     "default_stop_loss_pct": 0.5,
@@ -1331,3 +1739,399 @@ def test_day_trading_skips_when_signal_source_unavailable():
         path_expected_return=0.08,
     )
     assert strategy.generate("NVDA", forecast, 100.0, risk, 50_000) == []
+
+
+def test_day_trades_reports_same_day_win():
+    client, agent, _paper_brokers, _alpaca = make_agent_client()
+    with client:
+        headers = register_headers(client)
+        session = _db_session()
+        me = client.get("/api/v1/auth/me", headers=headers).json()
+        config = agent.get_or_create_config(session, me["id"])
+        when = datetime(2026, 9, 10, 17, 0, tzinfo=timezone.utc)
+        _seed_filled_order(session, config=config, side="buy", quantity=5, price=100, filled_at=when)
+        _seed_filled_order(
+            session,
+            config=config,
+            side="sell",
+            quantity=5,
+            price=110,
+            filled_at=when + timedelta(hours=1),
+            strategy="intraday_exit",
+        )
+        session.commit()
+        session.close()
+        resp = client.get("/api/v1/trading-agent/day-trades?date=2026-09-10", headers=headers)
+        assert resp.status_code == 200, resp.text
+        data = resp.json()
+        assert data["date"] == "2026-09-10"
+        sells = [row for row in data["trades"] if row["side"] == "sell"]
+        assert len(sells) == 1
+        assert sells[0]["result"] == "Profit"
+        assert sells[0]["pnl"] == pytest.approx(50.0)
+        assert data["summary"]["wins"] == 1
+        assert data["summary"]["losses"] == 0
+        assert data["summary"]["net_realized_pnl"] == pytest.approx(50.0)
+
+
+def test_day_trades_reports_same_day_loss():
+    client, agent, _paper_brokers, _alpaca = make_agent_client()
+    with client:
+        headers = register_headers(client)
+        session = _db_session()
+        me = client.get("/api/v1/auth/me", headers=headers).json()
+        config = agent.get_or_create_config(session, me["id"])
+        when = datetime(2026, 9, 10, 17, 0, tzinfo=timezone.utc)
+        _seed_filled_order(session, config=config, side="buy", quantity=5, price=100, filled_at=when)
+        _seed_filled_order(
+            session,
+            config=config,
+            side="sell",
+            quantity=5,
+            price=90,
+            filled_at=when + timedelta(hours=1),
+            strategy="intraday_exit",
+        )
+        session.commit()
+        session.close()
+        resp = client.get("/api/v1/trading-agent/day-trades?date=2026-09-10", headers=headers)
+        assert resp.status_code == 200, resp.text
+        data = resp.json()
+        sells = [row for row in data["trades"] if row["side"] == "sell"]
+        assert len(sells) == 1
+        assert sells[0]["result"] == "Loss"
+        assert sells[0]["pnl"] == pytest.approx(-50.0)
+        assert data["summary"]["losses"] == 1
+        assert data["summary"]["net_realized_pnl"] == pytest.approx(-50.0)
+
+
+def test_day_trades_empty_day():
+    client, agent, _paper_brokers, _alpaca = make_agent_client()
+    with client:
+        headers = register_headers(client)
+        session = _db_session()
+        me = client.get("/api/v1/auth/me", headers=headers).json()
+        config = agent.get_or_create_config(session, me["id"])
+        when = datetime(2026, 9, 10, 17, 0, tzinfo=timezone.utc)
+        _seed_filled_order(session, config=config, side="buy", quantity=5, price=100, filled_at=when)
+        session.commit()
+        session.close()
+        resp = client.get("/api/v1/trading-agent/day-trades?date=2026-09-11", headers=headers)
+        assert resp.status_code == 200, resp.text
+        data = resp.json()
+        assert data["date"] == "2026-09-11"
+        assert data["trades"] == []
+        assert data["summary"]["count"] == 0
+
+
+def test_day_trades_open_buy_uses_mark():
+    client, agent, _paper_brokers, _alpaca = make_agent_client()
+    with client:
+        headers = register_headers(client)
+        session = _db_session()
+        me = client.get("/api/v1/auth/me", headers=headers).json()
+        config = agent.get_or_create_config(session, me["id"])
+        when = datetime(2026, 9, 10, 17, 0, tzinfo=timezone.utc)
+        _seed_filled_order(session, config=config, side="buy", quantity=5, price=100, filled_at=when)
+        session.add(
+            AgentPosition(
+                user_id=config.user_id,
+                agent_config_id=config.id,
+                symbol="NVDA",
+                asset_type="equity",
+                quantity=5,
+                average_entry_price=100,
+                current_price=105,
+                unrealized_pnl=25,
+            )
+        )
+        session.commit()
+        session.close()
+        resp = client.get("/api/v1/trading-agent/day-trades?date=2026-09-10", headers=headers)
+        assert resp.status_code == 200, resp.text
+        data = resp.json()
+        opens = [row for row in data["trades"] if row["status"] == "open"]
+        assert len(opens) == 1
+        assert opens[0]["result"] == "Open (profit)"
+        assert opens[0]["pnl"] == pytest.approx(25.0)
+        assert data["summary"]["open"] == 1
+        assert data["summary"]["net_unrealized_pnl"] == pytest.approx(25.0)
+
+
+def test_list_candidates_keeps_approved_buys_despite_reject_flood():
+    """Accepted queue must not lose BUY approvals when recent rejects dominate."""
+    client, agent, _paper_brokers, _alpaca = make_agent_client()
+    with client:
+        headers = register_headers(client)
+        session = _db_session()
+        me = client.get("/api/v1/auth/me", headers=headers).json()
+        config = agent.get_or_create_config(session, me["id"])
+        run = AgentRun(agent_config_id=config.id, status="completed", forecast_version="cand-window")
+        session.add(run)
+        session.flush()
+        buy = TradeCandidate(
+            agent_run_id=run.id,
+            symbol="AAPL",
+            asset_type="equity",
+            strategy="buy_and_hold",
+            forecast_snapshot={"signal": "BUY", "confidence": 0.8, "symbol": "AAPL"},
+            status="approved",
+        )
+        session.add(buy)
+        session.flush()
+        for i in range(12):
+            session.add(
+                TradeCandidate(
+                    agent_run_id=run.id,
+                    symbol="MSFT",
+                    asset_type="equity",
+                    strategy="intraday_momentum",
+                    forecast_snapshot={"signal": "HOLD", "confidence": 0.2, "symbol": "MSFT"},
+                    risk_decision={"approved": False, "reason": f"reject-{i}"},
+                    status="rejected",
+                )
+            )
+        session.add(
+            TradeCandidate(
+                agent_run_id=run.id,
+                symbol="AMZN",
+                asset_type="equity",
+                strategy="intraday_momentum",
+                forecast_snapshot={"signal": "SELL", "confidence": 0.7, "symbol": "AMZN"},
+                status="approved",
+            )
+        )
+        session.commit()
+        listed = agent.list_candidates(session, config, limit=5)
+        approved = [row for row in listed if row["status"] == "approved"]
+        rejected = [row for row in listed if row["status"] == "rejected"]
+        assert any(row["symbol"] == "AAPL" and row["forecast_snapshot"]["signal"] == "BUY" for row in approved)
+        assert any(row["symbol"] == "AMZN" and row["forecast_snapshot"]["signal"] == "SELL" for row in approved)
+        assert len(rejected) == 5
+        assert len(approved) == 2
+        session.close()
+
+
+def test_day_trades_lists_buys_closed_on_a_later_day():
+    client, agent, _paper_brokers, _alpaca = make_agent_client()
+    with client:
+        headers = register_headers(client)
+        session = _db_session()
+        me = client.get("/api/v1/auth/me", headers=headers).json()
+        config = agent.get_or_create_config(session, me["id"])
+        buy_day = datetime(2026, 9, 10, 17, 0, tzinfo=timezone.utc)
+        sell_day = datetime(2026, 9, 11, 17, 0, tzinfo=timezone.utc)
+        _seed_filled_order(session, config=config, side="buy", quantity=5, price=100, filled_at=buy_day)
+        _seed_filled_order(
+            session,
+            config=config,
+            side="sell",
+            quantity=5,
+            price=110,
+            filled_at=sell_day,
+            strategy="intraday_exit",
+        )
+        session.commit()
+        session.close()
+        buy_resp = client.get("/api/v1/trading-agent/day-trades?date=2026-09-10", headers=headers)
+        assert buy_resp.status_code == 200, buy_resp.text
+        buy_data = buy_resp.json()
+        assert buy_data["date"] == "2026-09-10"
+        assert "2026-09-10" in buy_data["available_dates"]
+        assert "2026-09-11" in buy_data["available_dates"]
+        exited = [row for row in buy_data["trades"] if row["status"] == "exited"]
+        assert len(exited) == 1
+        assert exited[0]["result"] == "Closed later"
+        assert buy_data["summary"]["exited"] == 1
+
+        sell_resp = client.get("/api/v1/trading-agent/day-trades?date=2026-09-11", headers=headers)
+        assert sell_resp.status_code == 200, sell_resp.text
+        sell_data = sell_resp.json()
+        sells = [row for row in sell_data["trades"] if row["side"] == "sell"]
+        assert len(sells) == 1
+        assert sells[0]["result"] == "Profit"
+
+
+def test_day_trades_defaults_to_latest_fill_session_day():
+    client, agent, _paper_brokers, _alpaca = make_agent_client()
+    with client:
+        headers = register_headers(client)
+        session = _db_session()
+        me = client.get("/api/v1/auth/me", headers=headers).json()
+        config = agent.get_or_create_config(session, me["id"])
+        when = datetime(2026, 9, 16, 18, 0, tzinfo=timezone.utc)
+        _seed_filled_order(session, config=config, side="buy", quantity=5, price=100, filled_at=when)
+        _seed_filled_order(
+            session,
+            config=config,
+            side="sell",
+            quantity=5,
+            price=110,
+            filled_at=when + timedelta(hours=1),
+            strategy="intraday_exit",
+        )
+        session.commit()
+        session.close()
+        resp = client.get("/api/v1/trading-agent/day-trades", headers=headers)
+        assert resp.status_code == 200, resp.text
+        data = resp.json()
+        assert data["date"] == "2026-09-16"
+        assert data["latest_date"] == "2026-09-16"
+        assert len(data["trades"]) >= 1
+        empty = client.get("/api/v1/trading-agent/day-trades?date=2026-09-17", headers=headers)
+        assert empty.status_code == 200, empty.text
+        empty_data = empty.json()
+        assert empty_data["date"] == "2026-09-17"
+        assert empty_data["latest_date"] == "2026-09-16"
+        assert empty_data["trades"] == []
+        assert "2026-09-16" in empty_data["available_dates"]
+
+
+def test_normalize_order_status_strips_alpaca_enum_prefix():
+    from app.trading_agent.broker import is_filled_status, normalize_order_status
+
+    assert normalize_order_status("OrderStatus.FILLED") == "filled"
+    assert normalize_order_status("OrderStatus.PARTIALLY_FILLED") == "partially_filled"
+    assert normalize_order_status("accepted") == "accepted"
+    assert is_filled_status("OrderStatus.FILLED")
+    assert is_filled_status("partially_filled")
+    assert not is_filled_status("OrderStatus.ACCEPTED")
+
+
+def test_jsonable_prefers_str_enum_value_over_repr():
+    from enum import Enum
+
+    from app.services.providers import jsonable
+
+    class OrderStatus(str, Enum):
+        FILLED = "filled"
+        ACCEPTED = "accepted"
+
+    assert jsonable(OrderStatus.FILLED) == "filled"
+    assert jsonable({"status": OrderStatus.ACCEPTED}) == {"status": "accepted"}
+
+
+def test_day_trades_repairs_alpaca_enum_status_and_missing_filled_at():
+    """Legacy rows stored as OrderStatus.FILLED with null filled_at must still report."""
+    client, agent, _paper_brokers, _alpaca = make_agent_client()
+    with client:
+        headers = register_headers(client)
+        session = _db_session()
+        me = client.get("/api/v1/auth/me", headers=headers).json()
+        config = agent.get_or_create_config(session, me["id"])
+        when = datetime(2026, 9, 16, 18, 0, tzinfo=timezone.utc)
+        buy = _seed_filled_order(session, config=config, side="buy", quantity=5, price=100, filled_at=when)
+        sell = _seed_filled_order(
+            session,
+            config=config,
+            side="sell",
+            quantity=5,
+            price=110,
+            filled_at=when + timedelta(hours=1),
+            strategy="intraday_exit",
+        )
+        buy.status = "OrderStatus.FILLED"
+        buy.filled_at = None
+        sell.status = "OrderStatus.FILLED"
+        sell.filled_at = None
+        session.commit()
+        session.close()
+
+        resp = client.get("/api/v1/trading-agent/day-trades?date=2026-09-16", headers=headers)
+        assert resp.status_code == 200, resp.text
+        data = resp.json()
+        sells = [row for row in data["trades"] if row["side"] == "sell"]
+        assert len(sells) == 1
+        assert sells[0]["result"] == "Profit"
+        assert sells[0]["pnl"] == pytest.approx(50.0)
+
+        orders = client.get("/api/v1/trading-agent/orders", headers=headers).json()["orders"]
+        filled = [row for row in orders if row["status"] == "filled"]
+        assert len(filled) >= 2
+        assert all(row.get("filled_at") for row in filled)
+
+        perf = client.get("/api/v1/trading-agent/performance", headers=headers).json()
+        assert int(perf["number_of_trades"]) >= 2
+
+
+def test_cycle_universe_scan_covers_every_symbol():
+    client, agent, paper_brokers, _alpaca = make_agent_client()
+    agent.forecast_provider = StaticForecastProvider(
+        {
+            "NVDA": _forecast("BUY", expected_return=0.04),
+            "MU": ForecastResult(
+                symbol="MU",
+                signal="HOLD",
+                confidence=0.4,
+                forecast_horizon="1Day",
+                expected_return=0.0,
+                downside_risk=0.01,
+                forecast_version="test",
+                generated_at=datetime.now(timezone.utc).isoformat(),
+                features_snapshot_id="snap1",
+                model_name="static",
+            ),
+        }
+    )
+    with client:
+        headers = register_headers(client)
+        client.put(
+            "/api/v1/trading-agent/config",
+            json={"trading_type": "long_term", "universe": ["NVDA", "MU"], "capital_allocation": 10_000},
+            headers=headers,
+        )
+        cfg = client.post("/api/v1/trading-agent/start", json={"mode": "paper"}, headers=headers).json()
+        broker = paper_brokers[cfg["id"]]
+        broker.set_price("NVDA", 100.0)
+        broker.set_price("MU", 90.0)
+        # Inflate paper equity so sizing is not stuck on the 10k allocation alone.
+        broker.cash = 50_000.0
+        cycle = client.post(
+            "/api/v1/trading-agent/cycle",
+            json={"symbols": ["NVDA", "MU"], "execute": True},
+            headers=headers,
+        )
+        assert cycle.status_code == 200, cycle.text
+        body = cycle.json()
+        scan = {row["symbol"]: row for row in body["universe_scan"]}
+        assert set(scan) == {"NVDA", "MU"}
+        assert scan["NVDA"]["outcome"] in {"approved", "risk_rejected"}
+        assert scan["MU"]["outcome"] == "hold"
+        assert body["sizing_capital"] >= 10_000
+
+        cfg_resp = client.get("/api/v1/trading-agent/config", headers=headers).json()
+        assert cfg_resp["max_universe_size"] == 50
+        assert len(cfg_resp["last_universe_scan"]) == 2
+        assert {row["symbol"] for row in cfg_resp["last_universe_scan"]} == {"NVDA", "MU"}
+
+
+def test_sizing_capital_prefers_broker_equity():
+    client, agent, paper_brokers, _alpaca = make_agent_client()
+    with client:
+        headers = register_headers(client)
+        cfg = client.post("/api/v1/trading-agent/start", json={"mode": "paper"}, headers=headers).json()
+        broker = paper_brokers[cfg["id"]]
+        broker.cash = 80_000.0
+        session = _db_session()
+        me = client.get("/api/v1/auth/me", headers=headers).json()
+        config = agent.get_or_create_config(session, me["id"])
+        config.capital_allocation = 5_000
+        session.commit()
+        sized = agent._sizing_capital(config, broker)
+        session.close()
+        assert sized == pytest.approx(80_000.0)
+
+
+def test_classify_empty_generate_qty_zero():
+    from app.trading_agent.strategies import classify_empty_generate
+
+    outcome, reason = classify_empty_generate(
+        forecast=_forecast("BUY", expected_return=0.04),
+        price=500.0,
+        capital=1_000.0,
+        risk_config={"max_position_size_pct": 0.05},
+        held_qty=0.0,
+    )
+    assert outcome == "qty_zero"
+    assert "budget" in reason.lower() or "0" in reason
+

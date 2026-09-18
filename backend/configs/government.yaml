@@ -1,0 +1,53 @@
+# Government contract / procurement analysis configuration.
+# Deterministic scoring weights — never computed by the LLM.
+
+enabled: true
+
+mapping:
+  min_confidence: 0.75
+  fuzzy_min_confidence: 0.55
+  fuzzy_accept_confidence: 0.85
+
+scoring:
+  award: 30
+  sole_source: 20
+  large_opportunity: 15
+  new_customer: 10
+  multi_year: 10
+  material_revenue: 10
+  backlog_impact: 10
+  incumbent: 5
+  idiq_ceiling_only: -20
+  option_only: -15
+  immaterial_contract: -10
+
+early_signal:
+  PROCUREMENT_FORECAST: 100
+  SOURCES_SOUGHT: 90
+  PRESOLICITATION: 80
+  SOLICITATION: 70
+  AWARD: 50
+  AWARD_MODIFICATION: 45
+  OBLIGATION: 30
+  OPTION_EXERCISED: 35
+
+thresholds:
+  large_opportunity_amount: 50000000
+  large_award_amount: 25000000
+  large_obligation_amount: 10000000
+  material_revenue_ratio: 0.05
+  immaterial_revenue_ratio: 0.005
+  multi_year_days: 365
+
+alerts:
+  government_score_min: 80
+  large_award_amount: 25000000
+  large_obligation_amount: 10000000
+  large_opportunity_amount: 50000000
+  new_customer: true
+  sole_source: true
+
+ingest:
+  lookback_days: 90
+  page_limit: 100
+  max_pages: 5

@@ -106,8 +106,42 @@ def _position_qty(
         if forecast.signal_source == "unavailable":
             strength = 0.0
     qty = int((budget * strength) // price)
+    # Never let strength > 1.0 exceed the max_position_size_pct notional budget.
+    cap_qty = int(budget // price)
+    if cap_qty > 0:
+        qty = min(qty, cap_qty)
     return float(max(qty, 0))
 
+
+def classify_empty_generate(
+    *,
+    forecast: ForecastResult,
+    price: float,
+    capital: float,
+    risk_config: dict[str, Any],
+    held_qty: float = 0.0,
+) -> tuple[str, str]:
+    """Explain why strategy engines produced no candidates for a symbol."""
+    signal = str(forecast.signal or "").upper()
+    if forecast.signal_source == "unavailable":
+        return "unavailable", "Forecast signal unavailable"
+    if signal not in {"BUY", "STRONG BUY", "SELL", "STRONG SELL"}:
+        return "hold", f"Signal {signal or 'HOLD'} is not actionable"
+    side = "buy" if "BUY" in signal else "sell"
+    if side == "sell":
+        held = float(held_qty or 0.0)
+        if held <= 0 and not risk_config.get("short_selling_enabled", False):
+            return "no_position", "Sell skipped; no long position and shorts disabled"
+        if held > 0:
+            return "no_candidate", "No strategy candidate for sell"
+    qty = _position_qty(price, capital, risk_config, forecast)
+    if qty <= 0:
+        max_pct = float(risk_config.get("max_position_size_pct") or 0.05)
+        budget = float(capital) * max_pct
+        return "qty_zero", f"Position size 0 (budget {budget:.2f} vs price {price:.2f})"
+    if not risk_config.get("allow_day_trading", True) and "BUY" not in signal:
+        return "no_candidate", "Day trading disabled"
+    return "no_candidate", "No strategy emitted a candidate"
 
 def _path_levels(
     *,
@@ -168,23 +202,34 @@ def build_intraday_exit_candidates(
     now: datetime | None = None,
     near_close: bool = False,
 ) -> list[StrategyCandidate]:
-    """Close open longs when stop/take-profit/max-hold/EOD triggers fire."""
+    """Close open longs when stop, take-profit, optional max-hold, or EOD triggers fire."""
     qty = float(quantity)
     if qty <= 0 or mark_price <= 0:
         return []
 
+    current = _as_utc(now or datetime.now(timezone.utc))
+    held_minutes = 0.0
+    if opened_at is not None:
+        held_minutes = (current - _as_utc(opened_at)).total_seconds() / 60.0
+
+    # Protective stop/TP wait until the position has been held long enough (noise gate).
+    min_exit = int(risk_config.get("min_exit_holding_minutes") or 0)
+    allow_stop_tp = min_exit <= 0 or held_minutes >= min_exit
+
     reasons: list[str] = []
-    if stop_loss is not None and mark_price <= float(stop_loss):
+    if allow_stop_tp and stop_loss is not None and mark_price <= float(stop_loss):
         reasons.append("stop_loss")
-    if take_profit is not None and mark_price >= float(take_profit):
+    if allow_stop_tp and take_profit is not None and mark_price >= float(take_profit):
         reasons.append("take_profit")
 
     max_hold = int(risk_config.get("max_position_holding_minutes") or 0)
-    if max_hold > 0 and opened_at is not None:
-        current = _as_utc(now or datetime.now(timezone.utc))
-        held_minutes = (current - _as_utc(opened_at)).total_seconds() / 60.0
-        if held_minutes >= max_hold:
-            reasons.append("max_holding")
+    if (
+        bool(risk_config.get("max_holding_enabled"))
+        and max_hold > 0
+        and opened_at is not None
+        and held_minutes >= max_hold
+    ):
+        reasons.append("max_holding")
 
     if near_close and risk_config.get("close_positions_before_market_close", False):
         reasons.append("eod_flatten")
@@ -211,6 +256,8 @@ def build_intraday_exit_candidates(
                 "exit_reasons": reasons,
                 "entry_price": entry_price,
                 "opened_at": opened_at.isoformat() if opened_at else None,
+                "held_minutes": held_minutes,
+                "min_exit_holding_minutes": min_exit,
             },
         )
     ]

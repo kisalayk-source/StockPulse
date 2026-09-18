@@ -16,6 +16,8 @@ const CUSTOM_FIELDS: Array<{ key: string; label: string; type?: 'number' | 'chec
   { key: 'allow_options', label: 'Allow options', type: 'checkbox' },
   { key: 'allow_naked_options', label: 'Allow naked options', type: 'checkbox' },
   { key: 'allow_day_trading', label: 'Allow day trading', type: 'checkbox' },
+  { key: 'max_holding_enabled', label: 'Exit when max holding time is reached', type: 'checkbox' },
+  { key: 'max_position_holding_minutes', label: 'Max holding time (minutes)' },
   { key: 'short_selling_enabled', label: 'Short selling', type: 'checkbox' },
   { key: 'min_forecast_confidence', label: 'Min forecast confidence' },
   { key: 'max_order_value', label: 'Max order value' },
@@ -24,6 +26,14 @@ const CUSTOM_FIELDS: Array<{ key: string; label: string; type?: 'number' | 'chec
   { key: 'daily_loss_action', label: 'Daily loss action', type: 'text' },
   { key: 'daily_loss_calculation', label: 'Daily loss calculation', type: 'text' },
 ]
+
+function fieldAlwaysEditable(key: string): boolean {
+  return (
+    key.startsWith('daily_loss')
+    || key === 'max_daily_loss_amount'
+    || key === 'max_daily_loss_percent'
+  )
+}
 
 export function RiskManagementPanel({ onClose }: { onClose?: () => void }) {
   const [config, setConfig] = useState<RiskManagementConfig | null>(null)
@@ -138,7 +148,7 @@ export function RiskManagementPanel({ onClose }: { onClose?: () => void }) {
                 <input
                   type={field.type === 'text' ? 'text' : 'number'}
                   value={value == null ? '' : String(value)}
-                  disabled={busy || (profile !== 'custom' && !String(field.key).startsWith('daily_loss') && field.key !== 'max_daily_loss_amount' && field.key !== 'max_daily_loss_percent')}
+                  disabled={busy || (profile !== 'custom' && !fieldAlwaysEditable(field.key))}
                   onChange={(event) => {
                     const next =
                       field.type === 'text'

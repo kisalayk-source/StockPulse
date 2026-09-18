@@ -81,3 +81,10 @@ from app.trading_agent.models import (  # noqa: E402,F401
     TradeCandidate,
     TradePlan,
 )
+
+# Government contract models (imported for metadata registration)
+from app.government.db_models import (  # noqa: E402,F401
+    GovernmentCompanyMapping,
+    GovernmentContract,
+    GovernmentEvent,
+)

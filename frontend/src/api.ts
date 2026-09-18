@@ -288,6 +288,20 @@ export interface DailyLossState {
   criticalThresholdPct?: number
   utilizationPct?: number
   warnings: string[]
+  /** Filled agent orders since the session-day reset. */
+  tradesToday?: number
+  /** Day-trading entry cap from risk profile (`max_trades_per_day`). */
+  maxTradesPerDay?: number | null
+}
+
+export interface UniverseScanRow {
+  symbol: string
+  outcome: string
+  signal?: string | null
+  confidence?: number | null
+  reason?: string | null
+  price?: number | null
+  sizingCapital?: number | null
 }
 
 export interface TradingAgentConfig {
@@ -303,8 +317,10 @@ export interface TradingAgentConfig {
   forecastEnabled: boolean
   liveTradingEnabled: boolean
   universe: string[]
+  maxUniverseSize: number
   cycleIntervalSeconds: number
   lastCycleAt?: string | null
+  lastUniverseScan: UniverseScanRow[]
   dailyLoss: DailyLossState
   createdAt?: string | null
   updatedAt?: string | null
@@ -316,8 +332,12 @@ export interface TradeCandidateRow {
   assetType: string
   strategy: string
   status: string
+  /** buy | sell when known (from plan/order or inferred from signal). */
+  side?: string | null
   forecastSnapshot: Record<string, unknown>
   riskDecision: Record<string, unknown> | null
+  /** Present for intraday_exit rows: stop_loss | take_profit | max_holding | eod_flatten */
+  exitReason?: string | null
   createdAt?: string | null
 }
 
@@ -347,6 +367,42 @@ export interface AgentOrderRow {
   errorMessage?: string | null
   submittedAt?: string | null
   filledAt?: string | null
+}
+
+export interface DayTradeRow {
+  id: number
+  symbol: string
+  assetType: string
+  side: string
+  status: string
+  quantity: number
+  entryPrice: number
+  exitPrice: number | null
+  pnl: number
+  result: string
+  strategy?: string | null
+  filledAt?: string | null
+}
+
+export interface DayTradesSummary {
+  count: number
+  wins: number
+  losses: number
+  open: number
+  exited: number
+  netRealizedPnl: number
+  netUnrealizedPnl: number
+}
+
+export interface DayTradesReport {
+  date: string
+  timezone: string
+  /** Most recent session day that has agent fills, if any. */
+  latestDate?: string | null
+  /** Session days that have at least one agent fill. */
+  availableDates: string[]
+  trades: DayTradeRow[]
+  summary: DayTradesSummary
 }
 
 export interface AgentPositionRow {
@@ -470,6 +526,50 @@ export interface SecIntelligenceResponse {
   major_holder_changes: Array<Record<string, unknown>>
   caveats: string[]
   provider_errors?: Array<{ provider: string; message: string }>
+}
+
+export interface GovernmentSummary {
+  score: number
+  early_signal_score: number
+  awards_30d: number
+  award_value_30d: number
+  obligations_30d: number
+  obligation_value_30d: number
+  opportunity_count_30d: number
+  opportunity_value_30d: number
+  new_customer: boolean
+  sole_source: boolean
+  incumbent: boolean
+  multi_year: boolean
+  revenue_exposure: number | null
+  contract_value: number
+}
+
+export interface GovernmentActivityRow {
+  date?: string
+  agency?: string | null
+  event?: string
+  title?: string | null
+  value?: number | null
+  status?: string
+  source?: string
+  source_url?: string | null
+  sole_source?: boolean
+  market_reaction?: Record<string, number | null>
+}
+
+export interface GovernmentAnalysisResponse {
+  ticker: string
+  as_of: string
+  government: GovernmentSummary
+  recent_activity: GovernmentActivityRow[]
+  open_opportunities: Array<Record<string, any>>
+  recent_awards: Array<Record<string, any>>
+  recent_obligations: Array<Record<string, any>>
+  top_agencies: Array<{ agency: string; value: number }>
+  alerts: Array<{ type: string; severity: string; message: string }>
+  provider_errors?: Array<{ provider: string; message: string }>
+  sync?: Record<string, unknown>
 }
 
 export interface SectorAccumulationResponse {
@@ -728,6 +828,21 @@ function mapDailyLoss(raw: unknown): DailyLossState {
     criticalThresholdPct: number(payload.critical_threshold_pct) ?? undefined,
     utilizationPct: number(payload.utilization_pct) ?? undefined,
     warnings: list(payload.warnings).map((w) => String(w)),
+    tradesToday: number(payload.trades_today) ?? 0,
+    maxTradesPerDay: number(payload.max_trades_per_day),
+  }
+}
+
+function mapUniverseScanRow(raw: unknown): UniverseScanRow {
+  const payload = object(raw)
+  return {
+    symbol: text(payload.symbol),
+    outcome: text(payload.outcome),
+    signal: text(payload.signal) || null,
+    confidence: number(payload.confidence),
+    reason: text(payload.reason) || null,
+    price: number(payload.price),
+    sizingCapital: number(payload.sizing_capital),
   }
 }
 
@@ -746,8 +861,10 @@ function mapTradingAgentConfig(raw: unknown): TradingAgentConfig {
     forecastEnabled: payload.forecast_enabled !== false,
     liveTradingEnabled: Boolean(payload.live_trading_enabled),
     universe: list(payload.universe).map((s) => String(s).toUpperCase()),
+    maxUniverseSize: number(payload.max_universe_size) ?? 50,
     cycleIntervalSeconds: number(payload.cycle_interval_seconds) ?? 300,
     lastCycleAt: text(payload.last_cycle_at) || null,
+    lastUniverseScan: list(payload.last_universe_scan).map((row) => mapUniverseScanRow(row)),
     dailyLoss: mapDailyLoss(payload.daily_loss),
     createdAt: text(payload.created_at) || null,
     updatedAt: text(payload.updated_at) || null,
@@ -756,14 +873,19 @@ function mapTradingAgentConfig(raw: unknown): TradingAgentConfig {
 
 function mapTradeCandidate(raw: unknown): TradeCandidateRow {
   const payload = object(raw)
+  const snapshot = object(payload.forecast_snapshot)
+  const exitFromPayload = text(payload.exit_reason) || null
+  const exitFromSnapshot = text(snapshot.exit_reason) || null
   return {
     id: number(payload.id) ?? 0,
     symbol: text(payload.symbol),
     assetType: text(payload.asset_type, 'equity'),
     strategy: text(payload.strategy),
     status: text(payload.status),
-    forecastSnapshot: object(payload.forecast_snapshot),
+    side: text(payload.side) || null,
+    forecastSnapshot: snapshot,
     riskDecision: payload.risk_decision ? object(payload.risk_decision) : null,
+    exitReason: exitFromPayload || exitFromSnapshot,
     createdAt: text(payload.created_at) || null,
   }
 }
@@ -785,12 +907,19 @@ function mapTradePlan(raw: unknown): TradePlanRow {
   }
 }
 
+function normalizeOrderStatus(status: string): string {
+  const raw = status.trim()
+  if (!raw) return raw
+  const leaf = raw.includes('.') ? raw.slice(raw.lastIndexOf('.') + 1) : raw
+  return leaf.toLowerCase().replace(/\s+/g, '_')
+}
+
 function mapAgentOrder(raw: unknown): AgentOrderRow {
   const payload = object(raw)
   return {
     id: number(payload.id) ?? 0,
     brokerOrderId: text(payload.broker_order_id) || null,
-    status: text(payload.status),
+    status: normalizeOrderStatus(text(payload.status)),
     symbol: text(payload.symbol),
     side: text(payload.side),
     filledQuantity: number(payload.filled_quantity) ?? 0,
@@ -799,6 +928,45 @@ function mapAgentOrder(raw: unknown): AgentOrderRow {
     errorMessage: text(payload.error_message) || null,
     submittedAt: text(payload.submitted_at) || null,
     filledAt: text(payload.filled_at) || null,
+  }
+}
+
+function mapDayTrade(raw: unknown): DayTradeRow {
+  const payload = object(raw)
+  return {
+    id: number(payload.id) ?? 0,
+    symbol: text(payload.symbol),
+    assetType: text(payload.asset_type, 'equity'),
+    side: text(payload.side),
+    status: text(payload.status),
+    quantity: number(payload.quantity) ?? 0,
+    entryPrice: number(payload.entry_price) ?? 0,
+    exitPrice: number(payload.exit_price),
+    pnl: number(payload.pnl) ?? 0,
+    result: text(payload.result),
+    strategy: text(payload.strategy) || null,
+    filledAt: text(payload.filled_at) || null,
+  }
+}
+
+function mapDayTradesReport(raw: unknown): DayTradesReport {
+  const payload = object(raw)
+  const summary = object(payload.summary)
+  return {
+    date: text(payload.date),
+    timezone: text(payload.timezone, 'America/Los_Angeles'),
+    latestDate: text(payload.latest_date) || null,
+    availableDates: list(payload.available_dates).map((value) => String(value)).filter(Boolean),
+    trades: list(payload.trades).map((row) => mapDayTrade(row)),
+    summary: {
+      count: number(summary.count) ?? 0,
+      wins: number(summary.wins) ?? 0,
+      losses: number(summary.losses) ?? 0,
+      open: number(summary.open) ?? 0,
+      exited: number(summary.exited) ?? 0,
+      netRealizedPnl: number(summary.net_realized_pnl) ?? 0,
+      netUnrealizedPnl: number(summary.net_unrealized_pnl) ?? 0,
+    },
   }
 }
 
@@ -892,10 +1060,17 @@ async function requestWithRetry<T>(path: string, init?: RequestInit, attempts = 
       return await request<T>(path, init)
     } catch (error) {
       lastError = error
-      if (!(error instanceof ApiError) || error.status !== 429 || attempt === attempts - 1) {
+      const retryable =
+        error instanceof ApiError
+        && (error.status === 429 || error.status === 502 || error.status === 503)
+      if (!retryable || attempt === attempts - 1) {
         throw error
       }
-      await sleep(Math.min(error.retryAfterMs || 1500, 5_000))
+      const delayMs =
+        error.status === 429
+          ? Math.min(error.retryAfterMs || 1500, 5_000)
+          : 400 * (attempt + 1)
+      await sleep(delayMs)
     }
   }
   throw lastError
@@ -1526,6 +1701,65 @@ export const api = {
       provider_errors: payload.provider_errors as SecIntelligenceResponse['provider_errors'],
     }
   },
+  governmentAnalysis: async (symbol: string, sync = false): Promise<GovernmentAnalysisResponse> => {
+    const query = sync ? '?sync=true' : ''
+    const payload = object(
+      await request<unknown>(`/stocks/${encodeURIComponent(symbol)}/government${query}`),
+    )
+    const gov = object(payload.government)
+    return {
+      ticker: text(payload.ticker, symbol.toUpperCase()),
+      as_of: text(payload.as_of),
+      government: {
+        score: number(gov.score) ?? 0,
+        early_signal_score: number(gov.early_signal_score) ?? 0,
+        awards_30d: number(gov.awards_30d) ?? 0,
+        award_value_30d: number(gov.award_value_30d) ?? 0,
+        obligations_30d: number(gov.obligations_30d) ?? 0,
+        obligation_value_30d: number(gov.obligation_value_30d) ?? 0,
+        opportunity_count_30d: number(gov.opportunity_count_30d) ?? 0,
+        opportunity_value_30d: number(gov.opportunity_value_30d) ?? 0,
+        new_customer: Boolean(gov.new_customer),
+        sole_source: Boolean(gov.sole_source),
+        incumbent: Boolean(gov.incumbent),
+        multi_year: Boolean(gov.multi_year),
+        revenue_exposure: number(gov.revenue_exposure),
+        contract_value: number(gov.contract_value) ?? 0,
+      },
+      recent_activity: list(payload.recent_activity).map((row) => {
+        const item = object(row)
+        return {
+          date: text(item.date) || undefined,
+          agency: item.agency == null ? null : text(item.agency),
+          event: text(item.event) || undefined,
+          title: item.title == null ? null : text(item.title),
+          value: number(item.value),
+          status: text(item.status) || undefined,
+          source: text(item.source) || undefined,
+          source_url: item.source_url == null ? null : text(item.source_url),
+          sole_source: Boolean(item.sole_source),
+          market_reaction: item.market_reaction as Record<string, number | null> | undefined,
+        }
+      }),
+      open_opportunities: list(payload.open_opportunities) as Array<Record<string, any>>,
+      recent_awards: list(payload.recent_awards) as Array<Record<string, any>>,
+      recent_obligations: list(payload.recent_obligations) as Array<Record<string, any>>,
+      top_agencies: list(payload.top_agencies).map((row) => {
+        const item = object(row)
+        return { agency: text(item.agency), value: number(item.value) ?? 0 }
+      }),
+      alerts: list(payload.alerts).map((row) => {
+        const item = object(row)
+        return {
+          type: text(item.type),
+          severity: text(item.severity, 'info'),
+          message: text(item.message),
+        }
+      }),
+      provider_errors: payload.provider_errors as GovernmentAnalysisResponse['provider_errors'],
+      sync: payload.sync as Record<string, unknown> | undefined,
+    }
+  },
   accumulation: async (symbol: string): Promise<AccumulationResponse> =>
     mapAccumulationResponse(object(await request<unknown>(`/stocks/${encodeURIComponent(symbol)}/accumulation`))),
   sectorAccumulation: async (sector: string): Promise<SectorAccumulationResponse> => {
@@ -1808,6 +2042,10 @@ export const api = {
   getTradingAgentOrders: async (): Promise<AgentOrderRow[]> => {
     const payload = object(await request<unknown>('/trading-agent/orders'))
     return list(payload.orders).map((row) => mapAgentOrder(row))
+  },
+  getTradingAgentDayTrades: async (tradingDate?: string): Promise<DayTradesReport> => {
+    const suffix = tradingDate ? `?${query({ date: tradingDate })}` : ''
+    return mapDayTradesReport(await request<unknown>(`/trading-agent/day-trades${suffix}`))
   },
   getTradingAgentPositions: async (): Promise<AgentPositionRow[]> => {
     const payload = object(await request<unknown>('/trading-agent/positions'))

@@ -9,7 +9,8 @@ produce an OHLCV **path** for charting. This path never places orders by itself.
 
 For the trading agent, the path is used for **sizing and targets only**; BUY/SELL
 comes from calibrated hybrid prediction (see agent alignment in
-[mvp-roadmap.md](./mvp-roadmap.md#agent-alignment-done)).
+[mvp-roadmap.md](./mvp-roadmap.md#agent-alignment-done) and
+[trading-agent.md](./trading-agent.md)).
 
 ## Directional adapter (MVP-2 — implemented)
 

@@ -16,6 +16,33 @@ Horizons: `1d`, `5d`, `20d`.
 
 Path forecast remains `POST /forecast` and is unchanged.
 
-Env toggles: `PREDICTION_ENABLED`, `PREDICTION_RATE_LIMIT_PER_MINUTE`.
+### Government contract analysis
+
+| Method | Path | Description |
+|---|---|---|
+| GET | `/stocks/{symbol}/government` | Scores, recent activity, agencies, alert candidates (`?sync=true` to refresh) |
+| POST | `/stocks/{symbol}/government/sync` | Sync SAM.gov / USAspending for the ticker, then return analysis |
+
+See [government.md](./government.md) for payload shape, config, and scoring.
+Feature snapshots may include a `government` bucket when
+`features.government` is enabled (`feature_version` `1.1.0`).
+
+Env toggles: `PREDICTION_ENABLED`, `PREDICTION_RATE_LIMIT_PER_MINUTE`,
+`GOVERNMENT_ENABLED`, `SAM_GOV_API_KEY`, `GOVERNMENT_RATE_LIMIT_PER_MINUTE`.
 Agent alignment: hybrid owns BUY/SELL; path owns sizing/targets
 (`agent_require_hybrid_signal`, default `true`).
+
+### Autonomous Trading Agent
+
+Full behavior (ad-hoc vs saved universe): [trading-agent.md](./trading-agent.md).
+
+| Method | Path | Description |
+|---|---|---|
+| GET/PUT | `/trading-agent/config` | Agent config; `universe` (saved risk portfolio, max 50), `max_universe_size`, `last_universe_scan` |
+| POST | `/trading-agent/start` | Start paper/live (`{ "mode": "paper" \| "live" }`) |
+| POST | `/trading-agent/pause` \| `/resume` \| `/emergency-stop` | Lifecycle |
+| POST | `/trading-agent/cycle` | One cycle. Optional `{ "symbols": ["GOOG"], "execute": true }` — ad-hoc tickers **not** required in `universe`; omit `symbols` to use the saved portfolio. Invalid/empty `symbols` → 422 |
+| GET | `/trading-agent/forecasts` | Forecasts for the saved universe |
+| GET | `/trading-agent/candidates` \| `/trade-plans` \| `/orders` \| `/positions` \| `/events` \| `/performance` | Run artifacts |
+| GET | `/trading-agent/day-trades` | Day-trades report (`?date=YYYY-MM-DD`) |
+| GET/PUT | `/trading-agent/daily-loss` | Daily loss limits; `POST /trading-agent/daily-loss/reset` |

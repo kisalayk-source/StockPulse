@@ -285,12 +285,14 @@ def merge_news(*groups: list[dict[str, Any]], limit: int) -> list[dict[str, Any]
 
 
 def jsonable(value: Any) -> Any:
+    # Enum before str: Alpaca OrderStatus is (str, Enum); isinstance(x, str) is True
+    # but str(x) is "OrderStatus.FILLED" while x.value is "filled".
+    if isinstance(value, Enum):
+        return value.value
     if value is None or isinstance(value, (str, int, float, bool)):
         return value
     if isinstance(value, (datetime,)):
         return value.isoformat()
-    if isinstance(value, Enum):
-        return value.value
     if hasattr(value, "model_dump"):
         return {k: jsonable(v) for k, v in value.model_dump().items()}
     if isinstance(value, dict):

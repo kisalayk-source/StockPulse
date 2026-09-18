@@ -11,6 +11,7 @@ from app.config import Settings
 from app.services.kronos import KronosService
 from app.services.prediction import PredictionService
 from app.services.providers import AlpacaService, FinnhubService
+from app.government.service import GovernmentService
 from app.sec.service import SecService
 
 
@@ -21,6 +22,7 @@ class Services:
     finnhub: Any
     kronos: Any
     sec: Any
+    government: Any = None
     prediction: Any = None
     trading_agent: Any = None
 
@@ -55,10 +57,18 @@ def build_services(settings: Settings) -> Services:
     kronos = KronosService(settings, alpaca)
     finnhub = FinnhubService(settings)
     sec = SecService(settings)
+    government = GovernmentService(settings)
     prediction = None
     if settings.prediction_enabled:
         try:
-            prediction = PredictionService(settings, alpaca, kronos=kronos, finnhub=finnhub, sec=sec)
+            prediction = PredictionService(
+                settings,
+                alpaca,
+                kronos=kronos,
+                finnhub=finnhub,
+                sec=sec,
+                government=government,
+            )
         except Exception as exc:  # pragma: no cover - keep API up if ML stack is broken
             import logging
 
@@ -73,6 +83,7 @@ def build_services(settings: Settings) -> Services:
         finnhub=finnhub,
         kronos=kronos,
         sec=sec,
+        government=government,
         prediction=prediction,
     )
     from app.trading_agent.service import build_trading_agent_service

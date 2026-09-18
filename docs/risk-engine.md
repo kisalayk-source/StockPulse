@@ -2,7 +2,8 @@
 
 `ml/risk/risk_engine.py` estimates signal-level risk and can veto or downgrade
 BUY-side signals. This is **independent** from order pre-trade gates in
-`backend/app/services/risk.py` and trading-agent portfolio limits.
+`backend/app/services/risk.py` and trading-agent portfolio limits
+([trading-agent.md](./trading-agent.md)).
 
 Plain-language overview: [mvp-roadmap.md](./mvp-roadmap.md#mvp-5--signal-risk-safety-net).
 

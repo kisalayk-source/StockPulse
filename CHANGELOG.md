@@ -8,6 +8,9 @@ Notable changes to this project are documented here. The format follows
 
 ### Added
 
+- **Government contract analysis** — SAM.gov + USAspending ingest, scoring, Market `GovernmentPanel`, prediction feature bucket (`feature_version` 1.1.0), and docs ([docs/government.md](./docs/government.md)).
+- **Trading agent day-trades session list** — day-trades report includes `available_dates`, keeps empty selected days, and shows buys later closed as `exited` / “Closed later”.
+- **Trading agent ad-hoc cycles** — type any ticker(s) and run a forecast cycle without adding them to the saved risk portfolio (max 50). `POST /trading-agent/cycle` validates optional `symbols` via `normalize_universe` (empty/invalid → 422). Docs: [docs/trading-agent.md](./docs/trading-agent.md).
 - **SEC Records AI analysis** — `GET /stocks/{symbol}/filings/analysis` returns a headline, gist bullets, good/bad/mixed/neutral sentiment, and highlight chips from structured filing data (OpenAI when `RESEARCH_LLM_ENABLED=true`, rule-based fallback otherwise). The SEC Records tab shows an analysis card above the filings table.
 - **SEC filing entity and action columns** — each filing row includes `filer_name`, `action` (e.g. Bought, Sold, New investment), and `action_tone` for color-coded display; insider and beneficial-ownership tables use the same action labels.
 - **SEC filing XML parsing and expandable details** — EDGAR XML is parsed into structured `details[]` per filing (insider trades, institutional changes, ownership events, holdings). The SEC Records UI expands each row with a **+** control to show the full parsed breakdown (shares, price, ownership %, purpose, etc.).

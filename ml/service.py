@@ -19,6 +19,7 @@ from ml.decision import decide_signal
 from ml.ensemble import combine_probabilities, model_agreement
 from ml.explanation import explain_prediction
 from ml.features.feature_pipeline import build_feature_snapshot, compute_technical_frame
+from ml.features.government import compute_government_features
 from ml.models.artifact import CalibratedArtifact
 from ml.models.kronos import KronosModel
 from ml.models.lightgbm_model import LightGBMModel
@@ -71,6 +72,9 @@ class PredictionEngine:
         retrain: bool = False,
         sec_events: list[dict[str, Any]] | None = None,
         fundamentals_metrics: dict[str, Any] | None = None,
+        government_events: list[dict[str, Any]] | None = None,
+        annual_revenue: float | None = None,
+        government_config: dict[str, Any] | None = None,
         position_concentration: float | None = None,
     ) -> dict[str, Any]:
         started = perf_counter()
@@ -99,9 +103,15 @@ class PredictionEngine:
             feature_version=feature_version,
             sec_events=sec_events if feature_flags.get("sec", False) else None,
             fundamentals_metrics=fundamentals_metrics if feature_flags.get("fundamentals", False) else None,
+            government_events=government_events if feature_flags.get("government", False) else None,
+            annual_revenue=annual_revenue,
+            government_config=government_config,
         )
         regime = classify_market_regime(ohlcv)
         snapshot.market_regime = regime
+
+        model_features = _merge_model_features(snapshot, feature_flags)
+        gov_events_for_train = government_events if feature_flags.get("government", False) else None
 
         model_probs: dict[str, float] = {}
         model_versions: dict[str, str] = {}
@@ -117,9 +127,12 @@ class PredictionEngine:
                 horizon=horizon_key,
                 horizon_bars=horizon_bars,
                 feature_version=feature_version,
-                snapshot_features=snapshot.technical,
+                snapshot_features=model_features,
                 retrain=retrain,
                 calibration_method=cal_method,
+                government_events=gov_events_for_train,
+                annual_revenue=annual_revenue,
+                government_config=government_config,
             )
             model_probs["xgboost"] = xgb_prob
             model_versions["xgboost"] = xgb_meta["model_version"]
@@ -134,9 +147,12 @@ class PredictionEngine:
                 horizon=horizon_key,
                 horizon_bars=horizon_bars,
                 feature_version=feature_version,
-                snapshot_features=snapshot.technical,
+                snapshot_features=model_features,
                 retrain=retrain,
                 calibration_method=cal_method,
+                government_events=gov_events_for_train,
+                annual_revenue=annual_revenue,
+                government_config=government_config,
             )
             model_probs["lightgbm"] = lgb_prob
             model_versions["lightgbm"] = lgb_meta["model_version"]
@@ -231,6 +247,7 @@ class PredictionEngine:
             "technical_score": _technical_score(tech),
             "institutional_score": _institutional_score(snapshot.sec),
             "fundamental_score": _fundamental_score(snapshot.fundamentals),
+            "government_score": snapshot.government.get("government_score"),
             "calibration_method": cal_method,
             "risk_gate": decision.get("risk_gate"),
         }
@@ -289,6 +306,9 @@ class PredictionEngine:
         as_of: datetime | str | None = None,
         sec_events: list[dict[str, Any]] | None = None,
         fundamentals_metrics: dict[str, Any] | None = None,
+        government_events: list[dict[str, Any]] | None = None,
+        annual_revenue: float | None = None,
+        government_config: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         feature_flags = self.config.get("features") or {}
         ohlcv = bars_to_ohlcv(bars)
@@ -298,6 +318,9 @@ class PredictionEngine:
             as_of=as_of,
             sec_events=sec_events if feature_flags.get("sec", False) else None,
             fundamentals_metrics=fundamentals_metrics if feature_flags.get("fundamentals", False) else None,
+            government_events=government_events if feature_flags.get("government", False) else None,
+            annual_revenue=annual_revenue,
+            government_config=government_config,
         )
         return snapshot.to_dict()
 
@@ -334,6 +357,9 @@ class PredictionEngine:
         snapshot_features: dict[str, float],
         retrain: bool,
         calibration_method: str,
+        government_events: list[dict[str, Any]] | None = None,
+        annual_revenue: float | None = None,
+        government_config: dict[str, Any] | None = None,
     ) -> tuple[float, dict[str, Any]]:
         key = self.registry.key(ticker, horizon, feature_version, model_type)
         artifact: CalibratedArtifact | None = None
@@ -347,6 +373,13 @@ class PredictionEngine:
 
         if artifact is None:
             feature_frame = compute_technical_frame(ohlcv)
+            if government_events is not None:
+                feature_frame = _attach_government_features(
+                    feature_frame,
+                    government_events,
+                    annual_revenue=annual_revenue,
+                    government_config=government_config,
+                )
             threshold = float(self.config.get("prediction", {}).get("return_threshold", 0.0))
             dataset = add_forward_return_target(
                 ohlcv,
@@ -495,6 +528,48 @@ def _fundamental_score(fundamentals: dict[str, float]) -> float | None:
     if pe is not None and pe > 35:
         score -= 8.0
     return round(max(0.0, min(1.0, max(0.0, min(100.0, score)) / 100.0)), 4)
+
+
+def _merge_model_features(snapshot: Any, feature_flags: dict[str, Any]) -> dict[str, float]:
+    """Combine enabled feature categories into the tree-model input vector."""
+    merged = dict(snapshot.technical or {})
+    if feature_flags.get("sec", False):
+        merged.update(snapshot.sec or {})
+    if feature_flags.get("fundamentals", False):
+        merged.update(snapshot.fundamentals or {})
+    if feature_flags.get("government", False):
+        merged.update(snapshot.government or {})
+    return merged
+
+
+def _attach_government_features(
+    feature_frame: pd.DataFrame,
+    government_events: list[dict[str, Any]],
+    *,
+    annual_revenue: float | None = None,
+    government_config: dict[str, Any] | None = None,
+) -> pd.DataFrame:
+    """Attach PIT government feature columns aligned to each training row timestamp."""
+    if feature_frame.empty:
+        return feature_frame
+    rows: list[dict[str, float]] = []
+    index = []
+    for ts in feature_frame.index:
+        as_of = ts.to_pydatetime() if hasattr(ts, "to_pydatetime") else ts
+        if getattr(as_of, "tzinfo", None) is None:
+            as_of = as_of.replace(tzinfo=timezone.utc)
+        feats = compute_government_features(
+            government_events,
+            as_of=as_of,
+            annual_revenue=annual_revenue,
+            config=government_config,
+        )
+        rows.append(feats)
+        index.append(ts)
+    if not rows:
+        return feature_frame
+    gov_frame = pd.DataFrame(rows, index=index)
+    return feature_frame.join(gov_frame, how="left")
 
 
 __all__ = ["PredictionEngine"]

@@ -77,6 +77,13 @@ class Settings(BaseSettings):
     sec_rate_limit_per_minute: int = Field(default=60, ge=0, le=10_000)
     sec_scan_universe_cap: int = Field(default=100, ge=10, le=500)
     sec_scan_on_startup: bool = False
+
+    government_enabled: bool = True
+    sam_gov_api_key: str | None = Field(default=None, repr=False)
+    government_config_path: str = "backend/configs/government.yaml"
+    government_rate_limit_per_minute: int = Field(default=30, ge=0, le=10_000)
+    government_sync_on_startup: bool = False
+
     agent_scheduler_enabled: bool = True
     agent_scheduler_tick_seconds: float = Field(default=15.0, ge=1.0, le=300.0)
     # When True, agent BUY/SELL comes only from calibrated hybrid prediction;

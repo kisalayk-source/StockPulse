@@ -85,6 +85,27 @@ FUNDAMENTAL_FEATURE_KEYS = (
     "debt_to_equity",
 )
 
+GOVERNMENT_FEATURE_KEYS = (
+    "government_award_count_7d",
+    "government_award_count_30d",
+    "government_award_count_90d",
+    "government_award_value_7d",
+    "government_award_value_30d",
+    "government_award_value_90d",
+    "government_obligation_value_7d",
+    "government_obligation_value_30d",
+    "government_obligation_value_90d",
+    "government_opportunity_count_30d",
+    "government_opportunity_value_30d",
+    "government_score",
+    "government_early_signal_score",
+    "government_new_customer",
+    "government_incumbent",
+    "government_sole_source",
+    "government_multi_year",
+    "government_revenue_ratio",
+)
+
 
 def normalize_feature_dict(values: dict[str, float | None]) -> dict[str, float]:
     """Drop nulls and coerce to float for model input / snapshot storage."""

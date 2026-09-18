@@ -13,6 +13,7 @@ from ml.data import FeatureSnapshot
 from ml.data.loaders import filter_bars_as_of
 from ml.features.feature_schema import normalize_feature_dict
 from ml.features.fundamentals import compute_fundamental_features
+from ml.features.government import compute_government_features
 from ml.features.sec import compute_sec_features
 from ml.features.technical import (
     atr_features,
@@ -78,8 +79,12 @@ def build_feature_snapshot(
     as_of: datetime | pd.Timestamp | str | None = None,
     sec: dict[str, float] | None = None,
     fundamentals: dict[str, float] | None = None,
+    government: dict[str, float] | None = None,
     sec_events: list[dict[str, Any]] | None = None,
     fundamentals_metrics: dict[str, Any] | None = None,
+    government_events: list[dict[str, Any]] | None = None,
+    annual_revenue: float | None = None,
+    government_config: dict[str, Any] | None = None,
     market_regime: dict[str, Any] | None = None,
     feature_version: str = FEATURE_VERSION,
 ) -> FeatureSnapshot:
@@ -113,6 +118,13 @@ def build_feature_snapshot(
         sec = compute_sec_features(sec_events, as_of=cutoff_dt)
     if fundamentals is None and fundamentals_metrics is not None:
         fundamentals = compute_fundamental_features(fundamentals_metrics)
+    if government is None and government_events is not None:
+        government = compute_government_features(
+            government_events,
+            as_of=cutoff_dt,
+            annual_revenue=annual_revenue,
+            config=government_config,
+        )
 
     return FeatureSnapshot(
         ticker=ticker.upper(),
@@ -122,6 +134,7 @@ def build_feature_snapshot(
         technical=technical,
         sec=dict(sec or {}),
         fundamentals=dict(fundamentals or {}),
+        government=dict(government or {}),
         market_regime=dict(market_regime or {}),
         snapshot_id=uuid4().hex,
     )
