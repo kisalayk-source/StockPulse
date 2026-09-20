@@ -736,7 +736,7 @@ async def forecast(
         forecast_request.context,
         forecast_request.horizon,
         None,
-        True,
+        not forecast_request.refresh,
         forecast_request.engine == "kronos",
         forecast_request.engine,
     )

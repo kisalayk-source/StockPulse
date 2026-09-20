@@ -89,13 +89,27 @@ def test_predict_passes_smoother_sampling_settings() -> None:
 def test_long_forecast_requests_sufficient_history_and_caches_result() -> None:
     alpaca = FakeAlpaca()
     service = KronosService(Settings(_env_file=None), alpaca)
-    service._predictor = FakePredictor()
+    predictor = FakePredictor()
+    service._predictor = predictor
+    predict_calls = {"count": 0}
+    original_predict = predictor.predict
+
+    def counting_predict(*args, **kwargs):
+        predict_calls["count"] += 1
+        return original_predict(*args, **kwargs)
+
+    predictor.predict = counting_predict  # type: ignore[method-assign]
 
     first = service.forecast("AAPL", "long")
+    after_first = predict_calls["count"]
     second = service.forecast("AAPL", "long")
 
-    assert first == second
-    assert len(alpaca.calls) == 1
+    assert first["as_of"] == second["as_of"]
+    assert first["cached"] is False
+    assert second["cached"] is True
+    assert first["forecast"] == second["forecast"]
+    assert len(alpaca.calls) == 2
+    assert predict_calls["count"] == after_first
     request = alpaca.calls[0]
     assert request["timeframe"] == "1Day"
     assert request["limit"] == 256
@@ -110,6 +124,49 @@ def test_long_forecast_requests_sufficient_history_and_caches_result() -> None:
     assert first["path_segments"]
     assert first["path_segments"][0]["direction"] in {"up", "down", "flat"}
     assert first["model"]["engine"] == "kronos"
+
+
+def test_forecast_refresh_bypasses_cache_and_new_as_of_misses() -> None:
+    alpaca = FakeAlpaca()
+    service = KronosService(Settings(_env_file=None, kronos_eval_folds=0), alpaca)
+    predictor = FakePredictor()
+    service._predictor = predictor
+    predict_calls = {"count": 0}
+    original_predict = predictor.predict
+
+    def counting_predict(*args, **kwargs):
+        predict_calls["count"] += 1
+        return original_predict(*args, **kwargs)
+
+    predictor.predict = counting_predict  # type: ignore[method-assign]
+
+    first = service.forecast("AAPL", "long", evaluate=False)
+    cached = service.forecast("AAPL", "long", evaluate=False)
+    assert first["cached"] is False
+    assert cached["cached"] is True
+    assert predict_calls["count"] == 1
+
+    refreshed = service.forecast("AAPL", "long", evaluate=False, use_cache=False)
+    assert refreshed["cached"] is False
+    assert predict_calls["count"] == 2
+
+    # New last-bar timestamp must not reuse the prior cache entry.
+    original_bars = alpaca.bars
+
+    def shifted_bars(symbol, timeframe, start, end, limit):
+        rows = original_bars(symbol, timeframe, start, end, limit)
+        last = dict(rows[-1])
+        last["timestamp"] = (
+            datetime.fromisoformat(str(last["timestamp"]).replace("Z", "+00:00"))
+            + timedelta(days=1)
+        ).isoformat()
+        return [*rows[:-1], last]
+
+    alpaca.bars = shifted_bars  # type: ignore[method-assign]
+    moved = service.forecast("AAPL", "long", evaluate=False)
+    assert moved["cached"] is False
+    assert moved["as_of"] != first["as_of"]
+    assert predict_calls["count"] == 3
 
 
 def test_ensemble_forecast_uses_separate_cache_and_skips_oos_eval() -> None:
@@ -154,9 +211,11 @@ def test_ensemble_forecast_uses_separate_cache_and_skips_oos_eval() -> None:
     assert ensemble["model"]["models_used"] == ["persistence", "kronos"]
     assert len(ensemble["forecast"]) == 5
     assert ensemble["evaluation"]["folds"] == 0
-    assert ensemble is ensemble_cached
-    assert kronos is not ensemble
-    assert len(alpaca.calls) == 2
+    assert ensemble["cached"] is False
+    assert ensemble_cached["cached"] is True
+    assert ensemble["forecast"] == ensemble_cached["forecast"]
+    assert kronos["as_of"] == ensemble["as_of"]
+    assert len(alpaca.calls) == 3
 
 
 def test_ensemble_is_persistence_only_helper() -> None:

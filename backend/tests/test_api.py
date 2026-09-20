@@ -329,7 +329,18 @@ class UnavailableFinnhub:
 class FakeKronos:
     loaded = False
 
+    def __init__(self) -> None:
+        self.forecast_calls: list[dict] = []
+
     def forecast(self, symbol, preset, timeframe, context, horizon, bars=None, use_cache=True, evaluate=True, engine="kronos") -> dict:
+        self.forecast_calls.append(
+            {
+                "symbol": symbol,
+                "preset": preset,
+                "use_cache": use_cache,
+                "engine": engine,
+            }
+        )
         return {
             "symbol": symbol.upper(),
             "preset": preset,
@@ -337,6 +348,7 @@ class FakeKronos:
             "forecast": [],
             "trend": {"direction": "flat", "forecast_change": 0},
             "model": {"id": "ensemble" if engine == "ensemble" else "NeoQuasar/Kronos-small", "engine": engine},
+            "cached": bool(use_cache and len(self.forecast_calls) > 1),
         }
 
     def scan_movers(self, limit: int = 50, refresh: bool = False) -> dict:
@@ -970,6 +982,15 @@ def test_market_data_account_options_and_forecast_api() -> None:
         )
         assert ensemble.status_code == 200
         assert ensemble.json()["model"]["engine"] == "ensemble"
+        refreshed = client.post(
+            "/api/v1/forecast",
+            headers=headers,
+            json={"symbol": "AAPL", "preset": "short", "refresh": True},
+        )
+        assert refreshed.status_code == 200
+        kronos_service = client.app.state.services.kronos
+        assert kronos_service.forecast_calls[-1]["use_cache"] is False
+        assert any(call["use_cache"] is True for call in kronos_service.forecast_calls[:-1])
         preview = client.post(
             "/api/v1/orders/preview",
             headers=headers,

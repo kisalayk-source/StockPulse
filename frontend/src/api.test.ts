@@ -254,6 +254,32 @@ describe('FastAPI contract adapters', () => {
     })
   })
 
+  it('sends refresh true when busting the forecast cache', async () => {
+    const fetch = vi.fn().mockResolvedValue(response({
+      symbol: 'AAPL',
+      as_of: '2026-08-12T20:00:00Z',
+      cached: false,
+      model: { id: 'NeoQuasar/Kronos-small', fallback: true, fallback_reason: 'torch missing' },
+      trend: { direction: 'up', forecast_change: 0.01 },
+      forecast: [{ timestamp: '2026-08-13T13:30:00Z', close: 210 }],
+    }))
+    vi.stubGlobal('fetch', fetch)
+
+    const result = await api.forecast('AAPL', 'long', 20, 'kronos', '1Day', { refresh: true })
+
+    expect(result.fallback).toBe(true)
+    expect(result.fallbackReason).toBe('torch missing')
+    expect(result.cached).toBe(false)
+    expect(JSON.parse(String(fetch.mock.calls[0][1]?.body))).toEqual({
+      symbol: 'AAPL',
+      preset: 'long',
+      horizon: 20,
+      engine: 'kronos',
+      timeframe: '1Day',
+      refresh: true,
+    })
+  })
+
   it('requests the ensemble engine when selected', async () => {
     const fetch = vi.fn().mockResolvedValue(response({
       symbol: 'AAPL',

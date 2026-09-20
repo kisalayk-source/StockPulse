@@ -115,6 +115,9 @@ export interface ForecastResponse {
   points: ForecastPoint[]
   model?: string
   modelsUsed?: string[]
+  fallback?: boolean
+  fallbackReason?: string
+  cached?: boolean
   generatedAt?: string
   predictionStart?: string
   predictionEnd?: string
@@ -1451,12 +1454,14 @@ export const api = {
   },
   forecast: async (
     symbol: string,
-    horizon: 'short' | 'long',
+    horizon: 'short' | 'long' = 'short',
     bars: number = horizon === 'long' ? 20 : 12,
     engine: 'kronos' | 'ensemble' = 'kronos',
     timeframe?: ChartInterval,
+    options?: { refresh?: boolean },
   ): Promise<ForecastResponse> => {
-    const cacheKey = `forecast:${symbol}:${horizon}:${bars}:${engine}:${timeframe || 'default'}`
+    const refresh = Boolean(options?.refresh)
+    const cacheKey = `forecast:${symbol}:${horizon}:${bars}:${engine}:${timeframe || 'default'}:${refresh}`
     const payload = object(await coalesced(cacheKey, () => requestWithRetry<unknown>('/forecast', {
       method: 'POST',
       body: JSON.stringify({
@@ -1465,6 +1470,7 @@ export const api = {
         horizon: bars,
         engine,
         ...(timeframe ? { timeframe } : {}),
+        ...(refresh ? { refresh: true } : {}),
       }),
     })))
     const model = object(payload.model)
@@ -1515,6 +1521,9 @@ export const api = {
       points,
       model: text(model.id, resolvedEngine === 'ensemble' ? 'ensemble' : 'Kronos'),
       modelsUsed: modelsUsed.length ? modelsUsed : undefined,
+      fallback: model.fallback == null ? undefined : Boolean(model.fallback),
+      fallbackReason: text(model.fallback_reason) || undefined,
+      cached: payload.cached == null ? undefined : Boolean(payload.cached),
       generatedAt: text(payload.as_of),
       predictionStart: text(points[0]?.time),
       predictionEnd: text(points.at(-1)?.time),
@@ -1532,7 +1541,7 @@ export const api = {
         hitRate: number(object(payload.evaluation).hit_rate),
         meanNetReturn: number(object(payload.evaluation).mean_net_return),
         ic: number(object(payload.evaluation).ic),
-        evalHorizon: number(object(payload.evaluation).eval_horizon),
+        evalHorizon: number(object(payload.evaluation).eval_horizon) ?? undefined,
       },
     }
   },

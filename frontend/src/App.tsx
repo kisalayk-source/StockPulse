@@ -144,7 +144,8 @@ function barUnitLabel(interval: ChartInterval, bars: number): string {
     '1Day': ['trading day', 'trading days'],
   }
   const [one, many] = units[interval]
-  return bars === 1 ? `1 ${one}` : `${bars} ${many}`
+  const window = bars === 1 ? `1 ${one}` : `${bars} ${many}`
+  return `next ${window} (forward)`
 }
 
 function intervalMetaLabel(interval: ChartInterval): string {
@@ -252,9 +253,29 @@ function DecisionPanel({
         </div>
         <div>
           <span>Model window</span>
-          <strong>{prediction?.horizon ?? '—'}</strong>
+          <strong>
+            {prediction?.horizon
+              ? prediction.horizon === '20d'
+                ? 'next ~20 trading days (forward)'
+                : prediction.horizon === '5d'
+                  ? 'next ~5 trading days (forward)'
+                  : prediction.horizon
+              : '—'}
+          </strong>
         </div>
       </div>
+      {forecast?.fallback ? (
+        <p className="decision-path">
+          <strong>Baseline fallback:</strong> Kronos could not load
+          {forecast.fallbackReason ? ` (${forecast.fallbackReason})` : ''}. Path uses recent-return drift until the model loads.
+        </p>
+      ) : null}
+      {forecast?.generatedAt ? (
+        <p className="decision-path">
+          <strong>Forecast as of:</strong> {formatDateTime(forecast.generatedAt)}
+          {forecast.cached ? ' (cached)' : ''}
+        </p>
+      ) : null}
       {forecast ? (
         <p className="decision-path">
           <strong>Chart path:</strong> Forecast {describePathSegments(forecast.pathSegments || [])}.
@@ -664,8 +685,9 @@ function App() {
     }
   }, [favorites])
 
-  const loadMarket = useCallback(async () => {
+  const loadMarket = useCallback(async (options?: { refresh?: boolean }) => {
     const requestId = ++marketRequest.current
+    const refresh = Boolean(options?.refresh)
     setMarketState('loading')
     setMarketError('')
     setMarketWarning('')
@@ -688,7 +710,7 @@ function App() {
       const predictionHorizon = chartInterval === '1Day' && horizon === 'long' ? '20d' : '5d'
       const forecastPromise = forecastEngine === 'chopper'
         ? Promise.resolve(null)
-        : api.forecast(symbol, horizon, forecastBars, forecastEngine, chartInterval)
+        : api.forecast(symbol, horizon, forecastBars, forecastEngine, chartInterval, { refresh })
       const [overviewResult, chartResult, forecastResult, predictionResult] = await Promise.allSettled([
         overviewPromise,
         api.chart(symbol, chartInterval),
@@ -1133,7 +1155,7 @@ function App() {
               {quote?.isStale && <span className="stale"><Clock3 size={13} /> Stale data</span>}
             </div>
           </div>
-          <button className="icon-button" aria-label="Refresh dashboard" onClick={() => { void loadMarket(); void loadPortfolio(); void loadClock(); void loadSec(); void loadGovernment(); void loadMarketNews(); void refreshMarketScan() }}><RefreshCw size={18} /></button>
+          <button className="icon-button" aria-label="Refresh dashboard" onClick={() => { void loadMarket({ refresh: true }); void loadPortfolio(); void loadClock(); void loadSec(); void loadGovernment(); void loadMarketNews(); void refreshMarketScan() }}><RefreshCw size={18} /></button>
         </section>
 
         <div className="dashboard-tabs" role="tablist" aria-label="Dashboard views">
@@ -1148,7 +1170,7 @@ function App() {
 
         {dashboardView === 'market' && <>
         {marketState === 'error' && (
-          <div className="error-banner"><AlertCircle size={18} /><span><strong>Market data unavailable.</strong> {marketError}</span><button onClick={() => void loadMarket()}>Retry</button></div>
+          <div className="error-banner"><AlertCircle size={18} /><span><strong>Market data unavailable.</strong> {marketError}</span><button onClick={() => void loadMarket({ refresh: true })}>Retry</button></div>
         )}
         {marketWarning && (
           <div className="warning-banner" role="status"><AlertTriangle size={18} /><span><strong>Partial data.</strong> {marketWarning}</span></div>
@@ -1271,8 +1293,11 @@ function App() {
                     : ''}
                   {forecastEngine === 'chopper'
                     ? 'trend lookback 5 bars · closing-bar signals'
-                    : <>{forecast?.model || (forecastEngine === 'ensemble' ? 'ensemble' : 'Kronos')} · prediction {formatDateTime(forecast?.predictionStart)}
-                      {' → '}{formatDateTime(forecast?.predictionEnd)} · data through {formatDateTime(forecast?.generatedAt)}</>}
+                    : <>{forecast?.model || (forecastEngine === 'ensemble' ? 'ensemble' : 'Kronos')}
+                      {forecast?.fallback ? ' · baseline fallback' : ''}
+                      {forecast?.cached ? ' · cached' : ''}
+                      {' · prediction '}{formatDateTime(forecast?.predictionStart)}
+                      {' → '}{formatDateTime(forecast?.predictionEnd)} · as of {formatDateTime(forecast?.generatedAt)}</>}
                 </span>
               </div>
               {forecastEngine === 'chopper'

@@ -115,6 +115,7 @@ class ForecastRequest(BaseModel):
     context: int | None = Field(default=None, ge=32, le=512)
     horizon: int | None = Field(default=None, ge=1, le=120)
     engine: Literal["kronos", "ensemble"] = "kronos"
+    refresh: bool = False
 
 
 class MoversScanRequest(BaseModel):
