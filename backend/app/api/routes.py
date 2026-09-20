@@ -261,7 +261,9 @@ async def market_news(
             "optional_provider_unavailable",
             extra={"provider": exc.provider, "error_type": type(exc).__name__},
         )
-        provider_errors.append({"provider": "finnhub", "message": "Provider unavailable"})
+        provider_errors.append(
+            {"provider": "finnhub", "message": str(exc) or "Provider unavailable"}
+        )
     except Exception as exc:
         logger.error(
             "optional_provider_failed",

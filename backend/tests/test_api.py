@@ -317,7 +317,7 @@ class UnavailableFinnhub:
         raise ProviderUnavailable("finnhub", "not configured")
 
     async def market_news(self, category: str = "general", limit: int = 20) -> list[dict]:
-        raise ProviderUnavailable("finnhub", "not configured")
+        raise ProviderUnavailable("finnhub", "FINNHUB_API_KEY is not configured")
 
     async def fundamentals(self, symbol: str) -> dict:
         raise ProviderUnavailable("finnhub", "not configured")
@@ -924,6 +924,7 @@ def test_market_news_endpoint_reports_finnhub_unavailable() -> None:
         payload = client.get("/api/v1/market/news", headers=headers).json()
     assert payload["news"] == []
     assert payload["provider_errors"][0]["provider"] == "finnhub"
+    assert "FINNHUB_API_KEY" in payload["provider_errors"][0]["message"]
 
 
 def test_market_data_account_options_and_forecast_api() -> None:
