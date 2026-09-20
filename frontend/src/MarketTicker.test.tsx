@@ -21,6 +21,8 @@ describe('MarketTicker', () => {
         timestamp: '2026-08-12T18:00:00Z',
       }],
     })))
+    vi.stubGlobal('requestAnimationFrame', vi.fn(() => 1))
+    vi.stubGlobal('cancelAnimationFrame', vi.fn())
 
     const onSelect = vi.fn()
     render(<MarketTicker onSelectSymbol={onSelect} />)
