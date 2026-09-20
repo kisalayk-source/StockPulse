@@ -13,7 +13,7 @@ from sqlalchemy.orm import Session
 from app.config import Settings
 from app.government.clients import SamGovClient, UsaSpendingClient
 from app.government.config import government_config_for_settings
-from app.government.db_models import GovernmentContract, GovernmentEvent
+from app.government.db_models import GovernmentCompanyMapping, GovernmentContract, GovernmentEvent
 from app.government.mapping import GovernmentCompanyMapper
 from app.government.market_reaction import compute_market_reaction
 from app.government.scoring import compute_government_score, materiality_value, revenue_ratio
@@ -27,6 +27,16 @@ from app.sec.db_models import SecCompanyMapping
 from app.services.providers import ProviderUnavailable
 
 logger = logging.getLogger("app.government")
+
+_CONTRACTOR_NAME_HINTS = {
+    "BA": "BOEING",
+    "LMT": "LOCKHEED MARTIN",
+    "RTX": "RTX",
+    "NOC": "NORTHROP GRUMMAN",
+    "GD": "GENERAL DYNAMICS",
+    "HII": "HUNTINGTON INGALLS",
+    "LHX": "L3HARRIS",
+}
 
 
 class GovernmentService:
@@ -54,7 +64,37 @@ class GovernmentService:
             .filter(SecCompanyMapping.ticker == ticker.upper())
             .one_or_none()
         )
-        return row.company_name if row else None
+        if row and row.company_name:
+            return row.company_name
+        mapped = (
+            session.query(GovernmentCompanyMapping)
+            .filter(GovernmentCompanyMapping.ticker == ticker.upper())
+            .order_by(GovernmentCompanyMapping.confidence.desc())
+            .first()
+        )
+        return (
+            (mapped.company_name if mapped and mapped.company_name else None)
+            or _CONTRACTOR_NAME_HINTS.get(ticker.upper())
+        )
+
+    def _uei_for_ticker(self, session: Session, ticker: str) -> str | None:
+        row = (
+            session.query(GovernmentCompanyMapping)
+            .filter(
+                GovernmentCompanyMapping.ticker == ticker.upper(),
+                GovernmentCompanyMapping.uei.isnot(None),
+            )
+            .order_by(GovernmentCompanyMapping.confidence.desc())
+            .first()
+        )
+        return row.uei if row else None
+
+    @staticmethod
+    def _is_fund_or_etf(name: str | None) -> bool:
+        if not name:
+            return False
+        blob = f" {name.upper()} "
+        return any(token in blob for token in (" ETF ", " ETN ", " ETFS ", " MUTUAL FUND "))
 
     def _known_agencies(self, session: Session, ticker: str, *, before: datetime | None = None) -> set[str]:
         query = session.query(GovernmentEvent.agency).filter(
@@ -223,18 +263,37 @@ class GovernmentService:
         limit = int(ingest_cfg.get("page_limit", 100))
         max_pages = int(ingest_cfg.get("max_pages", 5))
         company_name = self._company_name_for_ticker(session, symbol)
+        if self._is_fund_or_etf(company_name):
+            elapsed = round((perf_counter() - started) * 1000, 2)
+            logger.info(
+                "government_sync_skipped_non_contractor",
+                extra={"ticker": symbol, "company_name": company_name, "processing_time": elapsed},
+            )
+            return {
+                "ticker": symbol,
+                "fetched": 0,
+                "inserted": 0,
+                "awards": 0,
+                "opportunities": 0,
+                "provider_errors": [],
+                "processing_time_ms": elapsed,
+                "skipped": "non_contractor",
+            }
 
         collected: list[NormalizedGovernmentEvent] = []
+        uei = self._uei_for_ticker(session, symbol)
+        sam_key = str(getattr(self.sam, "api_key", None) or "").strip()
 
         try:
-            sam_events = await self.sam.search_opportunities(
-                posted_from=start,
-                posted_to=end,
-                keyword=company_name or symbol,
-                limit=limit,
-                max_pages=max_pages,
-            )
-            collected.extend(sam_events)
+            if uei and sam_key:
+                sam_events = await self.sam.search_opportunities(
+                    posted_from=start,
+                    posted_to=end,
+                    uei=uei,
+                    limit=limit,
+                    max_pages=max_pages,
+                )
+                collected.extend(sam_events)
         except ProviderUnavailable as exc:
             provider_errors.append({"provider": exc.provider, "message": str(exc)})
             logger.warning(
@@ -302,6 +361,7 @@ class GovernmentService:
             "opportunities": opportunities,
             "provider_errors": provider_errors,
             "processing_time_ms": elapsed,
+            "sam_skipped": None if sam_key else "missing_api_key",
         }
 
     async def backfill(
@@ -617,6 +677,17 @@ class GovernmentService:
             opportunity_value_30d=opportunity_value_30d,
             ticker=symbol,
         )
+        if (sync_meta or {}).get("skipped") == "non_contractor":
+            alerts.append(
+                {
+                    "type": "government_non_contractor",
+                    "severity": "info",
+                    "message": (
+                        f"{symbol} is not a government contractor (fund/ETF). "
+                        "Open a company ticker such as BA or RTX."
+                    ),
+                }
+            )
 
         provider_errors = list((sync_meta or {}).get("provider_errors") or [])
         return {

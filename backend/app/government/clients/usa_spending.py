@@ -95,12 +95,14 @@ class UsaSpendingClient:
             ],
             "award_type_codes": ["A", "B", "C", "D"],
         }
-        if keyword or recipient_name:
-            filters["keywords"] = [keyword or recipient_name]
+        # recipient_search_text and keywords AND together and return nothing
+        # for typical SEC legal names like "BOEING CO". Prefer recipient/UEI.
         if uei:
             filters["recipient_search_text"] = [uei]
         elif recipient_name:
             filters["recipient_search_text"] = [recipient_name]
+        elif keyword:
+            filters["keywords"] = [keyword]
 
         events: list[NormalizedGovernmentEvent] = []
         page = 1

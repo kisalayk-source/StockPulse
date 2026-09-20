@@ -227,3 +227,155 @@ def test_government_api_shape():
         assert "score" in payload["government"]
         assert "alerts" in payload
         assert "recent_activity" in payload
+
+
+class _RecordingSam:
+    def __init__(self) -> None:
+        self.calls: list[dict] = []
+
+    async def search_opportunities(self, **kwargs):
+        self.calls.append(kwargs)
+        return []
+
+
+class _RecordingUsa:
+    def __init__(self) -> None:
+        self.calls: list[dict] = []
+
+    async def search_awards(self, **kwargs):
+        self.calls.append(kwargs)
+        return []
+
+
+def test_sync_skips_fund_etf_tickers():
+    import asyncio
+
+    reset_db_state()
+    config = settings(government_enabled=True)
+    init_db(config)
+    session = next(get_session())
+    session.add(SecCompanyMapping(ticker="SPY", cik="0000884394", company_name="SPDR S&P 500 ETF TRUST"))
+    session.commit()
+    sam = _RecordingSam()
+    usa = _RecordingUsa()
+    service = GovernmentService(config, sam=sam, usa=usa)
+    result = asyncio.run(service.sync_ticker(session, "SPY"))
+    session.close()
+    assert result["skipped"] == "non_contractor"
+    assert result["fetched"] == 0
+    assert sam.calls == []
+    assert usa.calls == []
+
+
+def test_analysis_payload_explains_etf_skip():
+    reset_db_state()
+    config = settings(government_enabled=True)
+    init_db(config)
+    session = next(get_session())
+    session.add(SecCompanyMapping(ticker="SPY", cik="0000884394", company_name="SPDR S&P 500 ETF TRUST"))
+    session.commit()
+    service = GovernmentService(config)
+    payload = service.analysis_payload(
+        session,
+        "SPY",
+        sync_meta={"skipped": "non_contractor", "provider_errors": []},
+    )
+    session.close()
+    assert any("not a government contractor" in alert["message"] for alert in payload["alerts"])
+
+
+def test_sync_searches_usaspending_by_company_not_sam_title():
+    import asyncio
+
+    reset_db_state()
+    config = settings(government_enabled=True)
+    init_db(config)
+    session = next(get_session())
+    session.add(SecCompanyMapping(ticker="BA", cik="0000012927", company_name="BOEING CO"))
+    session.commit()
+    sam = _RecordingSam()
+    usa = _RecordingUsa()
+    service = GovernmentService(config, sam=sam, usa=usa)
+    result = asyncio.run(service.sync_ticker(session, "BA"))
+    session.close()
+    assert "skipped" not in result
+    assert sam.calls == []
+    assert len(usa.calls) == 1
+    assert usa.calls[0]["recipient_name"] == "BOEING CO"
+
+
+class _CaptureUsaHttp:
+    def __init__(self) -> None:
+        self.body: dict | None = None
+
+    async def post(self, url: str, json=None):
+        self.body = json
+
+        class _Resp:
+            status_code = 200
+
+            def raise_for_status(self) -> None:
+                return None
+
+            def json(self):
+                return {"results": []}
+
+        return _Resp()
+
+    async def aclose(self) -> None:
+        return None
+
+
+def test_usaspending_does_not_and_keyword_with_recipient():
+    import asyncio
+
+    from app.government.clients.usa_spending import UsaSpendingClient
+
+    config = settings(government_enabled=True)
+    capture = _CaptureUsaHttp()
+    client = UsaSpendingClient(config, client=capture)
+    asyncio.run(client.search_awards(recipient_name="BOEING CO", keyword="BOEING CO"))
+    filters = (capture.body or {}).get("filters") or {}
+    assert filters.get("recipient_search_text") == ["BOEING CO"]
+    assert "keywords" not in filters
+
+
+def test_sync_uses_sam_uei_when_mapped():
+    import asyncio
+
+    from app.government.db_models import GovernmentCompanyMapping
+
+    reset_db_state()
+    config = settings(government_enabled=True)
+    init_db(config)
+    session = next(get_session())
+    session.add(SecCompanyMapping(ticker="BA", cik="0000012927", company_name="BOEING CO"))
+    session.add(
+        GovernmentCompanyMapping(
+            ticker="BA",
+            uei="UEIBA1",
+            company_name="BOEING CO",
+            confidence=1.0,
+            method="manual",
+        )
+    )
+    session.commit()
+    sam = _RecordingSam()
+    sam.api_key = "test-key"
+    usa = _RecordingUsa()
+    service = GovernmentService(config, sam=sam, usa=usa)
+    asyncio.run(service.sync_ticker(session, "BA"))
+    session.close()
+    assert len(sam.calls) == 1
+    assert sam.calls[0]["uei"] == "UEIBA1"
+    assert "keyword" not in sam.calls[0] or sam.calls[0].get("keyword") in {None, ""}
+
+
+def test_lmt_uses_contractor_name_hint_without_sec_mapping():
+    reset_db_state()
+    config = settings(government_enabled=True)
+    init_db(config)
+    session = next(get_session())
+    service = GovernmentService(config)
+    assert service._company_name_for_ticker(session, "LMT") == "LOCKHEED MARTIN"
+    session.close()
