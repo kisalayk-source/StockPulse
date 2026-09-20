@@ -30,6 +30,8 @@ import { TradingAgentPanel } from './TradingAgentPanel'
 import { RiskManagementPanel } from './RiskManagementPanel'
 import { FavoritesPanel, ResearchPanel, SecIntelligencePanel, SecRecordsPanel, SectorsPanel, TopAccumulationPanel } from './SecIntelligencePanel'
 import { GovernmentPanel } from './GovernmentPanel'
+import { MarketNewsPanel } from './MarketNewsPanel'
+import { MarketTicker } from './MarketTicker'
 import { calculateChopper, calculateChopperOnForecast, type ChopperPoint } from './chopper'
 import './App.css'
 
@@ -407,6 +409,10 @@ function App() {
   const [govData, setGovData] = useState<GovernmentAnalysisResponse | null>(null)
   const [govState, setGovState] = useState<LoadState>('idle')
   const [govError, setGovError] = useState('')
+  const [marketNews, setMarketNews] = useState<NewsItem[]>([])
+  const [marketNewsState, setMarketNewsState] = useState<LoadState>('idle')
+  const [marketNewsError, setMarketNewsError] = useState('')
+  const [marketNewsProviderErrors, setMarketNewsProviderErrors] = useState<Array<{ provider: string; message: string }>>([])
   const [secError, setSecError] = useState('')
 
   useEffect(() => {
@@ -468,7 +474,7 @@ function App() {
     setGovState('loading')
     setGovError('')
     try {
-      const payload = await api.governmentAnalysis(symbol, false)
+      const payload = await api.governmentAnalysis(symbol, true)
       setGovData(payload)
       setGovState('ready')
     } catch (error) {
@@ -477,6 +483,22 @@ function App() {
       setGovState('error')
     }
   }, [symbol])
+
+  const loadMarketNews = useCallback(async () => {
+    setMarketNewsState('loading')
+    setMarketNewsError('')
+    try {
+      const payload = await api.marketNews(12)
+      setMarketNews(payload.news)
+      setMarketNewsProviderErrors(payload.providerErrors)
+      setMarketNewsState('ready')
+    } catch (error) {
+      setMarketNews([])
+      setMarketNewsProviderErrors([])
+      setMarketNewsError(error instanceof Error ? error.message : 'Market news unavailable')
+      setMarketNewsState('error')
+    }
+  }, [])
 
   const reloadMarketSecData = useCallback(async () => {
     setSectorsState('loading')
@@ -787,6 +809,10 @@ function App() {
   }, [loadGovernment, authUser])
   useEffect(() => {
     if (!authUser) return
+    void loadMarketNews()
+  }, [loadMarketNews, authUser])
+  useEffect(() => {
+    if (!authUser) return
     void loadSectorPanels()
   }, [loadSectorPanels, authUser])
   useEffect(() => {
@@ -1020,6 +1046,7 @@ function App() {
 
   return (
     <div className="app-shell">
+      <MarketTicker onSelectSymbol={(ticker) => { setSymbol(ticker); setSelectedContract(null) }} />
       {mode === 'live' && <div className="live-banner"><AlertTriangle size={16} /> LIVE TRADING — REAL FUNDS AT RISK</div>}
       <header className="topbar">
         <a className="brand" href="/" aria-label="StockPulse home">
@@ -1106,7 +1133,7 @@ function App() {
               {quote?.isStale && <span className="stale"><Clock3 size={13} /> Stale data</span>}
             </div>
           </div>
-          <button className="icon-button" aria-label="Refresh dashboard" onClick={() => { void loadMarket(); void loadPortfolio(); void loadClock(); void loadSec(); void loadGovernment(); void refreshMarketScan() }}><RefreshCw size={18} /></button>
+          <button className="icon-button" aria-label="Refresh dashboard" onClick={() => { void loadMarket(); void loadPortfolio(); void loadClock(); void loadSec(); void loadGovernment(); void loadMarketNews(); void refreshMarketScan() }}><RefreshCw size={18} /></button>
         </section>
 
         <div className="dashboard-tabs" role="tablist" aria-label="Dashboard views">
@@ -1259,6 +1286,23 @@ function App() {
               <p className="disclaimer">Chart-path forecasts and model-stance calls are probabilistic research outputs, not investment advice. They never trigger orders.</p>
             </section>
 
+            <GovernmentPanel
+              data={govData}
+              loading={govState === 'loading'}
+              error={govState === 'error' ? govError : undefined}
+              onRefresh={() => void loadGovernment()}
+              onSelectTicker={(ticker) => setSymbol(ticker)}
+            />
+
+            <MarketNewsPanel
+              news={marketNews}
+              loading={marketNewsState === 'loading'}
+              error={marketNewsState === 'error' ? marketNewsError : undefined}
+              providerErrors={marketNewsProviderErrors}
+              onRefresh={() => void loadMarketNews()}
+              onSelectTicker={(ticker) => setSymbol(ticker)}
+            />
+
             <section className="card">
               <div className="card-heading"><div><span className="eyebrow">LATEST COVERAGE</span><h2>{symbol} news</h2></div></div>
               <div className="news-grid">
@@ -1273,7 +1317,6 @@ function App() {
             </section>
 
             <SecIntelligencePanel data={secData} loading={secState === 'loading'} error={secState === 'error' ? secError : undefined} />
-            <GovernmentPanel data={govData} loading={govState === 'loading'} error={govState === 'error' ? govError : undefined} />
           </div>
 
           <aside className="side-column">

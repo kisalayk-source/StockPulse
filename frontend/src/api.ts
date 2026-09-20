@@ -44,6 +44,14 @@ export interface Quote {
   eps?: number | null
 }
 
+export interface TickerItem {
+  symbol: string
+  price: number | null
+  change: number | null
+  changePercent: number | null
+  timestamp?: string
+}
+
 export interface Candle {
   time: string | number
   open: number
@@ -135,6 +143,9 @@ export interface NewsItem {
   url: string
   publishedAt: string
   sentiment?: 'positive' | 'negative' | 'neutral'
+  symbols?: string[]
+  impact?: 'high' | 'medium' | 'low'
+  impactScore?: number
 }
 
 export interface Account {
@@ -1053,6 +1064,17 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   return payload as T
 }
 
+function isRetryableNetworkError(error: unknown): boolean {
+  if (!(error instanceof Error) || error instanceof ApiError) return false
+  if (error.name === 'AbortError') return false
+  const message = error.message.toLowerCase()
+  return (
+    error.name === 'TypeError'
+    || error.name === 'NetworkError'
+    || /failed to fetch|networkerror|load failed|fetch failed|network request failed/.test(message)
+  )
+}
+
 async function requestWithRetry<T>(path: string, init?: RequestInit, attempts = 3): Promise<T> {
   let lastError: unknown
   for (let attempt = 0; attempt < attempts; attempt += 1) {
@@ -1060,16 +1082,19 @@ async function requestWithRetry<T>(path: string, init?: RequestInit, attempts = 
       return await request<T>(path, init)
     } catch (error) {
       lastError = error
-      const retryable =
+      const retryableStatus =
         error instanceof ApiError
         && (error.status === 429 || error.status === 502 || error.status === 503)
-      if (!retryable || attempt === attempts - 1) {
+      const retryableNetwork = isRetryableNetworkError(error)
+      if ((!retryableStatus && !retryableNetwork) || attempt === attempts - 1) {
         throw error
       }
       const delayMs =
-        error.status === 429
+        error instanceof ApiError && error.status === 429
           ? Math.min(error.retryAfterMs || 1500, 5_000)
-          : 400 * (attempt + 1)
+          : retryableNetwork
+            ? 800 * (attempt + 1)
+            : 400 * (attempt + 1)
       await sleep(delayMs)
     }
   }
@@ -1122,6 +1147,11 @@ function mapNewsSentiment(value: unknown): NewsItem['sentiment'] | undefined {
 function mapNews(value: unknown): NewsItem {
   const item = object(value)
   const published = item.created_at ?? item.updated_at ?? item.datetime
+  const impactRaw = text(item.impact).toLowerCase()
+  const impact = impactRaw === 'high' || impactRaw === 'medium' || impactRaw === 'low'
+    ? impactRaw
+    : undefined
+  const symbols = list(item.symbols).map((entry) => text(entry)).filter(Boolean)
   return {
     id: text(item.id),
     headline: text(item.headline, 'Untitled article'),
@@ -1132,6 +1162,9 @@ function mapNews(value: unknown): NewsItem {
       ? new Date(published * 1000).toISOString()
       : text(published),
     sentiment: mapNewsSentiment(item.sentiment),
+    symbols: symbols.length ? symbols : undefined,
+    impact,
+    impactScore: number(item.impact_score) ?? undefined,
   }
 }
 
@@ -1319,6 +1352,31 @@ export const api = {
       timestamp: text(payload.timestamp) || undefined,
       nextOpen: text(payload.next_open) || undefined,
       nextClose: text(payload.next_close) || undefined,
+    }
+  },
+  marketTicker: async (): Promise<{ items: TickerItem[] }> => {
+    const payload = object(await request<unknown>('/market/ticker'))
+    return {
+      items: list(payload.items).map((entry) => {
+        const item = object(entry)
+        return {
+          symbol: text(item.symbol),
+          price: number(item.price),
+          change: number(item.change),
+          changePercent: number(item.change_percent),
+          timestamp: text(item.timestamp) || undefined,
+        }
+      }),
+    }
+  },
+  marketNews: async (limit = 12): Promise<{ news: NewsItem[]; providerErrors: Array<{ provider: string; message: string }> }> => {
+    const payload = object(await request<unknown>(`/market/news?${query({ limit })}`))
+    return {
+      news: list(payload.news).map(mapNews),
+      providerErrors: list(payload.provider_errors).map((entry) => {
+        const row = object(entry)
+        return { provider: text(row.provider), message: text(row.message) }
+      }),
     }
   },
   search: async (term: string): Promise<SearchResult[]> => {

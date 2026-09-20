@@ -44,6 +44,52 @@ describe('FastAPI contract adapters', () => {
     expect(result.publicSentiment).toBeNull()
   })
 
+  it('maps ranked market news with impact fields', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(response({
+      category: 'general',
+      news: [{
+        id: 'mkt-1',
+        headline: 'Fed signals rate cut as CPI cools',
+        source: 'Reuters',
+        url: 'https://example.com/fed',
+        created_at: '2026-08-12T17:00:00Z',
+        sentiment: 'positive',
+        symbols: ['SPY', 'QQQ'],
+        impact: 'high',
+        impact_score: 8.5,
+      }],
+      provider_errors: [],
+    })))
+
+    const result = await api.marketNews(12)
+
+    expect(result.news[0].impact).toBe('high')
+    expect(result.news[0].impactScore).toBe(8.5)
+    expect(result.news[0].symbols).toEqual(['SPY', 'QQQ'])
+    expect(result.providerErrors).toEqual([])
+  })
+
+  it('maps market ticker quotes', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(response({
+      items: [{
+        symbol: 'SPY',
+        price: 500,
+        change: 2.5,
+        change_percent: 0.005,
+        timestamp: '2026-08-12T18:00:00Z',
+      }],
+    })))
+
+    const result = await api.marketTicker()
+    expect(result.items[0]).toEqual({
+      symbol: 'SPY',
+      price: 500,
+      change: 2.5,
+      changePercent: 0.005,
+      timestamp: '2026-08-12T18:00:00Z',
+    })
+  })
+
   it('maps Finnhub public sentiment on overview', async () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(response({
       symbol: 'AAPL',
@@ -384,6 +430,44 @@ describe('FastAPI contract adapters', () => {
     expect(second.points[0].value).toBe(200)
     expect(fetch.mock.calls.length).toBeGreaterThanOrEqual(2)
     expect(fetch.mock.calls.length).toBeLessThan(4)
+  })
+
+  it('retries a dropped forecast connection then succeeds', async () => {
+    const payload = {
+      symbol: 'AAPL',
+      as_of: '2026-08-12T20:00:00Z',
+      model: { id: 'Kronos' },
+      trend: { direction: 'flat', forecast_change: 0 },
+      forecast: [{ timestamp: '2026-08-13T13:30:00Z', close: 202 }],
+    }
+    const fetch = vi.fn()
+      .mockRejectedValueOnce(new TypeError('Failed to fetch'))
+      .mockResolvedValue(response(payload))
+    vi.stubGlobal('fetch', fetch)
+
+    const result = await api.forecast('NVDA', 'short')
+    expect(result.points[0].value).toBe(202)
+    expect(fetch).toHaveBeenCalledTimes(2)
+  })
+
+  it('retries a dropped hybrid prediction connection then succeeds', async () => {
+    const fetch = vi.fn()
+      .mockRejectedValueOnce(new TypeError('Failed to fetch'))
+      .mockResolvedValue(response({
+        ticker: 'SPY',
+        horizon: '5d',
+        signal: 'HOLD',
+        probability: 0.51,
+        risk_score: 0.2,
+        confidence: 0.4,
+        explanation: { text: 'neutral' },
+        market_regime: { regime: 'range' },
+      }))
+    vi.stubGlobal('fetch', fetch)
+
+    const result = await api.prediction('SPY', '5d')
+    expect(result.signal).toBe('HOLD')
+    expect(fetch).toHaveBeenCalledTimes(2)
   })
 
   it('retries a transient forecast gateway 502 then succeeds', async () => {
