@@ -82,6 +82,100 @@ SEARCH_ALIASES: dict[str, tuple[str, ...]] = {
 }
 
 SEARCH_RESULT_LIMIT = 40
+MARKET_TICKER_SYMBOLS: tuple[str, ...] = (
+    "SPY",
+    "QQQ",
+    "DIA",
+    "IWM",
+    "AAPL",
+    "MSFT",
+    "NVDA",
+    "TSLA",
+    "AMZN",
+    "META",
+    "GOOGL",
+    "AMD",
+)
+MARKET_TICKER_MAX = 100
+
+
+def collect_ticker_symbols(
+    *,
+    most_actives: list[dict[str, Any]] | None = None,
+    movers: dict[str, list[dict[str, Any]]] | None = None,
+    limit: int = MARKET_TICKER_MAX,
+) -> list[str]:
+    """Build ordered unique tape: anchors, local catalog, actives, movers."""
+    ordered: list[str] = []
+    seen: set[str] = set()
+
+    def add(symbol: Any) -> None:
+        text = str(symbol or "").strip().upper()
+        if not text or text in seen or len(ordered) >= limit:
+            return
+        seen.add(text)
+        ordered.append(text)
+
+    for symbol in MARKET_TICKER_SYMBOLS:
+        add(symbol)
+    for row in LOCAL_SYMBOL_CATALOG:
+        add(row.get("symbol"))
+    for row in most_actives or []:
+        add(row.get("symbol"))
+    if isinstance(movers, dict):
+        for bucket in ("gainers", "losers"):
+            for row in movers.get(bucket) or []:
+                add(row.get("symbol") if isinstance(row, dict) else None)
+    return ordered
+
+
+def ticker_items_from_snapshots(
+    symbols: list[str],
+    snapshots: dict[str, dict[str, Any]],
+    *,
+    mover_hints: dict[str, dict[str, Any]] | None = None,
+) -> list[dict[str, Any]]:
+    hints = mover_hints or {}
+    items: list[dict[str, Any]] = []
+    for symbol in symbols:
+        snap = snapshots.get(symbol) if isinstance(snapshots, dict) else None
+        hint = hints.get(symbol) or {}
+        price = snap.get("current_price") if isinstance(snap, dict) else None
+        if price is None:
+            price = hint.get("price")
+        previous = snap.get("previous_daily") if isinstance(snap, dict) else None
+        previous_close = previous.get("close") if isinstance(previous, dict) else None
+        change: float | None = None
+        change_percent: float | None = None
+        try:
+            if price is not None and previous_close is not None:
+                change = float(price) - float(previous_close)
+                if float(previous_close) != 0:
+                    change_percent = change / float(previous_close)
+            elif hint.get("percent_change") is not None:
+                change_percent = float(hint["percent_change"])
+                if abs(change_percent) > 1:
+                    change_percent = change_percent / 100.0
+                change = hint.get("change")
+                if change is not None:
+                    change = float(change)
+        except (TypeError, ValueError):
+            change = None
+            change_percent = None
+        if price is None and change_percent is None:
+            continue
+        items.append(
+            {
+                "symbol": symbol,
+                "price": price,
+                "change": change,
+                "change_percent": change_percent,
+                "timestamp": snap.get("timestamp") if isinstance(snap, dict) else None,
+            }
+        )
+    return items
+
+
 LOCAL_SYMBOL_CATALOG: tuple[dict[str, Any], ...] = (
     {"symbol": "AAPL", "name": "Apple Inc.", "exchange": "NASDAQ", "tradable": True},
     {"symbol": "MSFT", "name": "Microsoft Corporation", "exchange": "NASDAQ", "tradable": True},
@@ -101,6 +195,13 @@ LOCAL_SYMBOL_CATALOG: tuple[dict[str, Any], ...] = (
     {"symbol": "SPY", "name": "SPDR S&P 500 ETF Trust", "exchange": "NYSE ARCA", "tradable": True},
     {"symbol": "QQQ", "name": "Invesco QQQ Trust", "exchange": "NASDAQ", "tradable": True},
     {"symbol": "IWM", "name": "iShares Russell 2000 ETF", "exchange": "NYSE ARCA", "tradable": True},
+    {"symbol": "BA", "name": "The Boeing Company", "exchange": "NYSE", "tradable": True},
+    {"symbol": "LMT", "name": "Lockheed Martin Corporation", "exchange": "NYSE", "tradable": True},
+    {"symbol": "RTX", "name": "RTX Corporation", "exchange": "NYSE", "tradable": True},
+    {"symbol": "NOC", "name": "Northrop Grumman Corporation", "exchange": "NYSE", "tradable": True},
+    {"symbol": "GD", "name": "General Dynamics Corporation", "exchange": "NYSE", "tradable": True},
+    {"symbol": "HII", "name": "Huntington Ingalls Industries", "exchange": "NYSE", "tradable": True},
+    {"symbol": "LHX", "name": "L3Harris Technologies", "exchange": "NYSE", "tradable": True},
 )
 _OCC_OPTION_SYMBOL = re.compile(r"^([A-Z]{1,6})\d{6}[CP]\d{8}$")
 
@@ -212,36 +313,121 @@ def article_sentiment(data: dict[str, Any], headline: str = "", summary: str = "
     return classify_article_sentiment(headline or str(data.get("headline") or ""), summary or str(data.get("summary") or ""))
 
 
+_HIGH_IMPACT_NEWS = re.compile(
+    r"\b("
+    r"fed|fomc|federal reserve|rate cut|rate hike|interest rates?|"
+    r"cpi|inflation|deflation|payroll|nonfarm|jobs report|gdp|"
+    r"recession|depression|tariff|sanctions?|opec|crude oil|"
+    r"treasury yields?|yield curve|bankruptcy|default|debt ceiling|"
+    r"circuit breaker|trading halt|stimulus|quantitative (?:easing|tightening)|"
+    r"geopolitical|invasion|ceasefire|shutdown"
+    r")\b",
+    re.IGNORECASE,
+)
+_MEDIUM_IMPACT_NEWS = re.compile(
+    r"\b("
+    r"earnings|guidance|upgrade|downgrade|merger|acquisition|ipo|"
+    r"sec probe|lawsuit|layoffs?|dividend|buyback|fda|approval|"
+    r"revenue miss|revenue beat|profit warning|short squeeze|"
+    r"s&p 500|nasdaq|dow jones|volatility|vix"
+    r")\b",
+    re.IGNORECASE,
+)
+
+
+def _parse_article_time(value: Any) -> datetime | None:
+    if value is None or value == "":
+        return None
+    if isinstance(value, datetime):
+        return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
+    if isinstance(value, (int, float)) and value > 1_000_000_000:
+        return datetime.fromtimestamp(value, tz=timezone.utc)
+    text = str(value).strip()
+    if not text:
+        return None
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+
+
+def score_news_impact(
+    headline: str,
+    summary: str = "",
+    *,
+    sentiment: str = "neutral",
+    symbols: list[str] | None = None,
+    created_at: Any = None,
+    now: datetime | None = None,
+) -> tuple[float, str]:
+    """Rank market-moving potential. Higher score = likelier to move prices."""
+    text = f"{headline} {summary}".strip()
+    high_hits = len(_HIGH_IMPACT_NEWS.findall(text)) if text else 0
+    medium_hits = len(_MEDIUM_IMPACT_NEWS.findall(text)) if text else 0
+    score = min(high_hits, 3) * 3.0 + min(medium_hits, 3) * 1.5
+
+    label = (sentiment or "neutral").casefold()
+    if label in {"positive", "negative", "bullish", "bearish"}:
+        score += 0.75
+
+    tickers = [entry for entry in (symbols or []) if entry]
+    score += min(len(tickers), 5) * 0.25
+
+    published = _parse_article_time(created_at)
+    if published is not None:
+        age_hours = max(0.0, ((now or datetime.now(timezone.utc)) - published).total_seconds() / 3600.0)
+        if age_hours <= 1:
+            score += 2.0
+        elif age_hours <= 6:
+            score += 1.25
+        elif age_hours <= 24:
+            score += 0.5
+
+    if score >= 5.0:
+        impact = "high"
+    elif score >= 2.0:
+        impact = "medium"
+    else:
+        impact = "low"
+    return round(score, 2), impact
+
+
 def _unix_to_iso(value: Any) -> Any:
     if isinstance(value, (int, float)) and value > 1_000_000_000:
         return datetime.fromtimestamp(value, tz=timezone.utc).isoformat()
     return value
 
 
-def normalize_news(response: Any, symbol: str, limit: int) -> list[dict[str, Any]]:
-    ticker = symbol.upper()
+def _news_symbols(data: dict[str, Any]) -> list[str]:
+    symbols = data.get("symbols") or data.get("related") or []
+    if isinstance(symbols, str):
+        symbols = [part.strip() for part in symbols.split(",") if part.strip()]
+    return sorted({str(entry).upper() for entry in symbols if entry})
+
+
+def _extract_news_list(response: Any) -> list[Any]:
     payload = getattr(response, "news", None)
     if payload is None:
         payload = getattr(response, "data", response)
     payload = jsonable(payload)
     if isinstance(payload, dict):
         payload = payload.get("news") or payload.get("data") or []
-    if not isinstance(payload, list):
-        return []
+    return payload if isinstance(payload, list) else []
 
+
+def normalize_news(response: Any, symbol: str, limit: int) -> list[dict[str, Any]]:
+    ticker = symbol.upper()
     articles: list[dict[str, Any]] = []
     seen: set[str] = set()
-    for item in payload:
+    for item in _extract_news_list(response):
         data = jsonable(item)
         if not isinstance(data, dict):
             continue
         headline = data.get("headline") or data.get("title")
         if not headline:
             continue
-        symbols = data.get("symbols") or data.get("related") or []
-        if isinstance(symbols, str):
-            symbols = [part.strip() for part in symbols.split(",") if part.strip()]
-        mentioned = {str(entry).upper() for entry in symbols if entry}
+        mentioned = set(_news_symbols(data))
         if mentioned and ticker not in mentioned:
             continue
         url = str(data.get("url") or data.get("link") or "")
@@ -267,6 +453,64 @@ def normalize_news(response: Any, symbol: str, limit: int) -> list[dict[str, Any
         if len(articles) >= limit:
             break
     return articles
+
+
+def normalize_general_news(response: Any, limit: int) -> list[dict[str, Any]]:
+    """Normalize Finnhub/Alpaca general market news without ticker filter."""
+    articles: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for item in _extract_news_list(response):
+        data = jsonable(item)
+        if not isinstance(data, dict):
+            continue
+        headline = data.get("headline") or data.get("title")
+        if not headline:
+            continue
+        url = str(data.get("url") or data.get("link") or "")
+        key = (url or str(headline)).casefold()
+        if key in seen:
+            continue
+        seen.add(key)
+        summary = str(data.get("summary") or "")
+        created_at = _unix_to_iso(
+            data.get("created_at") or data.get("updated_at") or data.get("datetime")
+        )
+        symbols = _news_symbols(data)
+        sentiment = article_sentiment(data, str(headline), summary)
+        articles.append(
+            {
+                "id": data.get("id"),
+                "headline": headline,
+                "summary": summary,
+                "source": data.get("source") or data.get("author") or "",
+                "url": url,
+                "created_at": created_at,
+                "symbols": symbols,
+                "sentiment": sentiment,
+                "category": data.get("category") or "general",
+            }
+        )
+        if len(articles) >= max(limit * 3, limit):
+            break
+    return articles
+
+
+def rank_market_news(articles: list[dict[str, Any]], limit: int) -> list[dict[str, Any]]:
+    ranked: list[dict[str, Any]] = []
+    for item in articles:
+        score, impact = score_news_impact(
+            str(item.get("headline") or ""),
+            str(item.get("summary") or ""),
+            sentiment=str(item.get("sentiment") or "neutral"),
+            symbols=list(item.get("symbols") or []),
+            created_at=item.get("created_at"),
+        )
+        ranked.append({**item, "impact_score": score, "impact": impact})
+    ranked.sort(
+        key=lambda row: (float(row.get("impact_score") or 0), str(row.get("created_at") or "")),
+        reverse=True,
+    )
+    return ranked[:limit]
 
 
 def merge_news(*groups: list[dict[str, Any]], limit: int) -> list[dict[str, Any]]:
@@ -350,6 +594,11 @@ class FinnhubService:
             },
         )
         return normalize_news(payload if isinstance(payload, list) else [], symbol, limit)
+
+    async def market_news(self, category: str = "general", limit: int = 20) -> list[dict[str, Any]]:
+        payload = await self._get("/news", {"category": category})
+        articles = normalize_general_news(payload if isinstance(payload, list) else [], limit)
+        return rank_market_news(articles, limit)
 
     async def fundamentals(self, symbol: str) -> dict[str, float | None]:
         metric = await self._get("/stock/metric", {"symbol": symbol, "metric": "all"})

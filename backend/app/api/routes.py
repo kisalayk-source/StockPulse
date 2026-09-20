@@ -29,11 +29,15 @@ from app.schemas import (
 )
 from app.services.openai_client import research_llm_available
 from app.services.providers import (
+    MARKET_TICKER_MAX,
     SEARCH_RESULT_LIMIT,
     ProviderUnavailable,
+    collect_ticker_symbols,
     merge_news,
     local_symbol_search,
+    rank_market_news,
     rank_search_results,
+    ticker_items_from_snapshots,
 )
 
 
@@ -180,6 +184,99 @@ async def market_clock(services: ServiceDep) -> dict[str, Any]:
     return await run_in_threadpool(provider_call, services.alpaca.market_clock, "paper")
 
 
+@router.get("/market/ticker")
+async def market_ticker(
+    services: ServiceDep,
+    user: UserDep,
+    session: SessionDep,
+    limit: int = Query(default=MARKET_TICKER_MAX, ge=10, le=MARKET_TICKER_MAX),
+) -> dict[str, Any]:
+    most_actives: list[dict[str, Any]] = []
+    movers: dict[str, list[dict[str, Any]]] = {"gainers": [], "losers": []}
+    try:
+        most_actives = await run_in_threadpool(
+            market_provider_call,
+            user,
+            session,
+            services,
+            services.alpaca.most_actives,
+            min(50, limit),
+        )
+    except Exception as exc:
+        logger.warning(
+            "optional_provider_failed",
+            extra={"provider": "alpaca_most_actives", "error_type": type(exc).__name__},
+        )
+    try:
+        movers = await run_in_threadpool(
+            market_provider_call,
+            user,
+            session,
+            services,
+            services.alpaca.movers,
+            min(25, limit),
+        )
+    except Exception as exc:
+        logger.warning(
+            "optional_provider_failed",
+            extra={"provider": "alpaca_movers", "error_type": type(exc).__name__},
+        )
+    if not isinstance(movers, dict):
+        movers = {"gainers": [], "losers": []}
+
+    symbols = collect_ticker_symbols(most_actives=most_actives, movers=movers, limit=limit)
+    snapshots = await run_in_threadpool(
+        market_provider_call,
+        user,
+        session,
+        services,
+        services.alpaca.snapshots_many,
+        symbols,
+    )
+    if not isinstance(snapshots, dict):
+        snapshots = {}
+
+    hints: dict[str, dict[str, Any]] = {}
+    for bucket in ("gainers", "losers"):
+        for row in movers.get(bucket) or []:
+            if not isinstance(row, dict) or not row.get("symbol"):
+                continue
+            hints[str(row["symbol"]).upper()] = row
+
+    return {"items": ticker_items_from_snapshots(symbols, snapshots, mover_hints=hints)}
+
+
+@router.get("/market/news")
+async def market_news(
+    services: ServiceDep,
+    category: Literal["general", "forex", "crypto", "merger"] = "general",
+    limit: int = Query(default=12, ge=1, le=40),
+) -> dict[str, Any]:
+    provider_errors: list[dict[str, str]] = []
+    articles: list[dict[str, Any]] = []
+    try:
+        articles = await services.finnhub.market_news(category, limit)
+    except ProviderUnavailable as exc:
+        logger.warning(
+            "optional_provider_unavailable",
+            extra={"provider": exc.provider, "error_type": type(exc).__name__},
+        )
+        provider_errors.append(
+            {"provider": "finnhub", "message": str(exc) or "Provider unavailable"}
+        )
+    except Exception as exc:
+        logger.error(
+            "optional_provider_failed",
+            extra={"provider": "finnhub_market_news", "error_type": type(exc).__name__},
+        )
+        provider_errors.append({"provider": "finnhub", "message": "Provider request failed"})
+    return {
+        "category": category,
+        "news": rank_market_news(articles, limit),
+        "provider_errors": provider_errors,
+    }
+
+
 @router.get("/symbols/search")
 async def symbol_search(
     services: ServiceDep,
@@ -225,7 +322,7 @@ async def symbol_search(
     if not alpaca_results and not finnhub_results and len(errors) == 2:
         return {"results": local_symbol_search(q), "provider_errors": errors}
     merged: dict[str, dict[str, Any]] = {}
-    for item in [*alpaca_results, *finnhub_results]:
+    for item in [*alpaca_results, *finnhub_results, *local_symbol_search(q)]:
         symbol = item.get("symbol")
         if symbol:
             merged[symbol] = {**merged.get(symbol, {}), **item}
@@ -639,7 +736,7 @@ async def forecast(
         forecast_request.context,
         forecast_request.horizon,
         None,
-        True,
+        not forecast_request.refresh,
         forecast_request.engine == "kronos",
         forecast_request.engine,
     )

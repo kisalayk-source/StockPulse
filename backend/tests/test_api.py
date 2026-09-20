@@ -1,4 +1,5 @@
 from types import SimpleNamespace
+from datetime import datetime, timezone
 from uuid import uuid4
 
 import httpx
@@ -17,7 +18,9 @@ from app.services.providers import (
     ProviderUnavailable,
     classify_article_sentiment,
     normalize_news,
+    rank_market_news,
     rank_search_results,
+    score_news_impact,
 )
 from app.sec.service import SecService
 
@@ -115,7 +118,22 @@ class FakeAlpaca:
             "timestamp": "2026-08-12T18:00:00+00:00",
             "session": "regular",
             "daily": {"open": 198.0, "high": 201.0, "low": 197.0, "close": 200.0},
-            "previous_daily": None,
+            "previous_daily": {"open": 197.0, "high": 199.0, "low": 196.0, "close": 198.0},
+        }
+
+    def snapshots_many(self, symbols: list[str]) -> dict[str, dict]:
+        return {symbol.upper(): self.snapshot(symbol) for symbol in symbols}
+
+    def most_actives(self, top: int = 50) -> list[dict]:
+        return [
+            {"symbol": "SOFI", "volume": 10_000_000},
+            {"symbol": "PLTR", "volume": 8_000_000},
+        ][:top]
+
+    def movers(self, top: int = 20) -> dict[str, list[dict]]:
+        return {
+            "gainers": [{"symbol": "UPST", "percent_change": 12.5, "price": 40.0, "change": 4.0}],
+            "losers": [{"symbol": "DOWN", "percent_change": -8.0, "price": 12.0, "change": -1.0}],
         }
 
     def news(self, symbol: str, limit: int) -> list[dict]:
@@ -244,6 +262,36 @@ class FakeFinnhub:
             }
         ]
 
+    async def market_news(self, category: str = "general", limit: int = 20) -> list[dict]:
+        return [
+            {
+                "id": "mkt-1",
+                "headline": "Fed signals rate cut as CPI cools",
+                "summary": "Inflation data beat expectations",
+                "source": "Reuters",
+                "url": "https://example.com/fed-cut",
+                "created_at": "2026-08-12T17:00:00+00:00",
+                "symbols": ["SPY", "QQQ"],
+                "sentiment": "positive",
+                "category": category,
+                "impact_score": 8.5,
+                "impact": "high",
+            },
+            {
+                "id": "mkt-2",
+                "headline": "Retail chain opens new stores",
+                "summary": "Expansion continues in the Midwest",
+                "source": "Bloomberg",
+                "url": "https://example.com/stores",
+                "created_at": "2026-08-12T12:00:00+00:00",
+                "symbols": [],
+                "sentiment": "neutral",
+                "category": category,
+                "impact_score": 0.5,
+                "impact": "low",
+            },
+        ][:limit]
+
     async def fundamentals(self, symbol: str) -> dict:
         return {
             "pe_ratio": 31.2,
@@ -268,6 +316,9 @@ class UnavailableFinnhub:
     async def company_news(self, symbol: str, limit: int) -> list[dict]:
         raise ProviderUnavailable("finnhub", "not configured")
 
+    async def market_news(self, category: str = "general", limit: int = 20) -> list[dict]:
+        raise ProviderUnavailable("finnhub", "FINNHUB_API_KEY is not configured")
+
     async def fundamentals(self, symbol: str) -> dict:
         raise ProviderUnavailable("finnhub", "not configured")
 
@@ -278,7 +329,18 @@ class UnavailableFinnhub:
 class FakeKronos:
     loaded = False
 
+    def __init__(self) -> None:
+        self.forecast_calls: list[dict] = []
+
     def forecast(self, symbol, preset, timeframe, context, horizon, bars=None, use_cache=True, evaluate=True, engine="kronos") -> dict:
+        self.forecast_calls.append(
+            {
+                "symbol": symbol,
+                "preset": preset,
+                "use_cache": use_cache,
+                "engine": engine,
+            }
+        )
         return {
             "symbol": symbol.upper(),
             "preset": preset,
@@ -286,6 +348,7 @@ class FakeKronos:
             "forecast": [],
             "trend": {"direction": "flat", "forecast_change": 0},
             "model": {"id": "ensemble" if engine == "ensemble" else "NeoQuasar/Kronos-small", "engine": engine},
+            "cached": bool(use_cache and len(self.forecast_calls) > 1),
         }
 
     def scan_movers(self, limit: int = 50, refresh: bool = False) -> dict:
@@ -704,6 +767,24 @@ def test_search_api_falls_back_to_local_symbols_when_providers_are_unavailable()
     }
 
 
+def test_search_api_includes_defense_tickers_when_providers_are_unavailable() -> None:
+    class UnavailableAlpaca(FakeAlpaca):
+        def search_assets(self, query: str, mode: str) -> list[dict]:
+            raise ProviderUnavailable("alpaca", "credentials not configured")
+
+    class UnavailableFinnhub(FakeFinnhub):
+        async def search(self, query: str) -> list[dict]:
+            raise ProviderUnavailable("finnhub", "credentials not configured")
+
+    with make_client(alpaca=UnavailableAlpaca(), finnhub=UnavailableFinnhub()) as client:
+        headers = register_and_headers(client, with_alpaca=False)
+        ba = client.get("/api/v1/symbols/search", params={"q": "BA"}, headers=headers).json()["results"]
+        rtx = client.get("/api/v1/symbols/search", params={"q": "RTX"}, headers=headers).json()["results"]
+
+    assert any(row["symbol"] == "BA" for row in ba)
+    assert rtx[0]["symbol"] == "RTX"
+
+
 def test_market_data_uses_saved_user_credentials() -> None:
     class CredentialAwareAlpaca(FakeAlpaca):
         def snapshot(self, symbol: str) -> dict:
@@ -756,6 +837,108 @@ def test_article_sentiment_classifies_positive_and_negative_headlines() -> None:
     assert classify_article_sentiment("Company schedules investor day") == "neutral"
 
 
+def test_score_news_impact_ranks_macro_above_routine() -> None:
+    now = datetime(2026, 8, 12, 18, 0, tzinfo=timezone.utc)
+    high_score, high_label = score_news_impact(
+        "Fed signals rate cut as CPI cools",
+        "Inflation data beat expectations",
+        sentiment="positive",
+        symbols=["SPY", "QQQ"],
+        created_at="2026-08-12T17:30:00+00:00",
+        now=now,
+    )
+    low_score, low_label = score_news_impact(
+        "Retail chain opens new stores",
+        "Expansion continues in the Midwest",
+        sentiment="neutral",
+        symbols=[],
+        created_at="2026-08-10T12:00:00+00:00",
+        now=now,
+    )
+    assert high_score > low_score
+    assert high_label == "high"
+    assert low_label == "low"
+
+
+def test_rank_market_news_orders_by_impact_score() -> None:
+    ranked = rank_market_news(
+        [
+            {
+                "headline": "Retail chain opens new stores",
+                "summary": "",
+                "sentiment": "neutral",
+                "symbols": [],
+                "created_at": "2026-08-12T12:00:00+00:00",
+                "url": "https://example.com/low",
+            },
+            {
+                "headline": "Fed signals rate cut as CPI cools",
+                "summary": "Inflation cools",
+                "sentiment": "positive",
+                "symbols": ["SPY"],
+                "created_at": "2026-08-12T17:00:00+00:00",
+                "url": "https://example.com/high",
+            },
+        ],
+        limit=2,
+    )
+    assert ranked[0]["headline"].startswith("Fed")
+    assert ranked[0]["impact"] == "high"
+    assert ranked[0]["impact_score"] >= ranked[1]["impact_score"]
+
+
+def test_market_ticker_endpoint_returns_liquid_quotes() -> None:
+    with make_client() as client:
+        headers = register_and_headers(client)
+        payload = client.get("/api/v1/market/ticker", headers=headers).json()
+    symbols = [item["symbol"] for item in payload["items"]]
+    assert "SPY" in symbols
+    assert "AAPL" in symbols
+    assert "NFLX" in symbols
+    assert "SOFI" in symbols
+    assert "UPST" in symbols
+    assert len(payload["items"]) >= 20
+    assert payload["items"][0]["price"] == 200.0
+    assert payload["items"][0]["change_percent"] is not None
+
+
+def test_collect_ticker_symbols_merges_catalog_actives_movers() -> None:
+    from app.services.providers import collect_ticker_symbols
+
+    symbols = collect_ticker_symbols(
+        most_actives=[{"symbol": "sofi"}],
+        movers={
+            "gainers": [{"symbol": "upst"}],
+            "losers": [{"symbol": "down"}],
+        },
+        limit=100,
+    )
+    assert symbols[0] == "SPY"
+    assert "NFLX" in symbols
+    assert "SOFI" in symbols
+    assert "UPST" in symbols
+    assert "DOWN" in symbols
+
+
+def test_market_news_endpoint_returns_ranked_articles() -> None:
+    with make_client() as client:
+        headers = register_and_headers(client, with_alpaca=False)
+        payload = client.get("/api/v1/market/news", headers=headers).json()
+    assert payload["category"] == "general"
+    assert payload["news"][0]["impact"] == "high"
+    assert "Fed" in payload["news"][0]["headline"]
+    assert all("impact_score" in item for item in payload["news"])
+
+
+def test_market_news_endpoint_reports_finnhub_unavailable() -> None:
+    with make_client(finnhub=UnavailableFinnhub()) as client:
+        headers = register_and_headers(client, with_alpaca=False)
+        payload = client.get("/api/v1/market/news", headers=headers).json()
+    assert payload["news"] == []
+    assert payload["provider_errors"][0]["provider"] == "finnhub"
+    assert "FINNHUB_API_KEY" in payload["provider_errors"][0]["message"]
+
+
 def test_market_data_account_options_and_forecast_api() -> None:
     with make_client() as client:
         headers = register_and_headers(client)
@@ -799,6 +982,15 @@ def test_market_data_account_options_and_forecast_api() -> None:
         )
         assert ensemble.status_code == 200
         assert ensemble.json()["model"]["engine"] == "ensemble"
+        refreshed = client.post(
+            "/api/v1/forecast",
+            headers=headers,
+            json={"symbol": "AAPL", "preset": "short", "refresh": True},
+        )
+        assert refreshed.status_code == 200
+        kronos_service = client.app.state.services.kronos
+        assert kronos_service.forecast_calls[-1]["use_cache"] is False
+        assert any(call["use_cache"] is True for call in kronos_service.forecast_calls[:-1])
         preview = client.post(
             "/api/v1/orders/preview",
             headers=headers,

@@ -50,4 +50,50 @@ describe('GovernmentPanel', () => {
     expect(screen.getAllByText(/DoD/).length).toBeGreaterThan(0)
     expect(screen.getByText(/not investment advice/i)).toBeInTheDocument()
   })
+
+  it('explains empty contractor search and provider errors', () => {
+    render(
+      <GovernmentPanel
+        loading={false}
+        data={{
+          ticker: 'SPY',
+          as_of: '2024-06-01T00:00:00Z',
+          government: {
+            score: 0,
+            early_signal_score: 0,
+            awards_30d: 0,
+            award_value_30d: 0,
+            obligations_30d: 0,
+            obligation_value_30d: 0,
+            opportunity_count_30d: 0,
+            opportunity_value_30d: 0,
+            new_customer: false,
+            sole_source: false,
+            incumbent: false,
+            multi_year: false,
+            revenue_exposure: null,
+            contract_value: 0,
+          },
+          recent_activity: [],
+          open_opportunities: [],
+          recent_awards: [],
+          recent_obligations: [],
+          top_agencies: [],
+          alerts: [
+            {
+              type: 'government_non_contractor',
+              severity: 'info',
+              message: 'SPY is not a government contractor (fund/ETF). Open a company ticker such as BA or RTX.',
+            },
+          ],
+          provider_errors: [{ provider: 'sam_gov', message: 'SAM_GOV_API_KEY is not configured' }],
+        }}
+        onSelectTicker={() => undefined}
+      />,
+    )
+    expect(screen.getByText(/No contract awards found for SPY/i)).toBeInTheDocument()
+    expect(screen.getByText(/not a government contractor/i)).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'BA' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'LMT' })).toBeInTheDocument()
+  })
 })

@@ -563,11 +563,12 @@ class KronosService:
         # Ensemble OOS folds are too expensive (N models × folds); skip by default.
         if engine == "ensemble":
             evaluate = False
-        cache_key = (symbol.upper(), preset, timeframe, context, horizon, engine)
-        if use_cache:
-            cached = self._forecast_cache.get(cache_key)
-            if cached is not None:
-                return cached
+        symbol_key = symbol.upper()
+        cache_prefix = (symbol_key, preset, timeframe, context, horizon, engine)
+        if not use_cache:
+            for key in list(self._forecast_cache.keys()):
+                if isinstance(key, tuple) and key[:6] == cache_prefix:
+                    del self._forecast_cache[key]
 
         end = datetime.now(timezone.utc)
         if timeframe == "1Day":
@@ -580,6 +581,13 @@ class KronosService:
             raise ValueError("At least 32 historical bars are required for a forecast")
         bars = bars[-context:]
         frame, timestamps = self._window_frame(bars)
+        as_of = timestamps[-1].isoformat()
+        cache_key = (*cache_prefix, as_of)
+        if use_cache:
+            cached = self._forecast_cache.get(cache_key)
+            if cached is not None:
+                return {**cached, "cached": True}
+
         future = self._future_timestamps(timestamps[-1].to_pydatetime(), timeframe, horizon)
         if engine == "ensemble":
             predicted, model_meta = self._ensemble_predict_frame(
@@ -602,19 +610,20 @@ class KronosService:
         segment_closes = [first_close] + [float(row["close"]) for row in forecast]
         segment_timestamps = [timestamps[-1].isoformat()] + [row["timestamp"] for row in forecast]
         result = {
-            "symbol": symbol.upper(),
+            "symbol": symbol_key,
             "preset": preset,
             "timeframe": timeframe,
-            "as_of": timestamps[-1].isoformat(),
+            "as_of": as_of,
             "model": model_meta,
             "trend": {"direction": trend, "forecast_change": change},
             "historical": historical,
             "forecast": forecast,
             "path_segments": path_segments(segment_closes, segment_timestamps),
+            "cached": False,
         }
         result = self._annotate(result, bars, evaluate=evaluate)
         if use_cache:
-            self._forecast_cache[cache_key] = result
+            self._forecast_cache[cache_key] = {**result, "cached": False}
         return result
 
     def _scan_preset(self) -> tuple[str, dict[str, Any]]:

@@ -1,4 +1,4 @@
-import { ExternalLink } from 'lucide-react'
+import { ExternalLink, RefreshCw } from 'lucide-react'
 import type { GovernmentAnalysisResponse } from './api'
 import { formatCurrency, formatDateTime, formatNumber } from './format'
 
@@ -35,10 +35,14 @@ export function GovernmentPanel({
   data,
   loading,
   error,
+  onRefresh,
+  onSelectTicker,
 }: {
   data: GovernmentAnalysisResponse | null
   loading: boolean
   error?: string
+  onRefresh?: () => void
+  onSelectTicker?: (ticker: string) => void
 }) {
   if (loading) {
     return (
@@ -70,6 +74,10 @@ export function GovernmentPanel({
 
   const gov = data.government
   const stale = Boolean(data.provider_errors?.length)
+  const providerErrors = data.provider_errors || []
+  const samSkipped = data.sync?.sam_skipped === 'missing_api_key'
+  const exampleTickers = ['BA', 'LMT', 'RTX']
+  const showExamples = Boolean(onSelectTicker) && !(data.recent_activity?.length)
 
   return (
     <section className={`card sec-card${stale ? ' muted-card' : ''}`}>
@@ -78,8 +86,15 @@ export function GovernmentPanel({
           <span className="eyebrow">GOVERNMENT CONTRACTS</span>
           <h2>{data.ticker} government activity</h2>
         </div>
-        <div className={`sec-signal ${gov.score >= 70 ? 'accumulation' : gov.score <= 40 ? 'distribution' : 'neutral'}`}>
-          Score {formatNumber(Math.round(gov.score))}
+        <div className="agent-controls">
+          {onRefresh && (
+            <button type="button" className="icon-button" aria-label="Refresh government contracts" onClick={onRefresh}>
+              <RefreshCw size={16} />
+            </button>
+          )}
+          <div className={`sec-signal ${gov.score >= 70 ? 'accumulation' : gov.score <= 40 ? 'distribution' : 'neutral'}`}>
+            Score {formatNumber(Math.round(gov.score))}
+          </div>
         </div>
       </div>
 
@@ -87,6 +102,16 @@ export function GovernmentPanel({
         <div className="warning-banner" role="status">
           {data.alerts.map((alert) => (
             <div key={`${alert.type}-${alert.message}`}>{alert.message}</div>
+          ))}
+        </div>
+      )}
+
+      {providerErrors.length > 0 && (
+        <div className="warning-banner" role="status">
+          {providerErrors.map((row) => (
+            <div key={`${row.provider}-${row.message}`}>
+              {row.provider}: {row.message}
+            </div>
           ))}
         </div>
       )}
@@ -159,7 +184,18 @@ export function GovernmentPanel({
             ))}
           </div>
         ) : (
-          <div className="empty-state">No recent government events for this ticker.</div>
+          <div className="empty-state">
+            <div>No contract awards found for {data.ticker}.</div>
+            {showExamples && (
+              <div className="segmented" style={{ marginTop: '0.75rem' }}>
+                {exampleTickers.map((ticker) => (
+                  <button key={ticker} type="button" onClick={() => onSelectTicker?.(ticker)}>
+                    {ticker}
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
         )}
       </div>
 
@@ -180,7 +216,11 @@ export function GovernmentPanel({
             ))}
           </div>
         ) : (
-          <div className="empty-state">No open opportunities stored.</div>
+          <div className="empty-state">
+            {samSkipped
+              ? 'Open SAM.gov solicitations need SAM_GOV_API_KEY. Awards above still come from USAspending.'
+              : `No open opportunities found for ${data.ticker}.`}
+          </div>
         )}
       </div>
 
