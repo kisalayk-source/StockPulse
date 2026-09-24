@@ -23,6 +23,18 @@ from app.trading_agent.broker import (
 )
 from app.trading_agent.daily_loss import DailyLossService, trading_date_for
 from app.trading_agent.forecast_provider import ForecastProvider, KronosForecastProvider
+from app.trading_agent.option_orders import (
+    fit_option_contracts,
+    is_occ_symbol,
+    occ_underlying,
+    price_bull_call_spread,
+    price_credit,
+    price_single,
+    quote_greek,
+    select_bear_put_spread,
+    select_bull_call_spread,
+    select_single_contract,
+)
 from app.trading_agent.models import (
     AgentConfig,
     AgentEvent,
@@ -46,6 +58,9 @@ from app.trading_agent.strategies import (
 ACTIVE_STATUSES = {"paper", "live", "paused", "configured"}
 DEFAULT_UNIVERSE = ["SPY", "AAPL", "MSFT", "NVDA", "AMZN"]
 MAX_UNIVERSE_SIZE = 50
+# Exchange scans skip names with no hybrid signal or no price, and keep walking.
+_SCAN_ATTEMPT_LIMIT = MAX_UNIVERSE_SIZE * 4
+_SKIPPED_SCAN_OUTCOMES = frozenset({"unavailable", "no_price", "forecast_error"})
 _TICKER_RE = re.compile(r"^[A-Z][A-Z0-9.-]{0,9}$")
 T = TypeVar("T")
 
@@ -69,6 +84,16 @@ def normalize_universe(symbols: list[Any] | None) -> list[str]:
     if len(cleaned) > MAX_UNIVERSE_SIZE:
         raise ValueError(f"universe cannot exceed {MAX_UNIVERSE_SIZE} tickers")
     return cleaned
+
+
+def rotate_symbol_batch(symbols: list[str], offset: int, batch: int) -> tuple[list[str], int]:
+    """Take the next ``batch`` symbols, wrapping to the start. Return the next offset."""
+    if not symbols or batch <= 0:
+        return [], 0
+    start = offset % len(symbols)
+    count = min(batch, len(symbols))
+    chosen = [symbols[(start + index) % len(symbols)] for index in range(count)]
+    return chosen, (start + count) % len(symbols)
 
 
 def _retry_locked(fn: Callable[[], T], *, attempts: int = 8, delay: float = 0.15) -> T:
@@ -143,6 +168,43 @@ class TradingAgentService:
             return created
 
         return _retry_locked(_load)
+
+    def _listed_equities(self, config: AgentConfig) -> list[str]:
+        """Tradable NYSE and NASDAQ symbols. Empty when the broker listing is unavailable."""
+        alpaca = self.alpaca
+        if alpaca is None or not hasattr(alpaca, "tradable_exchange_equities"):
+            return []
+        mode = "live" if config.mode == "live" and config.live_trading_enabled else "paper"
+        try:
+            raw = alpaca.tradable_exchange_equities(mode)
+        except Exception:
+            return []
+        cleaned: list[str] = []
+        seen: set[str] = set()
+        for item in raw or []:
+            ticker = str(item or "").strip().upper()
+            if not ticker or ticker in seen or not _TICKER_RE.match(ticker):
+                continue
+            seen.add(ticker)
+            cleaned.append(ticker)
+        return cleaned
+
+    def _scan_offset(self, session: Session, config: AgentConfig) -> int:
+        rows = (
+            session.query(AgentRun)
+            .filter(AgentRun.agent_config_id == config.id, AgentRun.status == "completed")
+            .order_by(AgentRun.id.desc())
+            .limit(20)
+        )
+        for row in rows:
+            summary = row.summary if isinstance(row.summary, dict) else None
+            if not summary or summary.get("scan_universe") != "nyse_nasdaq":
+                continue
+            try:
+                return max(0, int(summary.get("scan_offset") or 0))
+            except (TypeError, ValueError):
+                return 0
+        return 0
 
     def resolved_risk_config(self, config: AgentConfig) -> dict[str, Any]:
         base = get_risk_config(config.risk_profile)
@@ -273,6 +335,9 @@ class TradingAgentService:
             raise ValueError(f"Cannot pause from status {config.status}")
         config.status = "paused"
         config.updated_at = datetime.now(timezone.utc)
+        risk = dict(config.risk_config or {})
+        risk.pop("pause_reason", None)
+        config.risk_config = risk
         self._record_event(session, config, "AGENT_PAUSED", "Agent paused", "warning")
         return config
 
@@ -280,7 +345,6 @@ class TradingAgentService:
         if config.status != "paused":
             raise ValueError("Agent is not paused")
         # Explicit resume required after daily-loss block
-        risk = self.resolved_risk_config(config)
         snapshot = self.get_daily_loss_snapshot(session, config)
         if snapshot.get("limit_reached"):
             raise ValueError("Max daily loss still reached; reset daily loss or wait for next reset before resuming")
@@ -289,8 +353,10 @@ class TradingAgentService:
             config.mode = "paper"
         config.last_cycle_at = None
         config.updated_at = datetime.now(timezone.utc)
+        risk = dict(config.risk_config or {})
+        risk.pop("pause_reason", None)
+        config.risk_config = risk
         self._record_event(session, config, "AGENT_RESUMED", f"Agent resumed in {config.status} mode", "info")
-        _ = risk
         return config
 
     def emergency_stop(self, session: Session, config: AgentConfig, *, cancel_orders: bool = True) -> AgentConfig:
@@ -687,6 +753,7 @@ class TradingAgentService:
             {
                 "symbol": candidate.symbol,
                 "strategy": candidate.strategy,
+                "asset_type": candidate.asset_type,
                 "plan_id": plan.id,
                 "order": order_payload,
                 "metadata": candidate.metadata or {},
@@ -714,10 +781,21 @@ class TradingAgentService:
             raise ValueError("Forecast provider is not configured")
 
         risk = self.resolved_risk_config(config)
+        scan_offset: int | None = None
+        exchange_walk = False
+        listed: list[str] = []
+        walk_start = 0
         if symbols is not None:
             tickers = normalize_universe(symbols)
         else:
-            tickers = [s.upper() for s in (config.universe or ["SPY"])]
+            listed = self._listed_equities(config)
+            if listed:
+                exchange_walk = True
+                walk_start = self._scan_offset(session, config) % len(listed)
+                attempt_limit = min(len(listed), _SCAN_ATTEMPT_LIMIT)
+                tickers = [listed[(walk_start + index) % len(listed)] for index in range(attempt_limit)]
+            else:
+                tickers = [s.upper() for s in (config.universe or ["SPY"])]
         run = AgentRun(
             agent_config_id=config.id,
             status="running",
@@ -740,6 +818,8 @@ class TradingAgentService:
         approved: list[dict[str, Any]] = []
         rejected: list[dict[str, Any]] = []
         universe_scan: list[dict[str, Any]] = []
+        skipped_scan: list[dict[str, Any]] = []
+        visited = 0
         clock = now or datetime.now(timezone.utc)
         close_flag = self._near_equity_close(clock) if near_close is None else bool(near_close)
 
@@ -798,7 +878,16 @@ class TradingAgentService:
                     rejected=rejected,
                 )
 
+        def _keep_scan(row: dict[str, Any]) -> bool:
+            if exchange_walk and row.get("outcome") in _SKIPPED_SCAN_OUTCOMES:
+                if len(skipped_scan) < MAX_UNIVERSE_SIZE:
+                    skipped_scan.append(row)
+                return False
+            universe_scan.append(row)
+            return exchange_walk and len(universe_scan) >= MAX_UNIVERSE_SIZE
+
         for symbol in tickers:
+            visited += 1
             scan: dict[str, Any] = {
                 "symbol": symbol,
                 "outcome": "hold",
@@ -809,7 +898,10 @@ class TradingAgentService:
                 "sizing_capital": sizing_capital,
             }
             try:
-                forecast = self.forecast_provider.get_forecast(symbol, "1Day")
+                _retry_locked(session.commit)
+                forecast = self.forecast_provider.get_forecast(
+                    symbol, "1Day", trading_type=config.trading_type, session=session
+                )
             except Exception as exc:
                 self._record_event(
                     session,
@@ -820,7 +912,8 @@ class TradingAgentService:
                 )
                 scan["outcome"] = "forecast_error"
                 scan["reason"] = str(exc)
-                universe_scan.append(scan)
+                if _keep_scan(scan):
+                    break
                 continue
             scan["signal"] = getattr(forecast, "signal", None)
             scan["confidence"] = getattr(forecast, "confidence", None)
@@ -843,7 +936,8 @@ class TradingAgentService:
             if not price:
                 scan["outcome"] = "no_price"
                 scan["reason"] = "No usable mark price"
-                universe_scan.append(scan)
+                if _keep_scan(scan):
+                    break
                 continue
             scan["price"] = float(price)
 
@@ -851,6 +945,22 @@ class TradingAgentService:
             generated = 0
             approved_before = len(approved)
             rejected_before = len(rejected)
+            for exit_candidate in self._option_exit_candidates(broker, symbol, forecast, float(price)):
+                generated += 1
+                portfolio = self._process_candidate(
+                    session,
+                    config,
+                    run,
+                    broker,
+                    portfolio,
+                    risk,
+                    exit_candidate,
+                    forecast=forecast,
+                    market_open=market_open,
+                    execute=execute,
+                    approved=approved,
+                    rejected=rejected,
+                )
             for engine in strategies_for_mode(config.trading_type):
                 # Filter mixed mode by trading_type preference already handled
                 if config.trading_type != "mixed" and engine.name != config.trading_type:
@@ -864,15 +974,38 @@ class TradingAgentService:
                     held_qty=held_qty,
                 ):
                     generated += 1
+                    if candidate.asset_type == "option" and candidate.strategy != "option_exit":
+                        resolved, reason = self._resolve_option_candidate(
+                            candidate,
+                            risk,
+                            mode=config.mode,
+                        )
+                        if resolved is None:
+                            self._reject_unresolved_option(
+                                session,
+                                run,
+                                candidate,
+                                forecast,
+                                reason or "No tradable option contract",
+                                rejected,
+                            )
+                            continue
+                        candidate = resolved
                     # Avoid opening a new buy when we already flat-exited this symbol in this cycle.
                     if candidate.side.lower() == "buy" and any(
                         a.get("symbol") == symbol and a.get("strategy") == "intraday_exit" for a in approved
                     ):
                         continue
-                    # One buy per symbol per cycle — don't stack buy_and_hold + intraday_momentum.
-                    if candidate.side.lower() == "buy" and any(
-                        a.get("symbol") == symbol and a.get("strategy") != "intraday_exit"
-                        for a in approved
+                    # One new buy per symbol and asset type. An option buy does not block a stock buy.
+                    if (
+                        candidate.side.lower() == "buy"
+                        and candidate.strategy not in {"intraday_exit", "option_exit"}
+                        and any(
+                            a.get("symbol") == symbol
+                            and a.get("strategy") not in {"intraday_exit", "option_exit"}
+                            and a.get("asset_type", "equity") == candidate.asset_type
+                            for a in approved
+                        )
                     ):
                         continue
                     portfolio = self._process_candidate(
@@ -911,17 +1044,26 @@ class TradingAgentService:
             else:
                 scan["outcome"] = "skipped"
                 scan["reason"] = "Candidate skipped (duplicate buy or exit already taken)"
-            universe_scan.append(scan)
+            if _keep_scan(scan):
+                break
+
+        if exchange_walk:
+            if listed:
+                scan_offset = (walk_start + visited) % len(listed)
+            if not universe_scan:
+                universe_scan.extend(skipped_scan)
 
         run.status = "completed"
         run.ended_at = datetime.now(timezone.utc)
         run.summary = {
-            "symbols": tickers,
+            "symbols": [row["symbol"] for row in universe_scan] if exchange_walk else tickers,
             "approved": len(approved),
             "rejected": len(rejected),
             "daily_loss": daily,
             "sizing_capital": sizing_capital,
             "universe_scan": universe_scan,
+            "scan_offset": scan_offset,
+            "scan_universe": "nyse_nasdaq" if scan_offset is not None else "portfolio",
         }
         config.last_cycle_at = run.ended_at
         config.updated_at = run.ended_at
@@ -948,6 +1090,273 @@ class TradingAgentService:
         }
 
 
+    def _reject_unresolved_option(
+        self,
+        session: Session,
+        run: AgentRun,
+        candidate: StrategyCandidate,
+        forecast: Any,
+        reason: str,
+        rejected: list[dict[str, Any]],
+    ) -> None:
+        if forecast is not None and hasattr(forecast, "to_dict"):
+            snapshot = forecast.to_dict()
+        else:
+            snapshot = {"symbol": candidate.symbol, "signal": "BUY", "confidence": 0.0}
+        session.add(
+            TradeCandidate(
+                agent_run_id=run.id,
+                symbol=candidate.symbol.upper(),
+                asset_type=candidate.asset_type,
+                strategy=candidate.strategy,
+                forecast_snapshot=snapshot,
+                risk_decision={"approved": False, "reason": reason, "checks": {"option_contract": False}},
+                status="rejected",
+            )
+        )
+        _retry_locked(session.flush)
+        rejected.append({"symbol": candidate.symbol, "strategy": candidate.strategy, "reason": reason})
+
+    def _option_exit_candidates(
+        self,
+        broker: BrokerAdapter,
+        underlying: str,
+        forecast: Any,
+        mark: float,
+    ) -> list[StrategyCandidate]:
+        signal = str(getattr(forecast, "signal", "") or "").upper()
+        out: list[StrategyCandidate] = []
+        try:
+            positions = broker.get_positions()
+        except Exception:
+            return out
+        for pos in positions:
+            contract = str(getattr(pos, "symbol", "") or "").upper()
+            if occ_underlying(contract) != underlying.upper() and not (
+                is_occ_symbol(contract) and contract.startswith(underlying.upper())
+            ):
+                continue
+            if occ_underlying(contract) != underlying.upper():
+                continue
+            qty = float(getattr(pos, "quantity", 0) or 0)
+            if abs(qty) < 1:
+                continue
+            close_long = qty > 0 and "SELL" in signal
+            close_short = qty < 0 and "BUY" in signal
+            if not close_long and not close_short:
+                continue
+            premium = float(getattr(pos, "current_price", 0) or 0) or mark
+            out.append(
+                StrategyCandidate(
+                    symbol=underlying.upper(),
+                    strategy="option_exit",
+                    trading_mode="options",
+                    asset_type="option",
+                    side="sell" if close_long else "buy",
+                    quantity=abs(qty),
+                    entry_price=premium,
+                    max_loss=None,
+                    option_strategy="option_exit",
+                    is_naked=False,
+                    metadata={
+                        "contract_symbol": contract,
+                        "position_intent": "sell_to_close" if close_long else "buy_to_close",
+                        "exit_reason": "forecast_exit",
+                    },
+                )
+            )
+        return out
+
+    def _resolve_option_candidate(
+        self,
+        candidate: StrategyCandidate,
+        risk: dict[str, Any],
+        *,
+        mode: str,
+    ) -> tuple[StrategyCandidate | None, str | None]:
+        if self.alpaca is None:
+            return None, "No option chain"
+        today = datetime.now(timezone.utc).date()
+        min_dte = int(risk.get("min_days_to_expiration") or 0)
+        max_dte = int(risk.get("max_days_to_expiration") or 10_000)
+        meta = dict(candidate.metadata or {})
+        strategy = candidate.option_strategy or candidate.strategy
+        target_dte = int(candidate.days_to_expiration or 30)
+        try:
+            if strategy == "bull_call_spread":
+                chain = self.alpaca.option_contracts(
+                    candidate.symbol,
+                    None,
+                    "call",
+                    1000,
+                    mode,
+                    expiration_gte=(today + timedelta(days=min_dte)).isoformat(),
+                    expiration_lte=(today + timedelta(days=max_dte)).isoformat(),
+                )
+                picked = select_bull_call_spread(
+                    chain or [],
+                    long_strike=float(meta.get("long_strike") or 0),
+                    short_strike=float(meta.get("short_strike") or 0),
+                    target_dte=target_dte,
+                    today=today,
+                    min_dte=min_dte,
+                    max_dte=max_dte,
+                )
+                if picked is None:
+                    return None, f"No tradable bull call spread for {candidate.symbol}"
+                long_leg, short_leg = picked
+                long_quote = self.alpaca.option_snapshot(long_leg["symbol"], candidate.symbol)
+                short_quote = self.alpaca.option_snapshot(short_leg["symbol"], candidate.symbol)
+                width = float(short_leg["strike"]) - float(long_leg["strike"])
+                priced = price_bull_call_spread(long_quote, short_quote, width=width)
+                if priced is None:
+                    return None, f"No quote for {long_leg['symbol']}/{short_leg['symbol']}"
+                debit, package = priced
+                fitted = fit_option_contracts(candidate.quantity, debit, risk)
+                if fitted is None:
+                    return None, f"Option premium exceeds max for {candidate.symbol}"
+                qty = float(fitted)
+                meta.update(
+                    {
+                        "long_strike": long_leg["strike"],
+                        "short_strike": short_leg["strike"],
+                        "legs": [
+                            {
+                                "symbol": long_leg["symbol"],
+                                "side": "buy",
+                                "position_intent": "buy_to_open",
+                                "ratio_qty": 1,
+                            },
+                            {
+                                "symbol": short_leg["symbol"],
+                                "side": "sell",
+                                "position_intent": "sell_to_open",
+                                "ratio_qty": 1,
+                            },
+                        ],
+                    }
+                )
+                candidate.entry_price = debit
+                candidate.quantity = qty
+                candidate.max_loss = debit * 100 * qty
+                candidate.max_profit = (width - debit) * 100 * qty
+                candidate.days_to_expiration = int(long_leg["days_to_expiration"])
+                candidate.bid_ask_spread = package
+                candidate.implied_volatility = quote_greek(long_quote, "implied_volatility")
+                candidate.delta = quote_greek(long_quote, "delta")
+                candidate.metadata = meta
+                return candidate, None
+            if strategy == "bear_put_spread":
+                chain = self.alpaca.option_contracts(
+                    candidate.symbol,
+                    None,
+                    "put",
+                    1000,
+                    mode,
+                    expiration_gte=(today + timedelta(days=min_dte)).isoformat(),
+                    expiration_lte=(today + timedelta(days=max_dte)).isoformat(),
+                )
+                picked = select_bear_put_spread(
+                    chain or [],
+                    long_strike=float(meta.get("long_strike") or 0),
+                    short_strike=float(meta.get("short_strike") or 0),
+                    target_dte=target_dte,
+                    today=today,
+                    min_dte=min_dte,
+                    max_dte=max_dte,
+                )
+                if picked is None:
+                    return None, f"No tradable bear put spread for {candidate.symbol}"
+                long_leg, short_leg = picked
+                long_quote = self.alpaca.option_snapshot(long_leg["symbol"], candidate.symbol)
+                short_quote = self.alpaca.option_snapshot(short_leg["symbol"], candidate.symbol)
+                width = float(long_leg["strike"]) - float(short_leg["strike"])
+                priced = price_bull_call_spread(long_quote, short_quote, width=width)
+                if priced is None:
+                    return None, f"No quote for {long_leg['symbol']}/{short_leg['symbol']}"
+                debit, package = priced
+                fitted = fit_option_contracts(candidate.quantity, debit, risk)
+                if fitted is None:
+                    return None, f"Option premium exceeds max for {candidate.symbol}"
+                qty = float(fitted)
+                meta.update(
+                    {
+                        "long_strike": long_leg["strike"],
+                        "short_strike": short_leg["strike"],
+                        "legs": [
+                            {
+                                "symbol": long_leg["symbol"],
+                                "side": "buy",
+                                "position_intent": "buy_to_open",
+                                "ratio_qty": 1,
+                            },
+                            {
+                                "symbol": short_leg["symbol"],
+                                "side": "sell",
+                                "position_intent": "sell_to_open",
+                                "ratio_qty": 1,
+                            },
+                        ],
+                    }
+                )
+                candidate.entry_price = debit
+                candidate.quantity = qty
+                candidate.max_loss = debit * 100 * qty
+                candidate.max_profit = (width - debit) * 100 * qty
+                candidate.days_to_expiration = int(long_leg["days_to_expiration"])
+                candidate.bid_ask_spread = package
+                candidate.implied_volatility = quote_greek(long_quote, "implied_volatility")
+                candidate.delta = quote_greek(long_quote, "delta")
+                candidate.metadata = meta
+                return candidate, None
+            credit = strategy in {"covered_call", "cash_secured_put"}
+            right = "put" if strategy in {"long_put", "cash_secured_put"} else "call"
+            chain = self.alpaca.option_contracts(
+                candidate.symbol,
+                None,
+                right,
+                1000,
+                mode,
+                expiration_gte=(today + timedelta(days=min_dte)).isoformat(),
+                expiration_lte=(today + timedelta(days=max_dte)).isoformat(),
+            )
+            picked_one = select_single_contract(
+                chain or [],
+                right=right,
+                target_strike=float(meta.get("strike") or 0),
+                target_dte=target_dte,
+                today=today,
+                min_dte=min_dte,
+                max_dte=max_dte,
+            )
+            if picked_one is None:
+                return None, f"No tradable {right} for {candidate.symbol}"
+            quote = self.alpaca.option_snapshot(picked_one["symbol"], candidate.symbol)
+            priced_one = price_credit(quote) if credit else price_single(quote)
+            if priced_one is None:
+                return None, f"No quote for {picked_one['symbol']}"
+            premium, spread = priced_one
+            fitted = fit_option_contracts(candidate.quantity, premium, risk)
+            if fitted is None:
+                return None, f"Option premium exceeds max for {candidate.symbol}"
+            qty = float(fitted)
+            meta["contract_symbol"] = picked_one["symbol"]
+            meta["strike"] = picked_one["strike"]
+            meta["right"] = right
+            candidate.entry_price = premium
+            candidate.quantity = qty
+            candidate.max_loss = None if credit else premium * 100 * qty
+            candidate.days_to_expiration = int(picked_one["days_to_expiration"])
+            candidate.bid_ask_spread = spread
+            candidate.implied_volatility = quote_greek(quote, "implied_volatility")
+            candidate.delta = quote_greek(quote, "delta")
+            candidate.metadata = meta
+            return candidate, None
+        except ProviderUnavailable:
+            raise
+        except Exception as exc:
+            return None, f"No option chain for {candidate.symbol}: {exc}"
+
     def _submit_plan(
         self,
         session: Session,
@@ -972,12 +1381,24 @@ class TradingAgentService:
                 "duplicate": True,
             }
 
+        meta = dict(candidate.metadata or {})
+        legs = meta.get("legs") or None
+        contract_symbol = None if legs else meta.get("contract_symbol")
         order_req = OrderRequest(
             symbol=candidate.symbol,
             side=candidate.side,
             quantity=float(plan.position_size),
-            order_type="market",
+            order_type="limit" if legs else "market",
+            limit_price=float(candidate.entry_price) if legs else None,
             asset_type=candidate.asset_type,
+            contract_symbol=str(contract_symbol) if contract_symbol else None,
+            position_intent=(
+                str(meta.get("position_intent"))
+                if meta.get("position_intent")
+                else ("buy_to_open" if candidate.asset_type == "option" and not legs else None)
+            ),
+            defined_risk=bool(meta.get("defined_risk")),
+            legs=list(legs) if legs else None,
             idempotency_key=idempotency_key,
             mode=config.mode,
         )
@@ -1121,22 +1542,41 @@ class TradingAgentService:
         }
 
     def list_candidates(self, session: Session, config: AgentConfig, limit: int = 100) -> list[dict[str, Any]]:
-        """Return recent candidates for the agent queues.
+        """Return candidates for the agent queues.
 
-        Approved and rejected are fetched separately so a flood of recent
-        rejections cannot push earlier BUY approvals out of the Accepted panel.
+        Approved rows are the current session day. Rejected rows stay a recent
+        window so a flood of rejections cannot hide those approvals.
         """
         per_status = max(1, int(limit))
+        risk = self.resolved_risk_config(config)
+        tz_name = str(risk.get("daily_loss_timezone") or "America/Los_Angeles")
+        reset = str(risk.get("daily_loss_reset_time") or "00:00")
+        session_day = trading_date_for(datetime.now(timezone.utc), tz_name, reset)
 
         def _rows_for(status: str) -> list[TradeCandidate]:
-            return (
+            rows = (
                 session.query(TradeCandidate)
                 .join(AgentRun)
                 .filter(AgentRun.agent_config_id == config.id, TradeCandidate.status == status)
                 .order_by(TradeCandidate.id.desc())
-                .limit(per_status)
+                .limit(per_status if status != "approved" else max(per_status * 5, per_status))
                 .all()
             )
+            if status != "approved":
+                return rows
+            kept: list[TradeCandidate] = []
+            for row in rows:
+                created = row.created_at
+                if created is None:
+                    continue
+                if created.tzinfo is None:
+                    created = created.replace(tzinfo=timezone.utc)
+                if trading_date_for(created, tz_name, reset) != session_day:
+                    continue
+                kept.append(row)
+                if len(kept) >= per_status:
+                    break
+            return kept
 
         rows = _rows_for("approved") + _rows_for("rejected")
         payload: list[dict[str, Any]] = []
@@ -1304,7 +1744,7 @@ class TradingAgentService:
         config: AgentConfig,
         trading_date: date | None = None,
     ) -> dict[str, Any]:
-        """Replay filled agent orders with average cost and list P/L for one session day."""
+        """Replay one session day: fills with average-cost P/L, plus accepted names that did not fill."""
         self._repair_order_statuses(session)
         risk = self.resolved_risk_config(config)
         tz_name = str(risk.get("daily_loss_timezone") or "America/Los_Angeles")
@@ -1464,6 +1904,85 @@ class TradingAgentService:
                 }
             )
 
+        filled_candidate_ids = {candidate.id for _order, candidate in fills}
+        approved_rows = (
+            session.query(TradeCandidate)
+            .join(AgentRun)
+            .filter(AgentRun.agent_config_id == config.id, TradeCandidate.status == "approved")
+            .order_by(TradeCandidate.id.desc())
+            .limit(500)
+            .all()
+        )
+        day_approved = []
+        for candidate in approved_rows:
+            if candidate.id in filled_candidate_ids or candidate.created_at is None:
+                continue
+            created = candidate.created_at
+            if created.tzinfo is None:
+                created = created.replace(tzinfo=timezone.utc)
+            if trading_date_for(created, tz_name, reset) != trading_date:
+                continue
+            day_approved.append(candidate)
+            if len(day_approved) >= 100:
+                break
+        plans_by_candidate: dict[int, TradePlan] = {}
+        if day_approved:
+            for plan in (
+                session.query(TradePlan)
+                .filter(TradePlan.trade_candidate_id.in_([row.id for row in day_approved]))
+                .all()
+            ):
+                current = plans_by_candidate.get(plan.trade_candidate_id)
+                if current is None or plan.id > current.id:
+                    plans_by_candidate[plan.trade_candidate_id] = plan
+        orders_by_plan: dict[int, AgentOrder] = {}
+        plan_ids = [plan.id for plan in plans_by_candidate.values()]
+        if plan_ids:
+            for agent_order in session.query(AgentOrder).filter(AgentOrder.trade_plan_id.in_(plan_ids)).all():
+                current = orders_by_plan.get(agent_order.trade_plan_id)
+                if current is None or agent_order.id > current.id:
+                    orders_by_plan[agent_order.trade_plan_id] = agent_order
+        for candidate in day_approved:
+            plan = plans_by_candidate.get(candidate.id)
+            agent_order = orders_by_plan.get(plan.id) if plan is not None else None
+            if agent_order is not None and is_filled_status(agent_order.status):
+                continue
+            created = candidate.created_at
+            if created is not None and created.tzinfo is None:
+                created = created.replace(tzinfo=timezone.utc)
+            side = ""
+            if plan is not None and isinstance(plan.plan_payload, dict):
+                side = str(plan.plan_payload.get("side") or "")
+            if not side and agent_order is not None:
+                side = str(agent_order.side or "")
+            qty = 0.0
+            if agent_order is not None and float(agent_order.requested_quantity or 0) > 0:
+                qty = float(agent_order.requested_quantity)
+            elif plan is not None:
+                qty = float(plan.position_size or 0)
+            entry = float(plan.entry_price) if plan is not None and plan.entry_price else 0.0
+            reason = ""
+            if agent_order is not None and agent_order.error_message:
+                reason = str(agent_order.error_message)
+            if not reason:
+                reason = "Accepted, not filled"
+            trades.append(
+                {
+                    "id": agent_order.id if agent_order is not None else candidate.id,
+                    "symbol": str(candidate.symbol or "").upper(),
+                    "asset_type": str(candidate.asset_type or "equity"),
+                    "side": side.lower() or "buy",
+                    "status": agent_order.status if agent_order is not None else "accepted",
+                    "quantity": qty,
+                    "entry_price": entry,
+                    "exit_price": None,
+                    "pnl": 0.0,
+                    "result": reason,
+                    "strategy": candidate.strategy,
+                    "filled_at": created.isoformat() if created is not None else None,
+                }
+            )
+
         available_dates: set[str] = set()
         for order, _candidate in fills:
             filled_at = order.filled_at
@@ -1539,13 +2058,16 @@ class TradingAgentService:
         ]
 
     def list_forecasts(self, session: Session, config: AgentConfig) -> list[dict[str, Any]]:
-        _ = session
         if self.forecast_provider is None:
             return []
         out = []
         for symbol in config.universe or []:
             try:
-                out.append(self.forecast_provider.get_forecast(symbol, "1Day").to_dict())
+                out.append(
+                    self.forecast_provider.get_forecast(
+                        symbol, "1Day", trading_type=config.trading_type, session=session
+                    ).to_dict()
+                )
             except Exception as exc:
                 out.append({"symbol": symbol, "error": str(exc)})
         return out

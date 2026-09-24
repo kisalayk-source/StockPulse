@@ -5,7 +5,9 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
-from forecasting.core.schema import ForecastResult
+from forecasting.core.base import ForecastModel
+from forecasting.core.schema import ForecastInput, ForecastResult
+from forecasting.ensemble.combine import reset_failed_models, run_models
 from forecasting.ensemble.strategies import (
     fit_stacking_ridge,
     inverse_error_weights,
@@ -50,3 +52,31 @@ def test_stacking_ridge_and_combine():
     assert out.model_name == "ensemble"
     assert out.meta["strategy"] == "stacking"
     assert len(out.predicted) == 3
+
+
+def test_load_failure_is_not_called_again():
+    class Missing(ForecastModel):
+        name = "chronos"
+        calls = 0
+
+        def load(self) -> None:
+            raise ImportError("missing")
+
+        def supports(self, inp: ForecastInput) -> bool:
+            _ = inp
+            return True
+
+        def predict(self, inp: ForecastInput) -> ForecastResult:
+            _ = inp
+            Missing.calls += 1
+            raise ImportError("Chronos extras not installed")
+
+    reset_failed_models()
+    try:
+        frame = pd.DataFrame({"close": [1.0, 2.0, 3.0]})
+        inp = ForecastInput(ticker="T", ohlcv=frame, horizon=1)
+        assert run_models([Missing()], inp) == []
+        assert run_models([Missing()], inp) == []
+        assert Missing.calls == 1
+    finally:
+        reset_failed_models()

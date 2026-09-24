@@ -2,13 +2,22 @@
 
 from __future__ import annotations
 
+import asyncio
+import contextvars
 import sys
+import time
 from datetime import date, datetime, timezone
 from typing import Any
 
 import pandas as pd
 
 from app.config import ROOT_DIR, Settings
+
+# Per-call only. predict() runs on the threadpool, so a field on the shared service races.
+_path_use_cache: contextvars.ContextVar[bool] = contextvars.ContextVar(
+    "prediction_path_use_cache",
+    default=True,
+)
 
 
 def _ensure_repo_root_on_path() -> None:
@@ -63,6 +72,14 @@ def serialize_normalized_event(event: Any) -> dict[str, Any]:
     }
 
 
+def _copy_feature_value(value: Any) -> Any:
+    if isinstance(value, list):
+        return [dict(item) if isinstance(item, dict) else item for item in value]
+    if isinstance(value, dict):
+        return dict(value)
+    return value
+
+
 class PredictionService:
     def __init__(
         self,
@@ -79,6 +96,7 @@ class PredictionService:
         self.finnhub = finnhub
         self.sec = sec
         self.government = government
+        self._feature_input_cache: dict[tuple[str, str], tuple[float, Any]] = {}
         _ensure_repo_root_on_path()
         from ml.config import horizon_to_bars
         from ml.service import PredictionEngine
@@ -122,7 +140,7 @@ class PredictionService:
             context=int(kronos_cfg.get("context", 64) or 64),
             horizon=max(1, horizon_bars),
             bars=bars,
-            use_cache=True,
+            use_cache=_path_use_cache.get(),
             evaluate=False,
             engine=engine,
         )
@@ -175,6 +193,80 @@ class PredictionService:
             return {}
         return dict(metrics or {})
 
+    _FEATURE_INPUT_TTL_SECONDS = 300.0
+
+    def _feature_cache_get(self, kind: str, ticker: str) -> tuple[bool, Any]:
+        key = (kind, ticker.upper())
+        hit = self._feature_input_cache.get(key)
+        if hit is None:
+            return False, None
+        stored_at, value = hit
+        if time.monotonic() - stored_at > self._FEATURE_INPUT_TTL_SECONDS:
+            self._feature_input_cache.pop(key, None)
+            return False, None
+        return True, _copy_feature_value(value)
+
+    def _feature_cache_put(self, kind: str, ticker: str, value: Any) -> Any:
+        stored = _copy_feature_value(value)
+        self._feature_input_cache[(kind, ticker.upper())] = (time.monotonic(), stored)
+        return _copy_feature_value(stored)
+
+    def _load_fundamentals_sync(self, ticker: str) -> dict[str, Any]:
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            return asyncio.run(self.load_fundamentals_metrics(ticker))
+        raise RuntimeError("fundamentals cache miss from a running event loop")
+
+    def _cached_sec(self, session: Any, ticker: str) -> list[dict[str, Any]]:
+        found, value = self._feature_cache_get("sec", ticker)
+        if found:
+            return value
+        return self._feature_cache_put("sec", ticker, self.load_sec_event_dicts(session, ticker))
+
+    def _cached_government(self, session: Any, ticker: str) -> list[dict[str, Any]]:
+        found, value = self._feature_cache_get("government", ticker)
+        if found:
+            return value
+        return self._feature_cache_put("government", ticker, self.load_government_event_dicts(session, ticker))
+
+    def _cached_fundamentals(self, ticker: str, metrics: dict[str, Any]) -> dict[str, Any]:
+        return self._feature_cache_put("fundamentals", ticker, metrics)
+
+    def cached_feature_inputs(self, session: Any, ticker: str) -> dict[str, Any]:
+        """SEC, fundamentals, and government inputs. Empty results stay cached for 300s."""
+        flags = self._feature_flags()
+        out: dict[str, Any] = {}
+        if flags.get("sec"):
+            out["sec_events"] = self._cached_sec(session, ticker)
+        if flags.get("fundamentals"):
+            found, metrics = self._feature_cache_get("fundamentals", ticker)
+            out["fundamentals_metrics"] = metrics if found else self._cached_fundamentals(
+                ticker, self._load_fundamentals_sync(ticker)
+            )
+        if flags.get("government"):
+            out["government_events"] = self._cached_government(session, ticker)
+            out["government_config"] = self.government_config()
+        return out
+
+    async def cached_feature_inputs_async(self, session: Any, ticker: str) -> dict[str, Any]:
+        flags = self._feature_flags()
+        out: dict[str, Any] = {}
+        if flags.get("sec"):
+            out["sec_events"] = self._cached_sec(session, ticker)
+        if flags.get("fundamentals"):
+            found, metrics = self._feature_cache_get("fundamentals", ticker)
+            if found:
+                out["fundamentals_metrics"] = metrics
+            else:
+                out["fundamentals_metrics"] = self._cached_fundamentals(
+                    ticker, await self.load_fundamentals_metrics(ticker)
+                )
+        if flags.get("government"):
+            out["government_events"] = self._cached_government(session, ticker)
+            out["government_config"] = self.government_config()
+        return out
+
     def _annual_revenue_from_metrics(self, metrics: dict[str, Any] | None) -> float | None:
         if not metrics:
             return None
@@ -207,6 +299,7 @@ class PredictionService:
         *,
         horizon: str = "5d",
         retrain: bool = False,
+        refresh: bool = False,
         sec_events: list[dict[str, Any]] | None = None,
         fundamentals_metrics: dict[str, Any] | None = None,
         government_events: list[dict[str, Any]] | None = None,
@@ -217,20 +310,24 @@ class PredictionService:
         self._require_ready()
         lookback = int(self.engine.config.get("prediction", {}).get("lookback_bars", 400))
         bars = self._fetch_daily_bars(ticker, limit=lookback)
-        return self.engine.predict_from_bars(
-            ticker,
-            bars,
-            horizon=horizon,
-            retrain=retrain,
-            sec_events=sec_events,
-            fundamentals_metrics=fundamentals_metrics,
-            government_events=government_events,
-            annual_revenue=annual_revenue
-            if annual_revenue is not None
-            else self._annual_revenue_from_metrics(fundamentals_metrics),
-            government_config=government_config if government_config is not None else self.government_config(),
-            position_concentration=position_concentration,
-        )
+        token = _path_use_cache.set(not refresh)
+        try:
+            return self.engine.predict_from_bars(
+                ticker,
+                bars,
+                horizon=horizon,
+                retrain=retrain,
+                sec_events=sec_events,
+                fundamentals_metrics=fundamentals_metrics,
+                government_events=government_events,
+                annual_revenue=annual_revenue
+                if annual_revenue is not None
+                else self._annual_revenue_from_metrics(fundamentals_metrics),
+                government_config=government_config if government_config is not None else self.government_config(),
+                position_concentration=position_concentration,
+            )
+        finally:
+            _path_use_cache.reset(token)
 
     def features(
         self,

@@ -24,7 +24,7 @@ models:
     adapter: forecasting.adapters.timesfm_adapter.TimesFMAdapter
     weight: 0.7
     params:
-      checkpoint: google/timesfm-1.0-200m-pytorch
+      checkpoint: google/timesfm-3.0-pytorch
   lag_llama:
     enabled: false  # flip on when ready — no code change needed
     adapter: forecasting.adapters.lag_llama_adapter.LagLlamaAdapter
@@ -33,6 +33,8 @@ models:
       checkpoint: time-series-foundation-models/Lag-Llama
 
 ensemble:
-  strategy: weighted_average  # weighted_average | inverse_error | stacking
+  # Live path uses weighted_average only.
+  # inverse_error and stacking run in offline eval when MAE or ridge coefficients are supplied.
+  strategy: weighted_average
   inverse_error_window: 20
   stacking_model: ridge

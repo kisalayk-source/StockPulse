@@ -15,8 +15,41 @@ from app.trading_agent.risk_engine import ForecastResult
 
 
 class ForecastProvider(Protocol):
-    def get_forecast(self, symbol: str, timeframe: str) -> ForecastResult:
+    def get_forecast(
+        self,
+        symbol: str,
+        timeframe: str = "1Day",
+        trading_type: str | None = None,
+        session: Any | None = None,
+    ) -> ForecastResult:
         ...
+
+
+def hybrid_horizon_for_trading_type(trading_type: str | None) -> str:
+    """Hybrid prediction horizon for an agent trading mode."""
+    mode = (trading_type or "mixed").lower()
+    if mode == "day_trading":
+        return "1d"
+    if mode == "long_term":
+        return "20d"
+    return "5d"
+
+
+def _horizon_bars(horizon_key: str) -> int:
+    return {"1d": 1, "5d": 5, "20d": 20}.get(horizon_key, 5)
+
+
+def _percentile(values: list[float], quantile: float) -> float | None:
+    if not values:
+        return None
+    ordered = sorted(values)
+    if len(ordered) == 1:
+        return float(ordered[0])
+    position = (len(ordered) - 1) * quantile
+    low = int(position)
+    high = min(low + 1, len(ordered) - 1)
+    fraction = position - low
+    return float(ordered[low] * (1.0 - fraction) + ordered[high] * fraction)
 
 
 def _as_float(value: Any, default: float = 0.0) -> float:
@@ -60,14 +93,16 @@ def _extract_path_metrics(path: dict[str, Any], *, spot: float | None = None) ->
     stop_price: float | None = None
     if spot is not None and spot > 0:
         if change_f >= 0:
-            # Long-biased path: stop near path low or a fraction of the expected move.
-            if path_low is not None and path_low < spot:
-                stop_price = path_low
+            # Long-biased path: stop at the 10th percentile of lows, not the extreme.
+            long_stop = _percentile(finite_lows, 0.10)
+            if long_stop is not None and long_stop < spot:
+                stop_price = long_stop
             else:
                 stop_price = spot * (1.0 - max(0.005, abs(change_f) * 0.5))
         else:
-            if path_high is not None and path_high > spot:
-                stop_price = path_high
+            short_stop = _percentile(finite_highs, 0.90)
+            if short_stop is not None and short_stop > spot:
+                stop_price = short_stop
             else:
                 stop_price = spot * (1.0 + max(0.005, abs(change_f) * 0.5))
         if target_price is None:
@@ -99,11 +134,18 @@ class KronosForecastProvider:
         self.alpaca = alpaca
         self.require_hybrid_signal = bool(require_hybrid_signal)
 
-    def get_forecast(self, symbol: str, timeframe: str = "1Day") -> ForecastResult:
+    def get_forecast(
+        self,
+        symbol: str,
+        timeframe: str = "1Day",
+        trading_type: str | None = None,
+        session: Any | None = None,
+    ) -> ForecastResult:
         ticker = symbol.upper()
         now = datetime.now(timezone.utc).isoformat()
-        hybrid = self._hybrid_payload(ticker)
-        path_payload, path_error = self._path_payload(ticker, timeframe)
+        horizon_key = hybrid_horizon_for_trading_type(trading_type)
+        hybrid, hybrid_error = self._hybrid_payload(ticker, horizon_key, session)
+        path_payload, path_error = self._path_payload(ticker, timeframe, horizon_key)
         spot = self._spot_price(ticker, path_payload)
         path_metrics = _extract_path_metrics(path_payload or {}, spot=spot) if path_payload else {}
 
@@ -165,7 +207,7 @@ class KronosForecastProvider:
             raw={
                 "path": path_payload,
                 "path_error": str(path_error) if path_error else None,
-                "reason": "calibrated hybrid prediction unavailable; path not used for direction",
+                "reason": hybrid_error or "calibrated hybrid prediction unavailable; path not used for direction",
                 "require_hybrid_signal": self.require_hybrid_signal,
                 "alignment": "hybrid_signal_path_sizing",
             },
@@ -175,28 +217,44 @@ class KronosForecastProvider:
             path_stop_price=path_metrics.get("stop_price"),  # type: ignore[arg-type]
         )
 
-    def _hybrid_payload(self, ticker: str) -> dict[str, Any] | None:
+    def _hybrid_payload(
+        self,
+        ticker: str,
+        horizon_key: str,
+        session: Any | None = None,
+    ) -> tuple[dict[str, Any] | None, str | None]:
         if self.prediction is None:
-            return None
+            return None, None
         try:
-            payload = self.prediction.predict(ticker, horizon="5d")
-        except Exception:
-            return None
+            feature_inputs: dict[str, Any] = {}
+            load_inputs = getattr(self.prediction, "cached_feature_inputs", None)
+            if callable(load_inputs):
+                feature_inputs = load_inputs(session, ticker) or {}
+            payload = self.prediction.predict(ticker, horizon=horizon_key, **feature_inputs)
+        except Exception as exc:
+            return None, str(exc)
         if not isinstance(payload, dict) or not payload.get("signal"):
-            return None
-        return payload
+            return None, "hybrid prediction returned no signal"
+        return payload, None
 
-    def _path_payload(self, ticker: str, timeframe: str) -> tuple[dict[str, Any] | None, Exception | None]:
+    def _path_payload(
+        self,
+        ticker: str,
+        timeframe: str,
+        horizon_key: str,
+    ) -> tuple[dict[str, Any] | None, Exception | None]:
         if self.kronos is None:
             return None, None
         try:
             preset = "short" if timeframe in {"1Min", "5Min", "15Min", "1Hour"} else "long"
+            resolved_timeframe = timeframe if timeframe in {"1Min", "5Min", "15Min", "1Hour", "1Day"} else "1Day"
+            # Match PredictionService._path_forecast so the 300s forecast cache hits.
             path = self.kronos.forecast(
                 symbol=ticker,
                 preset=preset,
-                timeframe=timeframe if timeframe in {"1Min", "5Min", "15Min", "1Hour", "1Day"} else "1Day",
+                timeframe=resolved_timeframe,
                 context=64,
-                horizon=None,
+                horizon=_horizon_bars(horizon_key) if resolved_timeframe == "1Day" else None,
                 evaluate=False,
                 engine="ensemble",
             )
@@ -232,7 +290,14 @@ class StaticForecastProvider:
     def __init__(self, results: dict[str, ForecastResult] | None = None) -> None:
         self.results = results or {}
 
-    def get_forecast(self, symbol: str, timeframe: str = "1Day") -> ForecastResult:
+    def get_forecast(
+        self,
+        symbol: str,
+        timeframe: str = "1Day",
+        trading_type: str | None = None,
+        session: Any | None = None,
+    ) -> ForecastResult:
+        _ = session
         ticker = symbol.upper()
         if ticker in self.results:
             return self.results[ticker]

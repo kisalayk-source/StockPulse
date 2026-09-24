@@ -494,6 +494,30 @@ describe('FastAPI contract adapters', () => {
     const result = await api.prediction('SPY', '5d')
     expect(result.signal).toBe('HOLD')
     expect(fetch).toHaveBeenCalledTimes(2)
+    expect(String(fetch.mock.calls[1][0])).not.toContain('refresh=')
+  })
+
+  it('sends refresh true only when the prediction cache should bust', async () => {
+    const payload = {
+      ticker: 'SPY',
+      horizon: '5d',
+      signal: 'HOLD',
+      probability: 0.51,
+      risk_score: 0.2,
+      confidence: 0.4,
+      explanation: { text: 'neutral' },
+      market_regime: { regime: 'range' },
+    }
+    const fetch = vi.fn().mockResolvedValue(response(payload))
+    vi.stubGlobal('fetch', fetch)
+
+    await api.prediction('SPY', '5d')
+    await api.prediction('SPY', '20d', { refresh: true })
+
+    expect(String(fetch.mock.calls[0][0])).toContain('/stocks/SPY/prediction?')
+    expect(String(fetch.mock.calls[0][0])).not.toContain('refresh=')
+    expect(String(fetch.mock.calls[1][0])).toContain('horizon=20d')
+    expect(String(fetch.mock.calls[1][0])).toContain('refresh=true')
   })
 
   it('retries a transient forecast gateway 502 then succeeds', async () => {

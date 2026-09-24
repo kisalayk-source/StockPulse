@@ -17,10 +17,13 @@ def probability_from_path(
     path_payload: dict[str, Any] | None,
     *,
     volatility: float | None = None,
+    horizon_bars: int = 1,
 ) -> float:
     """Convert a Kronos/ensemble path payload into P(price up).
 
     Uses ``trend.forecast_change`` (fractional) scaled by volatility via a sigmoid.
+    One-day volatility is stretched by ``sqrt(horizon_bars)`` so a multi-day
+    move is not treated as a one-day shock.
     """
     if not path_payload:
         return 0.5
@@ -50,7 +53,8 @@ def probability_from_path(
         else:
             vol = 0.02
     vol = max(float(vol), 1e-4)
-    z = change_f / vol
+    bars = max(1, int(horizon_bars))
+    z = change_f / (vol * float(np.sqrt(bars)))
     return float(1.0 / (1.0 + np.exp(-z)))
 
 
@@ -61,6 +65,7 @@ class KronosModel(ForecastModel):
     def __init__(self, *, scale: float = 1.0) -> None:
         self.scale = float(scale)
         self._last_path: dict[str, Any] | None = None
+        self._horizon_bars = 1
 
     def train(self, dataset: pd.DataFrame) -> None:
         # Pretrained foundation weights; fine-tune path is out of MVP-2 directional scope.
@@ -72,8 +77,15 @@ class KronosModel(ForecastModel):
     def predict_probability(self, features: pd.DataFrame | dict[str, float]) -> float:
         """Prefer ``set_path`` / ``probability_from_path``; features unused for direction."""
         _ = features
-        return probability_from_path(self._last_path)
+        return probability_from_path(self._last_path, horizon_bars=self._horizon_bars)
 
-    def set_path(self, path_payload: dict[str, Any] | None, *, volatility: float | None = None) -> float:
+    def set_path(
+        self,
+        path_payload: dict[str, Any] | None,
+        *,
+        volatility: float | None = None,
+        horizon_bars: int = 1,
+    ) -> float:
         self._last_path = path_payload
-        return probability_from_path(path_payload, volatility=volatility)
+        self._horizon_bars = max(1, int(horizon_bars))
+        return probability_from_path(path_payload, volatility=volatility, horizon_bars=self._horizon_bars)

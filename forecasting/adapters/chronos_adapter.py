@@ -49,7 +49,7 @@ class ChronosAdapter(ForecastModel):
         self._pipeline = ChronosPipeline.from_pretrained(
             self.checkpoint,
             device_map=self.device,
-            torch_dtype=torch.bfloat16 if self.device != "cpu" else torch.float32,
+            dtype=torch.float32 if self.device == "cpu" else torch.bfloat16,
         )
         self._loaded = True
         logger.info("Loaded Chronos checkpoint %s", self.checkpoint)

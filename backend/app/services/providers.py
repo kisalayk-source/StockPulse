@@ -226,6 +226,33 @@ def option_underlying_symbol(contract: Any, contract_symbol: str) -> str | None:
     return match.group(1) if match else None
 
 
+def _exchange_code(value: Any) -> str:
+    raw = getattr(value, "value", value)
+    text = str(raw or "").strip().upper()
+    if "." in text:
+        text = text.rsplit(".", 1)[-1]
+    return text
+
+
+def listed_equity_symbols(assets: Any, exchanges: set[str]) -> list[str]:
+    """Sorted unique tradable symbols whose exchange is in ``exchanges``."""
+    allowed = {name.upper() for name in exchanges}
+    symbols: list[str] = []
+    seen: set[str] = set()
+    for asset in assets or []:
+        if not bool(getattr(asset, "tradable", False)):
+            continue
+        if _exchange_code(getattr(asset, "exchange", None)) not in allowed:
+            continue
+        symbol = str(getattr(asset, "symbol", "") or "").strip().upper()
+        if not symbol or symbol in seen:
+            continue
+        seen.add(symbol)
+        symbols.append(symbol)
+    symbols.sort()
+    return symbols
+
+
 def rank_search_results(query: str, items: list[dict[str, Any]]) -> list[dict[str, Any]]:
     needle = query.strip().casefold()
     aliases = {symbol.upper() for symbol in SEARCH_ALIASES.get(needle, ())}
@@ -816,6 +843,26 @@ class AlpacaService:
                 )
         return rank_search_results(query, results)[:SEARCH_RESULT_LIMIT]
 
+    def tradable_exchange_equities(
+        self,
+        mode: str = "paper",
+        exchanges: tuple[str, ...] = ("NYSE", "NASDAQ"),
+    ) -> list[str]:
+        """Active, tradable US equity symbols on the given exchanges."""
+        from alpaca.trading.enums import AssetClass, AssetStatus
+        from alpaca.trading.requests import GetAssetsRequest
+
+        allowed = {name.upper() for name in exchanges}
+        cache_key = f"listed-equities:{mode}:{','.join(sorted(allowed))}"
+        if cache_key in self._asset_cache:
+            cached = self._asset_cache[cache_key]
+            return list(cached) if isinstance(cached, list) else []
+        request = GetAssetsRequest(status=AssetStatus.ACTIVE, asset_class=AssetClass.US_EQUITY)
+        assets = self._trading(mode).get_all_assets(request)
+        symbols = listed_equity_symbols(assets, allowed)
+        self._asset_cache[cache_key] = symbols
+        return list(symbols)
+
     def snapshot(self, symbol: str) -> dict[str, Any]:
         from alpaca.data.requests import StockSnapshotRequest
 
@@ -1073,6 +1120,9 @@ class AlpacaService:
         contract_type: str | None,
         limit: int,
         mode: str,
+        *,
+        expiration_gte: str | None = None,
+        expiration_lte: str | None = None,
     ) -> list[dict[str, Any]]:
         from alpaca.trading.enums import ContractType
         from alpaca.trading.requests import GetOptionContractsRequest
@@ -1083,6 +1133,10 @@ class AlpacaService:
         }
         if expiration:
             kwargs["expiration_date"] = expiration
+        if expiration_gte:
+            kwargs["expiration_date_gte"] = expiration_gte
+        if expiration_lte:
+            kwargs["expiration_date_lte"] = expiration_lte
         if contract_type:
             kwargs["type"] = ContractType(contract_type)
         response = self._trading(mode).get_option_contracts(GetOptionContractsRequest(**kwargs))
@@ -1124,12 +1178,15 @@ class AlpacaService:
         daily = item.get("daily_bar") or {}
         bid = quote.get("bid_price")
         ask = quote.get("ask_price")
+        greeks = item.get("greeks") or {}
         return {
             "symbol": (underlying or ticker).upper(),
             "contract_symbol": ticker,
             "bid": bid,
             "ask": ask,
             "current_price": ask or trade.get("price") or bid,
+            "implied_volatility": greeks.get("implied_volatility"),
+            "delta": greeks.get("delta"),
             "daily": daily,
         }
 
@@ -1270,6 +1327,8 @@ class AlpacaService:
         mode = _enum_value(order.mode)
         side = _enum_value(order.side)
         order_type = _enum_value(getattr(order, "type", "market"))
+        if not _OCC_OPTION_SYMBOL.fullmatch(str(order.contract_symbol or "").upper()):
+            raise ValueError(f"Option order has no contract symbol: {order.contract_symbol}")
         try:
             contract = self._trading(mode).get_option_contract(
                 order.contract_symbol.upper()
@@ -1307,6 +1366,56 @@ class AlpacaService:
             else MarketOrderRequest(**common)
         )
         return jsonable(self._trading(mode).submit_order(request))
+
+    def submit_option_spread(self, order: Any) -> dict[str, Any]:
+        from alpaca.trading.enums import OrderClass, OrderSide, PositionIntent, TimeInForce
+        from alpaca.trading.requests import LimitOrderRequest, OptionLegRequest
+
+        mode = _enum_value(order.mode)
+        legs = list(getattr(order, "legs", None) or [])
+        if len(legs) < 2:
+            raise ValueError("Option spread requires two contracts")
+        trading = self._trading(mode)
+        for leg in legs:
+            symbol = str(leg.get("symbol") or "").upper()
+            if not _OCC_OPTION_SYMBOL.fullmatch(symbol):
+                raise ValueError(f"Option order has no contract symbol: {symbol}")
+            try:
+                contract = trading.get_option_contract(symbol)
+            except ProviderUnavailable:
+                raise
+            except Exception as exc:
+                raise ValueError(f"Unknown option contract: {symbol}") from exc
+            if not getattr(contract, "tradable", False):
+                raise ValueError(f"{symbol} is not tradable")
+        debit = float(order.limit_price)
+        preview = type("Spread", (), {})()
+        preview.mode = order.mode
+        preview.side = "buy"
+        preview.qty = order.qty
+        preview.notional = None
+        preview.limit_price = debit
+        preview.contract_symbol = str(legs[0]["symbol"]).upper()
+        preview.position_intent = "buy_to_open"
+        preview.symbol = str(getattr(order, "symbol", "") or "")
+        snapshot = {"symbol": preview.symbol, "current_price": debit, "contract_symbol": preview.contract_symbol}
+        self._ensure_order_risk(preview, option=True, snapshot=snapshot)
+        request = LimitOrderRequest(
+            qty=order.qty,
+            order_class=OrderClass.MLEG,
+            time_in_force=TimeInForce.DAY,
+            limit_price=debit,
+            legs=[
+                OptionLegRequest(
+                    symbol=str(leg["symbol"]).upper(),
+                    ratio_qty=float(leg.get("ratio_qty") or 1),
+                    side=OrderSide(str(leg["side"])),
+                    position_intent=PositionIntent(str(leg["position_intent"])),
+                )
+                for leg in legs
+            ],
+        )
+        return jsonable(trading.submit_order(request))
 
 
     def get_order(self, order_id: str, mode: str) -> dict[str, Any]:

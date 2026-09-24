@@ -37,6 +37,28 @@ class _MockTimesFM:
         return point, None
 
 
+class _MockTimesFM3:
+    def predict(self, context, horizon):
+        closes = np.asarray(context, dtype=float)
+        last = float(closes[-1])
+        point = np.array([last * (1 + 0.001 * (i + 1)) for i in range(int(horizon))])
+
+        class _Out:
+            forecast = point
+            quantiles = None
+
+        return _Out()
+
+
+def test_timesfm_v3_predict_api():
+    adapter = TimesFMAdapter(model=_MockTimesFM3())
+    inp = ForecastInput(ticker="SPY", ohlcv=_ohlcv(), horizon=5)
+    result = adapter.predict(inp)
+    assert_forecast_result(result, horizon=5)
+    assert result.model_name == "timesfm"
+    assert len(result.predicted) == 5
+
+
 def test_timesfm_mock():
     adapter = TimesFMAdapter(model=_MockTimesFM())
     inp = ForecastInput(ticker="SPY", ohlcv=_ohlcv(), horizon=5)

@@ -350,7 +350,7 @@ def test_prediction_without_saved_keys_returns_settings_guidance() -> None:
     from app.services.providers import ProviderUnavailable
 
     class RequiresCredentials(FakePrediction):
-        def predict(self, ticker: str, *, horizon: str = "5d", retrain: bool = False) -> dict:
+        def predict(self, ticker: str, *, horizon: str = "5d", retrain: bool = False, **kwargs) -> dict:
             if current_trading_credentials() is None:
                 raise ProviderUnavailable("alpaca", "Alpaca paper credentials are not configured")
             return super().predict(ticker, horizon=horizon, retrain=retrain)
@@ -367,7 +367,7 @@ def test_prediction_preserves_non_credential_provider_message() -> None:
     from app.services.providers import ProviderUnavailable
 
     class FailingBars(FakePrediction):
-        def predict(self, ticker: str, *, horizon: str = "5d", retrain: bool = False) -> dict:
+        def predict(self, ticker: str, *, horizon: str = "5d", retrain: bool = False, **kwargs) -> dict:
             raise ProviderUnavailable("alpaca", "Alpaca data feed rate limited")
 
     with make_client(prediction=FailingBars()) as client:
@@ -382,7 +382,7 @@ def test_prediction_preserves_non_credential_provider_message() -> None:
 
 def test_prediction_surfaces_missing_xgboost_dependency() -> None:
     class MissingXgb(FakePrediction):
-        def predict(self, ticker: str, *, horizon: str = "5d", retrain: bool = False) -> dict:
+        def predict(self, ticker: str, *, horizon: str = "5d", retrain: bool = False, **kwargs) -> dict:
             raise RuntimeError(
                 "hybrid prediction requires xgboost; "
                 "install backend/requirements.txt and restart the API"
@@ -398,7 +398,7 @@ def test_prediction_surfaces_missing_xgboost_dependency() -> None:
 
 def test_prediction_import_error_returns_install_guidance() -> None:
     class BrokenImport(FakePrediction):
-        def predict(self, ticker: str, *, horizon: str = "5d", retrain: bool = False) -> dict:
+        def predict(self, ticker: str, *, horizon: str = "5d", retrain: bool = False, **kwargs) -> dict:
             raise ModuleNotFoundError("No module named 'xgboost'", name="xgboost")
 
     with make_client(prediction=BrokenImport()) as client:
@@ -482,3 +482,52 @@ def test_prediction_engine_end_to_end(tmp_path: Path) -> None:
     assert "timestamp" in result
     assert "training_cutoff" in result
     assert result["feature_snapshot"]["technical"]
+
+
+def test_predict_refresh_busts_path_cache_without_retrain() -> None:
+    """Header refresh recomputes the stance path. It does not retrain weights."""
+    from types import SimpleNamespace
+
+    import pandas as pd
+
+    from app.services.prediction import PredictionService
+
+    calls: list[dict] = []
+    retrains: list[bool] = []
+
+    class Kronos:
+        def forecast(self, symbol: str, preset: str, **kwargs):
+            calls.append({"symbol": symbol, "preset": preset, **kwargs})
+            return {"forecast": []}
+
+    service = PredictionService.__new__(PredictionService)
+    service.kronos = Kronos()
+    service.government = None
+    service.enabled = True
+    service._dependency_error = None
+    service._horizon_to_bars = lambda horizon_key: 5
+    service._fetch_daily_bars = lambda ticker, limit=400: [{"close": 1.0}]
+    frame = pd.DataFrame(
+        [{"open": 1.0, "high": 1.0, "low": 1.0, "close": 1.0, "volume": 1.0}],
+        index=pd.to_datetime(["2026-01-02T00:00:00Z"]),
+    )
+
+    def predict_from_bars(ticker: str, bars: list[dict], **kwargs):
+        retrains.append(kwargs["retrain"])
+        service._path_forecast(ticker, kwargs["horizon"], frame)
+        return {"retrain": kwargs["retrain"]}
+
+    service.engine = SimpleNamespace(
+        config={"models": {"kronos": {"context": 64}}, "prediction": {"lookback_bars": 8}},
+        predict_from_bars=predict_from_bars,
+    )
+
+    cached = service.predict("AAPL", horizon="5d", retrain=False, refresh=False)
+    fresh = service.predict("AAPL", horizon="5d", retrain=False, refresh=True)
+    again = service.predict("AAPL", horizon="5d", retrain=False, refresh=False)
+
+    assert cached["retrain"] is False
+    assert fresh["retrain"] is False
+    assert again["retrain"] is False
+    assert retrains == [False, False, False]
+    assert [call["use_cache"] for call in calls] == [True, False, True]

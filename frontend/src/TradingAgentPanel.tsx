@@ -89,16 +89,6 @@ function sessionDayInAgentTz(iso: string | null | undefined): string | null {
   return new Intl.DateTimeFormat('en-CA', { timeZone: 'America/Los_Angeles' }).format(parsed)
 }
 
-function latestFillSessionDay(orders: AgentOrderRow[]): string | null {
-  let best: string | null = null
-  for (const row of orders) {
-    if (row.status !== 'filled' && row.status !== 'partially_filled') continue
-    const day = sessionDayInAgentTz(row.filledAt || row.submittedAt)
-    if (day && (!best || day > best)) best = day
-  }
-  return best
-}
-
 const MAX_UNIVERSE_FALLBACK = 50
 
 function scanOutcomeLabel(outcome: string): string {
@@ -208,10 +198,6 @@ export function TradingAgentPanel({
       setOrders(ords)
       setEvents(evts)
       setPerformance(perf)
-      if (!dayTradeDateTouchedRef.current) {
-        const latest = latestFillSessionDay(ords)
-        if (latest) setDayTradeDate(latest)
-      }
     } catch (err) {
       setError(err instanceof ApiError ? err.message : 'Unable to load trading agent')
     }
@@ -274,12 +260,12 @@ export function TradingAgentPanel({
 
   async function runForecastCycle() {
     const typed = parseTickers(tickerInput)
-    const symbols = typed.length > 0 ? typed : config?.universe || []
-    if (symbols.length === 0) {
-      setError('Type one or more tickers to run, or add tickers to the risk portfolio for auto-cycles')
+    const symbols = typed.length > 0 ? typed : undefined
+    if (typed.length === 0 && !running) {
+      setError('Start the agent before a market scan')
       return
     }
-    const invalid = symbols.find((ticker) => !TICKER_PATTERN.test(ticker))
+    const invalid = symbols?.find((ticker) => !TICKER_PATTERN.test(ticker))
     if (invalid) {
       setError(`Invalid ticker: ${invalid}`)
       return
@@ -353,7 +339,10 @@ export function TradingAgentPanel({
         config?.lastCycleAt ? ` · last cycle ${formatDateTime(config.lastCycleAt)}` : ' · waiting for first cycle'
       }`
     : null
-  const accepted = candidates.filter((row) => row.status === 'approved')
+  const sessionToday = todayInAgentTz()
+  const accepted = candidates.filter(
+    (row) => row.status === 'approved' && sessionDayInAgentTz(row.createdAt) === sessionToday,
+  )
   const rejected = candidates.filter((row) => row.status === 'rejected')
   const riskAdjustEvents = events.filter(
     (event) => event.eventType === 'RISK_AUTO_ADJUSTED' || event.eventType === 'RISK_AUTO_ADJUST_SKIPPED',
@@ -362,9 +351,8 @@ export function TradingAgentPanel({
   const filledOrders = orders.filter((row) => row.status === 'filled' || row.status === 'partially_filled')
   const universeScan: UniverseScanRow[] = config?.lastUniverseScan || []
   const maxUniverseSize = config?.maxUniverseSize || MAX_UNIVERSE_FALLBACK
-  const universeCount = (config?.universe || []).length
   const typedCycleTickers = parseTickers(tickerInput)
-  const canRunCycle = running && (typedCycleTickers.length > 0 || universeCount > 0)
+  const canRunCycle = running
   const cycleNotice =
     running && accepted.length === 0 && rejected.length > 0
       ? latestRiskAdjust?.message ||
@@ -613,8 +601,8 @@ export function TradingAgentPanel({
           <div className="universe-editor" data-testid="risk-portfolio">
             <span>Risk portfolio</span>
             <p className="agent-subtitle">
-              Saved for scheduled auto-cycles ({universeCount} / {maxUniverseSize}).
-              Type tickers below and run a cycle once without adding them here.
+              Optional saved tickers. Auto-cycles scan tradable NYSE and NASDAQ stocks
+              ({maxUniverseSize} per cycle), not only this list or favorites.
             </p>
             <div className="universe-chips" role="list" aria-label="Risk portfolio tickers">
               {!config ? (
@@ -761,7 +749,7 @@ export function TradingAgentPanel({
         <section className="card agent-resizable" data-testid="accepted-queue">
           <div className="card-heading compact">
             <h2>Accepted opportunities</h2>
-            <p className="agent-subtitle">Recent approved entries and exits (not limited by reject volume)</p>
+            <p className="agent-subtitle">Approved entries and exits for the current session day</p>
           </div>
           <div className="table-wrap">
             <table>
@@ -778,7 +766,7 @@ export function TradingAgentPanel({
               </thead>
               <tbody>
                 {accepted.length === 0 ? (
-                  <tr><td colSpan={7}>No approved opportunities this cycle window</td></tr>
+                  <tr><td colSpan={7}>No approved opportunities for the current session day</td></tr>
                 ) : accepted.map((row) => (
                   <tr key={row.id}>
                     <td>{row.symbol}</td>
@@ -903,7 +891,7 @@ export function TradingAgentPanel({
           <div className="card-heading compact">
             <h2>Daily trades</h2>
             <p className="agent-subtitle">
-              Session-day fills labeled profit or loss using average cost
+              Session-day fills, plus accepted names that did not fill
               {dayTrades?.timezone ? ` · ${dayTrades.timezone}` : ''}
             </p>
           </div>
