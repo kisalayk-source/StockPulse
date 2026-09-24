@@ -350,7 +350,7 @@ def test_prediction_without_saved_keys_returns_settings_guidance() -> None:
     from app.services.providers import ProviderUnavailable
 
     class RequiresCredentials(FakePrediction):
-        def predict(self, ticker: str, *, horizon: str = "5d", retrain: bool = False) -> dict:
+        def predict(self, ticker: str, *, horizon: str = "5d", retrain: bool = False, **kwargs) -> dict:
             if current_trading_credentials() is None:
                 raise ProviderUnavailable("alpaca", "Alpaca paper credentials are not configured")
             return super().predict(ticker, horizon=horizon, retrain=retrain)
@@ -367,7 +367,7 @@ def test_prediction_preserves_non_credential_provider_message() -> None:
     from app.services.providers import ProviderUnavailable
 
     class FailingBars(FakePrediction):
-        def predict(self, ticker: str, *, horizon: str = "5d", retrain: bool = False) -> dict:
+        def predict(self, ticker: str, *, horizon: str = "5d", retrain: bool = False, **kwargs) -> dict:
             raise ProviderUnavailable("alpaca", "Alpaca data feed rate limited")
 
     with make_client(prediction=FailingBars()) as client:
@@ -382,7 +382,7 @@ def test_prediction_preserves_non_credential_provider_message() -> None:
 
 def test_prediction_surfaces_missing_xgboost_dependency() -> None:
     class MissingXgb(FakePrediction):
-        def predict(self, ticker: str, *, horizon: str = "5d", retrain: bool = False) -> dict:
+        def predict(self, ticker: str, *, horizon: str = "5d", retrain: bool = False, **kwargs) -> dict:
             raise RuntimeError(
                 "hybrid prediction requires xgboost; "
                 "install backend/requirements.txt and restart the API"
@@ -398,7 +398,7 @@ def test_prediction_surfaces_missing_xgboost_dependency() -> None:
 
 def test_prediction_import_error_returns_install_guidance() -> None:
     class BrokenImport(FakePrediction):
-        def predict(self, ticker: str, *, horizon: str = "5d", retrain: bool = False) -> dict:
+        def predict(self, ticker: str, *, horizon: str = "5d", retrain: bool = False, **kwargs) -> dict:
             raise ModuleNotFoundError("No module named 'xgboost'", name="xgboost")
 
     with make_client(prediction=BrokenImport()) as client:
