@@ -102,15 +102,42 @@ class AgentCycleScheduler:
         due_ids: list[int] = []
         try:
             now = datetime.now(timezone.utc)
+            market_open = self._market_is_open()
             rows = (
                 session.query(AgentConfig)
                 .filter(
-                    AgentConfig.status.in_(("paper", "live")),
+                    AgentConfig.status.in_(("paper", "live", "paused")),
                     AgentConfig.forecast_enabled.is_(True),
                 )
                 .all()
             )
+            agent = self._services.trading_agent
             for config in rows:
+                reason = str((config.risk_config or {}).get("pause_reason") or "")
+                if market_open is False and config.status in {"paper", "live"}:
+                    agent.pause(session, config)
+                    risk = dict(config.risk_config or {})
+                    risk["pause_reason"] = "market_closed"
+                    config.risk_config = risk
+                    session.commit()
+                    logger.info(
+                        "trading_agent_paused_market_closed",
+                        extra={"config_id": config.id},
+                    )
+                    continue
+                if config.status == "paused":
+                    if market_open is True and reason == "market_closed":
+                        try:
+                            agent.resume(session, config)
+                        except ValueError:
+                            logger.info(
+                                "trading_agent_market_resume_blocked",
+                                extra={"config_id": config.id},
+                            )
+                            continue
+                        session.commit()
+                        due_ids.append(int(config.id))
+                    continue
                 interval = int(config.cycle_interval_seconds or 300)
                 last = config.last_cycle_at
                 if last is not None:
@@ -130,6 +157,19 @@ class AgentCycleScheduler:
             if self._run_one(config_id):
                 cycled.append(config_id)
         return cycled
+
+    def _market_is_open(self) -> bool | None:
+        """True when the session is open, False when closed, None when the clock cannot be read."""
+        alpaca = getattr(self._services, "alpaca", None)
+        if alpaca is None:
+            return True
+        try:
+            clock = alpaca.market_clock("paper")
+        except Exception:
+            return None
+        if not isinstance(clock, dict) or "is_open" not in clock:
+            return None
+        return bool(clock.get("is_open"))
 
     def _run_one(self, config_id: int) -> bool:
         lock = self._lock_for(config_id)

@@ -115,54 +115,54 @@ class PredictionEngine:
 
         model_probs: dict[str, float] = {}
         model_versions: dict[str, str] = {}
+        member_scores: dict[str, float] = {}
         training_cutoff = snapshot.data_cutoff
         cal_method = str(self.config.get("calibration", {}).get("method", "identity")).lower()
+        short_history_reason: str | None = None
+
+        def _add_tree(name: str, model_cls: type) -> None:
+            nonlocal training_cutoff, short_history_reason
+            try:
+                prob, meta = self._tree_probability(
+                    model_type=name,
+                    model_cls=model_cls,
+                    ticker=ticker.upper(),
+                    ohlcv=ohlcv,
+                    horizon=horizon_key,
+                    horizon_bars=horizon_bars,
+                    feature_version=feature_version,
+                    snapshot_features=model_features,
+                    retrain=retrain,
+                    calibration_method=cal_method,
+                    government_events=gov_events_for_train,
+                    annual_revenue=annual_revenue,
+                    government_config=government_config,
+                )
+            except ValueError as exc:
+                text = str(exc)
+                if "need at least" in text and "training rows" in text:
+                    short_history_reason = text
+                    return
+                raise
+            model_probs[name] = prob
+            model_versions[name] = meta["model_version"]
+            training_cutoff = meta["training_cutoff"]
+            score = meta.get("brier_score")
+            if isinstance(score, (int, float)) and score == score and float(score) >= 0:
+                member_scores[name] = float(score)
 
         if self.config.get("models", {}).get("xgboost", {}).get("enabled", True):
-            xgb_prob, xgb_meta = self._tree_probability(
-                model_type="xgboost",
-                model_cls=XGBoostModel,
-                ticker=ticker.upper(),
-                ohlcv=ohlcv,
-                horizon=horizon_key,
-                horizon_bars=horizon_bars,
-                feature_version=feature_version,
-                snapshot_features=model_features,
-                retrain=retrain,
-                calibration_method=cal_method,
-                government_events=gov_events_for_train,
-                annual_revenue=annual_revenue,
-                government_config=government_config,
-            )
-            model_probs["xgboost"] = xgb_prob
-            model_versions["xgboost"] = xgb_meta["model_version"]
-            training_cutoff = xgb_meta["training_cutoff"]
+            _add_tree("xgboost", XGBoostModel)
 
         if self.config.get("models", {}).get("lightgbm", {}).get("enabled", False):
-            lgb_prob, lgb_meta = self._tree_probability(
-                model_type="lightgbm",
-                model_cls=LightGBMModel,
-                ticker=ticker.upper(),
-                ohlcv=ohlcv,
-                horizon=horizon_key,
-                horizon_bars=horizon_bars,
-                feature_version=feature_version,
-                snapshot_features=model_features,
-                retrain=retrain,
-                calibration_method=cal_method,
-                government_events=gov_events_for_train,
-                annual_revenue=annual_revenue,
-                government_config=government_config,
-            )
-            model_probs["lightgbm"] = lgb_prob
-            model_versions["lightgbm"] = lgb_meta["model_version"]
-            training_cutoff = lgb_meta["training_cutoff"]
+            _add_tree("lightgbm", LightGBMModel)
 
         if self.config.get("models", {}).get("kronos", {}).get("enabled", False):
             kronos_prob, kronos_meta = self._kronos_probability(
                 ticker=ticker.upper(),
                 ohlcv=ohlcv,
                 horizon=horizon_key,
+                horizon_bars=horizon_bars,
                 volatility=snapshot.technical.get("rolling_volatility"),
             )
             if kronos_prob is not None:
@@ -170,14 +170,19 @@ class PredictionEngine:
                 model_versions["kronos"] = kronos_meta["model_version"]
 
         if not model_probs:
-            raise RuntimeError("no enabled prediction models")
+            raise RuntimeError(short_history_reason or "no enabled prediction models")
 
         strategy = self.config.get("ensemble", {}).get("strategy", "equal_weight")
         weights = {
             name: float(self.config.get("models", {}).get(name, {}).get("weight", 1.0))
             for name in model_probs
         }
-        raw_probability = combine_probabilities(model_probs, weights=weights, strategy=strategy)
+        raw_probability = combine_probabilities(
+            model_probs,
+            weights=weights,
+            scores=member_scores,
+            strategy=strategy,
+        )
         # Tree members are already calibrated; ensemble raw is the final P(up).
         probability = float(np.clip(raw_probability, 0.0, 1.0))
         agreement = model_agreement(model_probs)
@@ -330,6 +335,7 @@ class PredictionEngine:
         ticker: str,
         ohlcv: pd.DataFrame,
         horizon: str,
+        horizon_bars: int,
         volatility: float | None,
     ) -> tuple[float | None, dict[str, Any]]:
         if self.path_forecast_fn is None:
@@ -341,7 +347,11 @@ class PredictionEngine:
         if not path_payload:
             return None, {"model_version": KronosModel.version}
         adapter = KronosModel()
-        probability = adapter.set_path(path_payload, volatility=volatility)
+        probability = adapter.set_path(
+            path_payload,
+            volatility=volatility,
+            horizon_bars=max(1, int(horizon_bars)),
+        )
         return probability, {"model_version": adapter.version, "model_id": f"kronos:{ticker}:{horizon}"}
 
     def _tree_probability(
@@ -425,7 +435,25 @@ class PredictionEngine:
             "model_version": getattr(artifact.model, "version", "1.0"),
             "training_cutoff": training_cutoff,
             "model_id": key,
+            "brier_score": _registry_error_score(self.registry, key),
         }
+
+
+def _registry_error_score(registry: ModelRegistry, key: str) -> float | None:
+    """Holdout Brier, else log loss, from the registry. None when absent."""
+    record = registry.get(key)
+    if record is None:
+        return None
+    metrics = record.validation_metrics or {}
+    for name in ("brier_score", "log_loss"):
+        raw = metrics.get(name)
+        try:
+            number = float(raw) if raw is not None else float("nan")
+        except (TypeError, ValueError):
+            continue
+        if number == number and number >= 0:
+            return number
+    return None
 
 
 def _coerce_artifact(cached: Any, *, calibration_method: str) -> CalibratedArtifact | None:

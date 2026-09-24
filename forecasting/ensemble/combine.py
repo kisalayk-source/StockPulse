@@ -11,6 +11,25 @@ from forecasting.ensemble.strategies import combine
 
 logger = logging.getLogger("forecasting.ensemble")
 
+# Models whose load()/import failed once. Later calls skip them for this process.
+_FAILED_MODELS: set[str] = set()
+
+
+def reset_failed_models() -> None:
+    """Clear the process-level skip set. Tests use this."""
+    _FAILED_MODELS.clear()
+
+
+def _is_load_failure(exc: BaseException) -> bool:
+    seen: set[int] = set()
+    current: BaseException | None = exc
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        if isinstance(current, (ImportError, ModuleNotFoundError)):
+            return True
+        current = current.__cause__ or current.__context__
+    return False
+
 
 def run_models(
     models: Sequence[ForecastModel],
@@ -21,8 +40,11 @@ def run_models(
     """Run each model that supports ``inp``; skip + log otherwise."""
     results: list[ForecastResult] = []
     for model in models:
+        name = str(getattr(model, "name", model))
+        if name in _FAILED_MODELS:
+            continue
         if not model.supports(inp):
-            msg = f"skipping {getattr(model, 'name', model)} (supports=False)"
+            msg = f"skipping {name} (supports=False)"
             if skip_unsupported:
                 logger.info(msg)
                 continue
@@ -31,8 +53,12 @@ def run_models(
             result = model.predict(inp)
             assert_forecast_result(result, horizon=inp.horizon)
             results.append(result)
-        except Exception:
-            logger.exception("model %s failed during predict", getattr(model, "name", model))
+        except Exception as exc:
+            if _is_load_failure(exc):
+                _FAILED_MODELS.add(name)
+                logger.warning("dropping model %s after load failure: %s", name, exc)
+                continue
+            logger.exception("model %s failed during predict", name)
             if not skip_unsupported:
                 raise
     return results

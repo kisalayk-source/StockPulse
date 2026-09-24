@@ -1237,6 +1237,74 @@ def test_scheduler_selects_only_running_configs_and_respects_interval():
         assert len(due_again) == 1
 
 
+def test_scheduler_pauses_when_market_is_closed_and_resumes_when_open():
+    from app.trading_agent.scheduler import AgentCycleScheduler
+    from test_api import FakeAlpaca
+
+    class ClockAlpaca(FakeAlpaca):
+        def __init__(self, open_: bool) -> None:
+            super().__init__()
+            self.open_ = open_
+
+        def market_clock(self, mode: str = "paper") -> dict:
+            return {"is_open": self.open_}
+
+    client, agent, _paper_brokers, _alpaca = make_agent_client()
+    with client:
+        headers = register_headers(client)
+        client.put(
+            "/api/v1/trading-agent/config",
+            json={"universe": ["NVDA"], "cycle_interval_seconds": 300},
+            headers=headers,
+        )
+        client.post("/api/v1/trading-agent/start", json={"mode": "paper"}, headers=headers)
+        me = client.get("/api/v1/auth/me", headers=headers).json()
+
+        closed = AgentCycleScheduler(
+            SimpleNamespace(trading_agent=agent, alpaca=ClockAlpaca(False)),
+            tick_seconds=60,
+        )
+        assert closed.tick() == []
+        session = _db_session()
+        config = agent.get_or_create_config(session, me["id"])
+        assert config.status == "paused"
+        assert config.risk_config.get("pause_reason") == "market_closed"
+        session.close()
+
+        opened = AgentCycleScheduler(
+            SimpleNamespace(trading_agent=agent, alpaca=ClockAlpaca(True)),
+            tick_seconds=60,
+        )
+        assert len(opened.tick()) == 1
+        session = _db_session()
+        config = agent.get_or_create_config(session, me["id"])
+        assert config.status == "paper"
+        assert "pause_reason" not in (config.risk_config or {})
+        session.close()
+
+
+def test_scheduler_does_not_resume_a_manual_pause():
+    from app.trading_agent.scheduler import AgentCycleScheduler
+    from test_api import FakeAlpaca
+
+    client, agent, _paper_brokers, _alpaca = make_agent_client()
+    with client:
+        headers = register_headers(client)
+        client.post("/api/v1/trading-agent/start", json={"mode": "paper"}, headers=headers)
+        client.post("/api/v1/trading-agent/pause", headers=headers)
+        scheduler = AgentCycleScheduler(
+            SimpleNamespace(trading_agent=agent, alpaca=FakeAlpaca()),
+            tick_seconds=60,
+        )
+        assert scheduler.tick() == []
+        me = client.get("/api/v1/auth/me", headers=headers).json()
+        session = _db_session()
+        config = agent.get_or_create_config(session, me["id"])
+        assert config.status == "paused"
+        assert "pause_reason" not in (config.risk_config or {})
+        session.close()
+
+
 def test_scheduler_skips_paused_agent():
     from app.trading_agent.scheduler import AgentCycleScheduler
 
@@ -1673,6 +1741,70 @@ def test_provider_uses_hybrid_signal_and_path_expected_return():
     assert result.path_stop_price is not None and result.path_stop_price < 100.0
 
 
+def test_provider_horizon_follows_trading_type_and_reuses_path_horizon():
+    from app.trading_agent.forecast_provider import KronosForecastProvider
+
+    seen: dict[str, object] = {}
+
+    class FakePrediction:
+        def predict(self, ticker, horizon="5d"):
+            _ = ticker
+            seen["horizon"] = horizon
+            return {
+                "signal": "HOLD",
+                "confidence": 0.4,
+                "horizon": horizon,
+                "timestamp": "2026-01-01T00:00:00+00:00",
+            }
+
+    class FakeKronosPath:
+        def forecast(self, **kwargs):
+            seen["forecast_horizon"] = kwargs.get("horizon")
+            seen["context"] = kwargs.get("context")
+            seen["engine"] = kwargs.get("engine")
+            seen["evaluate"] = kwargs.get("evaluate")
+            return {
+                "forecast_change": 0.0,
+                "historical": [{"close": 50.0}],
+                "forecast": [{"close": 50.0, "low": 49.0, "high": 51.0}],
+            }
+
+    provider = KronosForecastProvider(FakeKronosPath(), FakePrediction(), None)
+    provider.get_forecast("NVDA", "1Day", trading_type="long_term")
+    assert seen["horizon"] == "20d"
+    assert seen["forecast_horizon"] == 20
+    assert seen["context"] == 64
+    assert seen["engine"] == "ensemble"
+    assert seen["evaluate"] is False
+    provider.get_forecast("NVDA", "1Day", trading_type="day_trading")
+    assert seen["horizon"] == "1d"
+    assert seen["forecast_horizon"] == 1
+    provider.get_forecast("NVDA", "1Day", trading_type="options")
+    assert seen["horizon"] == "5d"
+
+
+def test_stop_uses_low_percentile_not_the_extreme():
+    from app.trading_agent.forecast_provider import _extract_path_metrics
+
+    metrics = _extract_path_metrics(
+        {
+            "forecast_change": 0.02,
+            "historical": [{"close": 100.0}],
+            "forecast": [
+                {"close": 101.0, "low": 10.0, "high": 102.0},
+                {"close": 102.0, "low": 98.0, "high": 103.0},
+                {"close": 103.0, "low": 99.0, "high": 104.0},
+                {"close": 104.0, "low": 99.0, "high": 105.0},
+                {"close": 105.0, "low": 99.0, "high": 106.0},
+            ],
+        },
+        spot=100.0,
+    )
+    assert metrics["stop_price"] is not None
+    assert float(metrics["stop_price"]) > 10.0
+    assert float(metrics["stop_price"]) < 100.0
+
+
 def test_provider_hold_when_hybrid_missing_even_if_path_bullish():
     from app.trading_agent.forecast_provider import KronosForecastProvider
 
@@ -1803,6 +1935,108 @@ def test_day_trades_reports_same_day_loss():
         assert sells[0]["pnl"] == pytest.approx(-50.0)
         assert data["summary"]["losses"] == 1
         assert data["summary"]["net_realized_pnl"] == pytest.approx(-50.0)
+
+
+def test_list_candidates_approved_is_current_session_day():
+    client, agent, _paper_brokers, _alpaca = make_agent_client()
+    with client:
+        headers = register_headers(client)
+        session = _db_session()
+        me = client.get("/api/v1/auth/me", headers=headers).json()
+        config = agent.get_or_create_config(session, me["id"])
+        run = AgentRun(agent_config_id=config.id, status="completed", forecast_version="session-day")
+        session.add(run)
+        session.flush()
+        session.add(
+            TradeCandidate(
+                agent_run_id=run.id,
+                symbol="OLDQ",
+                asset_type="equity",
+                strategy="buy_and_hold",
+                forecast_snapshot={"signal": "BUY", "confidence": 0.4, "symbol": "OLDQ"},
+                status="approved",
+                created_at=datetime(2020, 1, 2, 18, 0, tzinfo=timezone.utc),
+            )
+        )
+        session.add(
+            TradeCandidate(
+                agent_run_id=run.id,
+                symbol="AR",
+                asset_type="equity",
+                strategy="bull_call_spread",
+                forecast_snapshot={"signal": "BUY", "confidence": 0.7, "symbol": "AR"},
+                status="approved",
+            )
+        )
+        session.commit()
+        listed = agent.list_candidates(session, config)
+        approved = [row["symbol"] for row in listed if row["status"] == "approved"]
+        assert "AR" in approved
+        assert "OLDQ" not in approved
+        session.close()
+
+
+def test_day_trades_includes_unfilled_accepted_opportunities():
+    client, agent, _paper_brokers, _alpaca = make_agent_client()
+    with client:
+        headers = register_headers(client)
+        session = _db_session()
+        me = client.get("/api/v1/auth/me", headers=headers).json()
+        config = agent.get_or_create_config(session, me["id"])
+        when = datetime(2026, 9, 22, 18, 4, tzinfo=timezone.utc)
+        run = AgentRun(agent_config_id=config.id, status="completed", forecast_version="unfilled")
+        session.add(run)
+        session.flush()
+        candidate = TradeCandidate(
+            agent_run_id=run.id,
+            symbol="AR",
+            asset_type="equity",
+            strategy="bull_call_spread",
+            forecast_snapshot={"signal": "BUY", "confidence": 0.7, "symbol": "AR"},
+            status="approved",
+            created_at=when,
+        )
+        session.add(candidate)
+        session.flush()
+        plan = TradePlan(
+            trade_candidate_id=candidate.id,
+            entry_price=12.5,
+            position_size=3,
+            status="rejected",
+            plan_payload={"symbol": "AR", "side": "buy", "strategy": "bull_call_spread"},
+        )
+        session.add(plan)
+        session.flush()
+        session.add(
+            AgentOrder(
+                trade_plan_id=plan.id,
+                broker_order_id="rej-ar",
+                idempotency_key=f"unfilled-{uuid4().hex}",
+                status="rejected",
+                submitted_at=when,
+                filled_at=None,
+                filled_quantity=0,
+                side="buy",
+                order_type="market",
+                requested_quantity=3,
+                symbol="AR",
+                error_message="Unknown option contract: AR",
+            )
+        )
+        session.commit()
+        session.close()
+        resp = client.get("/api/v1/trading-agent/day-trades?date=2026-09-22", headers=headers)
+        assert resp.status_code == 200, resp.text
+        data = resp.json()
+        match = [row for row in data["trades"] if row["symbol"] == "AR"]
+        assert len(match) == 1
+        assert match[0]["result"] == "Unknown option contract: AR"
+        assert match[0]["status"] == "rejected"
+        assert data["summary"]["wins"] == 0
+        assert data["summary"]["net_realized_pnl"] == 0
+        other = client.get("/api/v1/trading-agent/day-trades?date=2026-09-21", headers=headers)
+        assert other.status_code == 200, other.text
+        assert all(row["symbol"] != "AR" for row in other.json()["trades"])
 
 
 def test_day_trades_empty_day():
@@ -2134,4 +2368,108 @@ def test_classify_empty_generate_qty_zero():
     )
     assert outcome == "qty_zero"
     assert "budget" in reason.lower() or "0" in reason
+
+
+def test_classify_empty_generate_hold_is_no_trade_stance():
+    from app.trading_agent.strategies import classify_empty_generate
+
+    outcome, reason = classify_empty_generate(
+        forecast=_forecast("HOLD", expected_return=0.0),
+        price=90.0,
+        capital=10_000.0,
+        risk_config={"max_position_size_pct": 0.05},
+        held_qty=0.0,
+    )
+    assert outcome == "hold"
+    assert reason == "No trade — model stance is HOLD"
+
+
+def test_listed_equity_symbols_keeps_nyse_and_nasdaq_only():
+    from app.services.providers import listed_equity_symbols
+
+    assets = [
+        SimpleNamespace(symbol="AAPL", exchange="NASDAQ", tradable=True),
+        SimpleNamespace(symbol="JPM", exchange="NYSE", tradable=True),
+        SimpleNamespace(symbol="SPY", exchange="ARCA", tradable=True),
+        SimpleNamespace(symbol="DEAD", exchange="NASDAQ", tradable=False),
+        SimpleNamespace(symbol="aapl", exchange="NASDAQ", tradable=True),
+    ]
+    assert listed_equity_symbols(assets, {"NYSE", "NASDAQ"}) == ["AAPL", "JPM"]
+
+
+def test_auto_cycle_walks_nyse_nasdaq_not_saved_universe():
+    from app.trading_agent.models import AgentRun
+
+    client, agent, _paper, _alpaca = make_agent_client()
+    listed = [f"T{index:03d}" for index in range(55)]
+    agent._listed_equities = lambda config: list(listed)
+    with client:
+        headers = register_headers(client)
+        saved = client.put(
+            "/api/v1/trading-agent/config",
+            json={"universe": ["NVDA"]},
+            headers=headers,
+        )
+        assert saved.status_code == 200, saved.text
+        started = client.post("/api/v1/trading-agent/start", json={"mode": "paper"}, headers=headers)
+        assert started.status_code == 200, started.text
+        session = _db_session()
+        me = client.get("/api/v1/auth/me", headers=headers).json()
+        config = agent.get_or_create_config(session, me["id"])
+
+        first = agent.run_cycle(session, config, execute=False, market_open=True)
+        session.commit()
+        first_symbols = [row["symbol"] for row in first["universe_scan"]]
+        assert first_symbols == listed[:50]
+        assert "NVDA" not in first_symbols
+        run = session.get(AgentRun, first["run_id"])
+        assert run is not None
+        assert run.summary["scan_universe"] == "nyse_nasdaq"
+        assert run.summary["scan_offset"] == 50
+
+        typed = agent.run_cycle(session, config, symbols=["NVDA"], execute=False, market_open=True)
+        session.commit()
+        assert [row["symbol"] for row in typed["universe_scan"]] == ["NVDA"]
+
+        second = agent.run_cycle(session, config, execute=False, market_open=True)
+        session.commit()
+        second_symbols = [row["symbol"] for row in second["universe_scan"]]
+        assert second_symbols[0] == "T050"
+        assert second_symbols[5] == "T000"
+        session.close()
+
+
+def test_exchange_scan_skips_unavailable_names():
+    from app.trading_agent.forecast_provider import StaticForecastProvider
+    from app.trading_agent.models import AgentRun
+
+    client, agent, _paper, _alpaca = make_agent_client()
+    listed = [f"T{index:03d}" for index in range(6)]
+    agent._listed_equities = lambda config: list(listed)
+
+    class Mixed(StaticForecastProvider):
+        def get_forecast(self, symbol: str, timeframe: str = "1Day", trading_type: str | None = None, session=None):
+            result = super().get_forecast(symbol, timeframe)
+            if symbol in {"T000", "T001"}:
+                result.signal_source = "unavailable"
+                result.raw = {"reason": "need at least 80 training rows"}
+            return result
+
+    agent.forecast_provider = Mixed({})
+    with client:
+        headers = register_headers(client)
+        started = client.post("/api/v1/trading-agent/start", json={"mode": "paper"}, headers=headers)
+        assert started.status_code == 200, started.text
+        session = _db_session()
+        me = client.get("/api/v1/auth/me", headers=headers).json()
+        config = agent.get_or_create_config(session, me["id"])
+        result = agent.run_cycle(session, config, execute=False, market_open=True)
+        session.commit()
+        symbols = [row["symbol"] for row in result["universe_scan"]]
+        assert symbols == ["T002", "T003", "T004", "T005"]
+        assert all(row["outcome"] != "unavailable" for row in result["universe_scan"])
+        run = session.get(AgentRun, result["run_id"])
+        assert run is not None
+        assert run.summary["scan_offset"] == 0
+        session.close()
 

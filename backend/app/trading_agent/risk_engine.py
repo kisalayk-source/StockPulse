@@ -231,7 +231,7 @@ class RiskEngine:
             return reject("Live trading is not explicitly enabled")
 
         # Max daily loss — applies to all trading modes
-        if daily.limit_reached and trade_candidate.side.lower() == "buy":
+        if daily.limit_reached and trade_candidate.side.lower() == "buy" and trade_candidate.strategy != "option_exit":
             return reject(
                 "Max daily loss limit reached",
                 daily_loss_blocked=True,
@@ -247,14 +247,15 @@ class RiskEngine:
                     f"Forecast confidence {forecast.confidence:.2f} below minimum {min_conf:.2f}"
                 )
             min_ret = float(risk_config.get("min_expected_return") or 0)
-            if forecast.expected_return < min_ret and trade_candidate.side.lower() == "buy":
+            if forecast.expected_return < min_ret and trade_candidate.side.lower() == "buy" and trade_candidate.strategy != "option_exit":
                 return reject(
                     f"Expected return {forecast.expected_return:.4f} below minimum {min_ret:.4f}"
                 )
             signal = forecast.signal.upper()
-            if trade_candidate.side.lower() == "buy" and signal in {"SELL", "STRONG SELL"}:
+            closing = trade_candidate.strategy == "option_exit"
+            if not closing and trade_candidate.side.lower() == "buy" and signal in {"SELL", "STRONG SELL"}:
                 return reject(f"Forecast signal {signal} conflicts with buy")
-            if trade_candidate.side.lower() == "sell" and signal in {"BUY", "STRONG BUY"}:
+            if not closing and trade_candidate.side.lower() == "sell" and signal in {"BUY", "STRONG BUY"}:
                 warnings.append(f"Sell against bullish forecast {signal}")
 
         # Market hours for day trading
@@ -314,15 +315,28 @@ class RiskEngine:
                     f"Industry concentration limit ({max_industry}) reached for {trade_candidate.industry}"
                 )
 
-        # Buying power / order value
+        # Buying power / order value. Shrink a buy to the cap before rejecting it.
+        multiplier = 100.0 if trade_candidate.asset_type == "option" else 1.0
+        max_order_value = float(risk_config.get("max_order_value") or 0)
+        max_qty = float(risk_config.get("max_order_quantity") or 0)
+        if trade_candidate.side.lower() == "buy" and entry > 0:
+            if max_order_value > 0 and notional > max_order_value:
+                fitted = max_order_value / (entry * multiplier)
+                if trade_candidate.asset_type == "option":
+                    fitted = float(int(fitted))
+                quantity = min(quantity, fitted)
+                notional = quantity * entry * multiplier
+            if max_qty > 0 and quantity > max_qty:
+                quantity = max_qty if trade_candidate.asset_type != "option" else float(int(max_qty))
+                notional = quantity * entry * multiplier
+        if quantity <= 0:
+            return reject(f"Order value exceeds max order value {max_order_value:.2f}")
         if trade_candidate.side.lower() == "buy" and notional > portfolio.buying_power:
             return reject(
                 f"Order notional {notional:.2f} exceeds buying power {portfolio.buying_power:.2f}"
             )
-        max_order_value = float(risk_config.get("max_order_value") or 0)
         if max_order_value > 0 and notional > max_order_value:
             return reject(f"Order value {notional:.2f} exceeds max order value {max_order_value:.2f}")
-        max_qty = float(risk_config.get("max_order_quantity") or 0)
         if max_qty > 0 and quantity > max_qty:
             return reject(f"Order quantity {quantity} exceeds max {max_qty}")
 

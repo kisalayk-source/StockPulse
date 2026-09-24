@@ -3,7 +3,7 @@ prediction:
     - 1d
     - 5d
     - 20d
-  return_threshold: 0.0
+  return_threshold: 0.002
   lookback_bars: 400
   min_train_rows: 80
   timeframe: 1Day
@@ -42,8 +42,9 @@ models:
       verbosity: -1
 
 ensemble:
-  # equal_weight averages present members; performance_weighted uses YAML weights.
-  # Prefer performance_weighted when enabling Kronos + LightGBM alongside XGBoost.
+  # equal_weight averages present members.
+  # performance_weighted uses 1/holdout Brier when the registry has that score,
+  # otherwise the YAML model weight.
   strategy: performance_weighted
 
 calibration:

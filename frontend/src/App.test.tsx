@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from '@testing-library/react'
+import { render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import App from './App'
@@ -62,11 +62,13 @@ function withAuth(
 describe('live trading safeguard', () => {
   beforeEach(() => {
     localStorage.setItem('stockpulse_access_token', 'test-token')
+    window.history.pushState({}, '', '/')
     vi.stubGlobal('fetch', withAuth(() => Promise.reject(new Error('offline'))))
   })
 
   afterEach(() => {
     localStorage.clear()
+    window.history.pushState({}, '', '/')
     vi.unstubAllGlobals()
   })
 
@@ -86,10 +88,13 @@ describe('live trading safeguard', () => {
     expect(screen.getByText(/LIVE TRADING — REAL FUNDS AT RISK/)).toBeInTheDocument()
   })
 
-  it('renders the manual-only execution boundary', async () => {
+  it('renders the manual-only execution boundary on the trade page', async () => {
+    const user = userEvent.setup()
     render(<App />)
+    expect(await screen.findByText(/never trigger orders/i)).toBeInTheDocument()
+    expect(screen.queryByText(/Manual orders only/i)).not.toBeInTheDocument()
+    await user.click(within(screen.getByRole('tablist', { name: 'Dashboard views' })).getByRole('tab', { name: 'Trade' }))
     expect(await screen.findByText(/Manual orders only/i)).toBeInTheDocument()
-    expect(screen.getByText(/never trigger orders/i)).toBeInTheDocument()
   })
 
   it('shows a market open or closed status light', async () => {
@@ -693,6 +698,7 @@ describe('live trading safeguard', () => {
     }))
 
     render(<App />)
+    await user.click(within(await screen.findByRole('tablist', { name: 'Dashboard views' })).getByRole('tab', { name: 'Trade' }))
     await user.click(await screen.findByRole('button', { name: 'Single-leg option' }))
 
     const expirationSelect = await screen.findByLabelText('Expiration')
@@ -707,5 +713,223 @@ describe('live trading safeguard', () => {
     await user.selectOptions(await screen.findByLabelText('Strike / contract'), 'SPY260821P00500000')
     expect(screen.getByText('SPY260821P00500000')).toBeInTheDocument()
     expect(screen.getByRole('option', { name: '2026-08-14' })).toBeInTheDocument()
+  })
+
+  it('refreshes the stance on the header and reloads SEC records only on that tab', async () => {
+    const user = userEvent.setup()
+    const fetch = vi.fn().mockImplementation((input: RequestInfo | URL) => {
+      const url = String(input)
+      if (url.includes('/auth/me')) return jsonResponse(AUTH_USER)
+      if (url.includes('/config/status')) {
+        return jsonResponse({
+          alpaca: {
+            paper_configured: true,
+            live_configured: false,
+            paper_key_preview: 'PKTE…3456',
+            live_key_preview: null,
+          },
+          live_trading_allowed: true,
+          data_feed: 'iex',
+          user: { id: 1, email: 'test@example.com' },
+        })
+      }
+      if (url.includes('/symbols/search')) {
+        return jsonResponse({
+          results: [{ symbol: 'META', name: 'Meta Platforms', exchange: 'NASDAQ' }],
+        })
+      }
+      if (url.includes('/filings/analysis')) {
+        return jsonResponse({
+          ticker: 'SPY',
+          headline: 'Quiet filings',
+          gist: [],
+          highlights: [],
+          sentiment: 'neutral',
+        })
+      }
+      if (url.includes('/filings')) return jsonResponse({ ticker: 'SPY', filings: [] })
+      if (url.includes('/overview')) {
+        const symbol = url.includes('META') ? 'META' : 'SPY'
+        return jsonResponse({
+          symbol,
+          name: symbol,
+          current_price: 100,
+          timestamp: '2026-08-12T18:00:00Z',
+          session: 'regular',
+          daily: {},
+          previous_daily: {},
+          fundamentals: {},
+          news: [],
+        })
+      }
+      if (url.includes('/prediction')) {
+        return jsonResponse({
+          ticker: url.includes('META') ? 'META' : 'SPY',
+          horizon: '5d',
+          signal: 'HOLD',
+          probability: 0.5,
+          risk_score: 0.2,
+          confidence: 0.4,
+          explanation: { text: 'hold' },
+          market_regime: { regime: 'range' },
+        })
+      }
+      if (url.includes('/bars')) return jsonResponse({ symbol: 'SPY', timeframe: '1Day', bars: [] })
+      if (url.includes('/forecast') && !url.includes('/movers')) {
+        return jsonResponse({
+          symbol: 'SPY',
+          as_of: '2026-08-12T18:00:00Z',
+          model: { id: 'Kronos' },
+          trend: { direction: 'flat', forecast_change: 0 },
+          forecast: [],
+        })
+      }
+      return jsonResponse({})
+    })
+    vi.stubGlobal('fetch', fetch)
+    const called = () => fetch.mock.calls.map((call) => String(call[0]))
+    const predictions = () => called().filter((url) => url.includes('/prediction'))
+    const filings = () => called().filter((url) => url.includes('/filings') && !url.includes('/filings/analysis'))
+    const analyses = () => called().filter((url) => url.includes('/filings/analysis'))
+
+    render(<App />)
+    expect(await screen.findByRole('heading', { name: 'SPY news' })).toBeInTheDocument()
+    await waitFor(() => {
+      expect(predictions().length).toBeGreaterThan(0)
+      expect(predictions().every((url) => !url.includes('refresh='))).toBe(true)
+    })
+
+    await user.click(screen.getByRole('button', { name: 'Refresh dashboard' }))
+    await waitFor(() => {
+      expect(predictions().some((url) => url.includes('refresh=true'))).toBe(true)
+    })
+    expect(analyses()).toHaveLength(0)
+    expect(filings()).toHaveLength(0)
+
+    await user.click(screen.getByRole('tab', { name: 'SEC Records' }))
+    await waitFor(() => {
+      expect(filings().length).toBeGreaterThan(0)
+      expect(analyses().length).toBeGreaterThan(0)
+    })
+    const filingsBefore = filings().length
+    const analysesBefore = analyses().length
+
+    await user.click(screen.getByRole('button', { name: 'Refresh dashboard' }))
+    await waitFor(() => {
+      expect(filings().length).toBeGreaterThan(filingsBefore)
+      expect(analyses().length).toBeGreaterThan(analysesBefore)
+    })
+
+    await user.click(screen.getByRole('tab', { name: 'Market' }))
+    const predictionCount = predictions().length
+    await user.type(screen.getByLabelText('Search stocks'), 'meta')
+    await user.click(await screen.findByRole('option', { name: /Meta Platforms/i }))
+    await waitFor(() => {
+      const newer = predictions().slice(predictionCount)
+      expect(newer.some((url) => url.includes('/META/'))).toBe(true)
+      expect(newer.every((url) => !url.includes('refresh='))).toBe(true)
+    })
+  })
+})
+
+const NO_KEY_USER = {
+  id: 1,
+  email: 'test@example.com',
+  alpaca: {
+    paper: { configured: false, key_preview: null },
+    live: { configured: false, key_preview: null },
+  },
+}
+
+describe('trade page key gate', () => {
+  beforeEach(() => {
+    localStorage.setItem('stockpulse_access_token', 'test-token')
+    window.history.pushState({}, '', '/')
+  })
+
+  afterEach(() => {
+    localStorage.clear()
+    window.history.pushState({}, '', '/')
+    vi.unstubAllGlobals()
+  })
+
+  it('renders market quotes without a user Alpaca key and does not load the account', async () => {
+    const calls: string[] = []
+    vi.stubGlobal('fetch', vi.fn().mockImplementation((input: RequestInfo | URL) => {
+      const url = String(input)
+      calls.push(url)
+      if (url.includes('/auth/me')) return jsonResponse(NO_KEY_USER)
+      if (url.includes('/config/status')) {
+        return jsonResponse({
+          alpaca: { paper_configured: false, live_configured: false },
+          live_trading_allowed: true,
+          data_feed: 'iex',
+          user: { id: 1, email: 'test@example.com' },
+        })
+      }
+      if (url.includes('/overview')) {
+        return jsonResponse({
+          symbol: 'SPY',
+          current_price: 512.34,
+          timestamp: '2026-08-12T18:00:00Z',
+          session: 'regular',
+          daily: {},
+          previous_daily: {},
+          fundamentals: {},
+          news: [],
+        })
+      }
+      return Promise.reject(new Error('offline'))
+    }))
+
+    render(<App />)
+    expect(await screen.findByText('$512.34')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /review buy order/i })).not.toBeInTheDocument()
+    expect(calls.some((url) => url.includes('/account') || url.includes('/positions') || url.includes('/orders'))).toBe(false)
+  })
+
+  it('locks /trade when the user has no key and does not submit an order', async () => {
+    const calls: string[] = []
+    vi.stubGlobal('fetch', vi.fn().mockImplementation((input: RequestInfo | URL) => {
+      const url = String(input)
+      calls.push(url)
+      if (url.includes('/auth/me')) return jsonResponse(NO_KEY_USER)
+      if (url.includes('/config/status')) {
+        return jsonResponse({
+          alpaca: { paper_configured: false, live_configured: false },
+          live_trading_allowed: true,
+          data_feed: 'iex',
+        })
+      }
+      return Promise.reject(new Error('offline'))
+    }))
+    window.history.pushState({}, '', '/trade')
+    render(<App />)
+    expect(await screen.findByRole('heading', { name: /add your alpaca paper key to trade/i })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Open settings' })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /review buy order/i })).not.toBeInTheDocument()
+    expect(calls.some((url) => url.includes('/account') || url.includes('/orders') || url.includes('/options'))).toBe(false)
+  })
+
+  it('shows the order ticket in paper mode after a paper key is saved', async () => {
+    const user = userEvent.setup()
+    vi.stubGlobal('fetch', withAuth(() => Promise.reject(new Error('offline'))))
+    render(<App />)
+    await user.click(within(await screen.findByRole('tablist', { name: 'Dashboard views' })).getByRole('tab', { name: 'Trade' }))
+    expect(await screen.findByRole('button', { name: /review buy order/i })).toBeEnabled()
+    expect(screen.getByLabelText('Quantity')).toBeInTheDocument()
+  })
+
+  it('does not unlock live trading with only a paper key', async () => {
+    const user = userEvent.setup()
+    vi.stubGlobal('fetch', withAuth(() => Promise.reject(new Error('offline'))))
+    render(<App />)
+    await user.click(within(await screen.findByRole('tablist', { name: 'Dashboard views' })).getByRole('tab', { name: 'Trade' }))
+    expect(await screen.findByRole('button', { name: /review buy order/i })).toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: 'Live' }))
+    await user.type(screen.getByLabelText(/type live to continue/i), 'LIVE')
+    await user.click(screen.getByRole('button', { name: /enable live mode/i }))
+    expect(await screen.findByRole('heading', { name: /add your alpaca live key to trade/i })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /review buy order/i })).not.toBeInTheDocument()
   })
 })

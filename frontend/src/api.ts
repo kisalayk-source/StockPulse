@@ -1548,9 +1548,14 @@ export const api = {
   prediction: async (
     symbol: string,
     horizon: PredictionHorizon = '5d',
+    options?: { refresh?: boolean },
   ): Promise<HybridPrediction> => {
+    const refresh = Boolean(options?.refresh)
     const payload = object(await requestWithRetry<unknown>(
-      `/stocks/${encodeURIComponent(symbol)}/prediction?${query({ horizon })}`,
+      `/stocks/${encodeURIComponent(symbol)}/prediction?${query({
+        horizon,
+        ...(refresh ? { refresh: 'true' } : {}),
+      })}`,
     ))
     const explanation = object(payload.explanation)
     const regime = object(payload.market_regime)

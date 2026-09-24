@@ -38,6 +38,12 @@ def test_kronos_path_probability_bounds_and_ordering():
     down = probability_from_path({"trend": {"forecast_change": -0.05}}, volatility=0.02)
     flat = probability_from_path({"trend": {"forecast_change": 0.0}}, volatility=0.02)
     assert 0.0 < down < flat < up < 1.0
+    stretched = probability_from_path(
+        {"trend": {"forecast_change": 0.05}},
+        volatility=0.02,
+        horizon_bars=20,
+    )
+    assert 0.5 < stretched < up
     adapter = KronosModel()
     assert adapter.set_path({"trend": {"net_forecast_change": 0.03}}, volatility=0.02) > 0.5
 
@@ -53,9 +59,27 @@ def test_ensemble_weights_with_multiple_members():
     )
     expected = (0.8 * 1.0 + 0.4 * 0.5 + 0.6 * 0.5) / 2.0
     assert abs(weighted - expected) < 1e-9
-    # lightgbm 0.4 is "down"; majority still up → 2/3 agreement
-    assert model_agreement(members) == pytest.approx(2 / 3)
-    assert model_agreement({"a": 0.2, "b": 0.3, "c": 0.9}) == pytest.approx(2 / 3)
+    # No holdout score: YAML weights. With a Brier score, that member uses 1/Brier.
+    scored = combine_probabilities(
+        {"xgboost": 0.8, "kronos": 0.6},
+        weights={"xgboost": 1.0, "kronos": 0.4},
+        scores={"xgboost": 0.25},
+        strategy="performance_weighted",
+    )
+    scored_expected = (0.8 * 4.0 + 0.6 * 0.4) / 4.4
+    assert scored == pytest.approx(scored_expected)
+    # Spread, not a 0.5 vote. A tight cluster scores high; a split scores low.
+    assert model_agreement({"a": 0.80, "b": 0.81, "c": 0.79}) > 0.9
+    assert model_agreement(members) == pytest.approx(1.0 - ((0.08 / 3) ** 0.5) / 0.25)
+    assert model_agreement({"a": 0.2, "b": 0.3, "c": 0.9}) == pytest.approx(0.0)
+    assert model_agreement({"a": 0.51, "b": 0.99, "c": 0.50}) < 0.60
+
+
+def test_regime_and_meta_strategy_names_are_rejected():
+    members = {"xgboost": 0.8, "kronos": 0.6}
+    for strategy in ("regime_weighted", "meta_model"):
+        with pytest.raises(ValueError, match="unsupported ensemble strategy"):
+            combine_probabilities(members, weights={"xgboost": 1.0, "kronos": 0.4}, strategy=strategy)
 
 
 def test_identity_calibration_passthrough():
@@ -218,3 +242,48 @@ def test_engine_xgb_only_fallback(tmp_path: Path):
     result = engine.predict_from_bars("MSFT", _bars(300), horizon="5d", retrain=True)
     assert list(result["model_predictions"].keys()) == ["xgboost"]
     assert result["calibration_method"] == "platt"
+
+
+def test_short_history_omits_tree_and_keeps_kronos(tmp_path: Path):
+    def fake_path(symbol: str, horizon: str, ohlcv: pd.DataFrame):
+        _ = symbol, horizon, ohlcv
+        return {"trend": {"forecast_change": 0.02, "net_forecast_change": 0.02}}
+
+    engine = PredictionEngine(
+        config={
+            "prediction": {
+                "horizons": ["5d"],
+                "return_threshold": 0.002,
+                "lookback_bars": 400,
+                "min_train_rows": 80,
+                "feature_version": "1.0.0",
+            },
+            "models": {
+                "xgboost": {"enabled": True, "weight": 1.0},
+                "kronos": {"enabled": True, "weight": 0.4},
+                "lightgbm": {"enabled": False},
+            },
+            "ensemble": {"strategy": "equal_weight"},
+            "calibration": {"method": "identity"},
+            "decision": {"buy_probability": 0.65, "sell_probability": 0.35, "minimum_model_agreement": 0.60},
+            "risk": {"enabled": False},
+            "llm": {"enabled": False},
+            "registry": {"store_dir": str(tmp_path / "short")},
+        },
+        registry=ModelRegistry(tmp_path / "short"),
+        root_dir=ROOT,
+        path_forecast_fn=fake_path,
+    )
+
+    def short_rows(**kwargs):
+        _ = kwargs
+        raise ValueError("need at least 80 training rows after features/labels; got 10")
+
+    engine._tree_probability = short_rows  # type: ignore[method-assign]
+    result = engine.predict_from_bars("AAPL", _bars(40), horizon="5d")
+    assert list(result["model_predictions"].keys()) == ["kronos"]
+    assert result["signal"]
+
+    engine.path_forecast_fn = lambda symbol, horizon, ohlcv: None
+    with pytest.raises(RuntimeError, match="need at least 80 training rows"):
+        engine.predict_from_bars("AAPL", _bars(40), horizon="5d")

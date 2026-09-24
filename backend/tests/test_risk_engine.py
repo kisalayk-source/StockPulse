@@ -265,6 +265,23 @@ def test_live_requires_explicit_enablement():
     assert "Live trading" in decision.reason
 
 
+def test_order_value_cap_shrinks_the_buy():
+    engine = RiskEngine()
+    risk = get_risk_config("medium")
+    risk["max_order_value"] = 10_000
+    risk["max_position_size_pct"] = 1
+    risk["max_portfolio_exposure"] = 1
+    risk["max_risk_reward_ratio"] = 0
+    decision = engine.evaluate(
+        _candidate(quantity=100, entry_price=200, stop_loss=190, take_profit=230),
+        _portfolio(equity=1_000_000, cash=1_000_000, buying_power=1_000_000),
+        risk,
+        agent_status="paper",
+    )
+    assert decision.approved is True
+    assert decision.position_size == 50
+
+
 def test_paused_and_emergency_stop_block():
     engine = RiskEngine()
     risk = get_risk_config("medium")

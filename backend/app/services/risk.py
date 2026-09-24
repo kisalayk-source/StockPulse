@@ -164,7 +164,8 @@ def check_order_risk(
         contract = str(getattr(order, "contract_symbol", "") or "").upper()
         intent = intent or "sell_to_close"
         held = position_quantity(positions, contract)
-        if intent == "sell_to_open" and not bool(settings.allow_uncovered_options):
+        covered = bool(getattr(order, "defined_risk", False))
+        if intent == "sell_to_open" and not covered and not bool(settings.allow_uncovered_options):
             raise ValueError("sell_to_open is disabled; uncovered option writing is not allowed")
         if intent == "sell_to_close" and (held <= 0 or (requested_qty and requested_qty > held)):
             raise ValueError("sell_to_close quantity exceeds the long option position")

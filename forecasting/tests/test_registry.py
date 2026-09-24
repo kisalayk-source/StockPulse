@@ -55,8 +55,16 @@ class _StubB(ForecastModel):
 
 def test_load_default_config():
     cfg = load_config()
-    assert "models" in cfg
-    assert "kronos" in cfg["models"]
+    models = cfg["models"]
+    assert models["persistence"]["enabled"] is True
+    assert models["kronos"]["enabled"] is True
+    assert models["chronos"]["enabled"] is True
+    assert models["timesfm"]["enabled"] is True
+    assert models["timesfm"]["params"]["checkpoint"] == "google/timesfm-3.0-pytorch"
+    assert models["lag_llama"]["enabled"] is False
+    names = {model.name for model in get_active_models()}
+    assert {"persistence", "kronos", "chronos", "timesfm"} <= names
+    assert "lag_llama" not in names
 
 
 def test_get_active_models_respects_enabled(tmp_path: Path):

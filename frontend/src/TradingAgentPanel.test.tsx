@@ -68,7 +68,7 @@ vi.mock('./api', async () => {
           status: 'approved',
           forecastSnapshot: { signal: 'BUY', confidence: 0.82 },
           riskDecision: { approved: true },
-          createdAt: '2026-09-10T00:00:00Z',
+          createdAt: new Date().toISOString(),
         },
         {
           id: 3,
@@ -79,7 +79,17 @@ vi.mock('./api', async () => {
           forecastSnapshot: { signal: 'EXIT', confidence: 1, exit_reason: 'stop_loss' },
           riskDecision: { approved: true },
           exitReason: 'stop_loss',
-          createdAt: '2026-09-10T00:05:00Z',
+          createdAt: new Date().toISOString(),
+        },
+        {
+          id: 9,
+          symbol: 'OLDQ',
+          assetType: 'equity',
+          strategy: 'buy_and_hold',
+          status: 'approved',
+          forecastSnapshot: { signal: 'BUY', confidence: 0.5 },
+          riskDecision: { approved: true },
+          createdAt: '2020-01-02T18:00:00Z',
         },
         {
           id: 2,
@@ -173,6 +183,7 @@ describe('TradingAgentPanel', () => {
     expect(screen.getByRole('button', { name: /^Generate$/i })).toBeInTheDocument()
     expect(screen.getByTestId('risk-auto-adjust-log')).toBeInTheDocument()
     expect((await screen.findAllByText('NVDA')).length).toBeGreaterThanOrEqual(1)
+    expect(screen.queryByText('OLDQ')).not.toBeInTheDocument()
     expect(screen.getByText(/stop loss/i)).toBeInTheDocument()
     expect(screen.getByText(/Forecast confidence 0.40 below minimum/i)).toBeInTheDocument()
     expect(screen.getByText(/Risk loosened/i)).toBeInTheDocument()
@@ -253,6 +264,16 @@ describe('TradingAgentPanel', () => {
     expect(api.updateTradingAgentConfig).not.toHaveBeenCalled()
   })
 
+  it('runs an empty cycle across the exchange list, not the saved universe', async () => {
+    const user = userEvent.setup()
+    const { api } = await import('./api')
+    render(<TradingAgentPanel />)
+    await screen.findByTestId('risk-portfolio')
+    await user.click(screen.getByRole('button', { name: /^Run forecast cycle$/i }))
+    await waitFor(() => expect(api.runTradingAgentCycle).toHaveBeenCalledWith(undefined, true))
+    expect(api.updateTradingAgentConfig).not.toHaveBeenCalled()
+  })
+
   it('imports favorites into the risk portfolio', async () => {
     const user = userEvent.setup()
     const { api } = await import('./api')
@@ -289,7 +310,7 @@ describe('TradingAgentPanel', () => {
           outcome: 'hold',
           signal: 'HOLD',
           confidence: 0.4,
-          reason: 'Signal HOLD is not actionable',
+          reason: 'No trade — model stance is HOLD',
           price: 90,
           sizingCapital: 25000,
         },
@@ -299,7 +320,7 @@ describe('TradingAgentPanel', () => {
     await screen.findByTestId('universe-scan')
     expect(screen.getByText('Approved')).toBeInTheDocument()
     expect(screen.getByText('Hold')).toBeInTheDocument()
-    expect(screen.getByText('Signal HOLD is not actionable')).toBeInTheDocument()
+    expect(screen.getByText('No trade — model stance is HOLD')).toBeInTheDocument()
   })
 
   it('generates a daily profit and loss report', async () => {

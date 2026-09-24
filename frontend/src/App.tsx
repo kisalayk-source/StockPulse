@@ -334,9 +334,10 @@ function ChopperPanel({ points, projected = false }: { points: ChopperPoint[]; p
   )
 }
 
-type DashboardView = 'market' | 'favorites' | 'sectors' | 'top' | 'research' | 'records' | 'trading-agent' | 'risk-management'
+type DashboardView = 'market' | 'trade' | 'favorites' | 'sectors' | 'top' | 'research' | 'records' | 'trading-agent' | 'risk-management'
 
 function viewFromPath(pathname: string): DashboardView | null {
+  if (pathname === '/trade' || pathname.endsWith('/trade')) return 'trade'
   if (pathname === '/trading-agent' || pathname.endsWith('/trading-agent')) return 'trading-agent'
   if (pathname === '/settings/risk-management' || pathname.endsWith('/settings/risk-management')) {
     return 'risk-management'
@@ -345,6 +346,7 @@ function viewFromPath(pathname: string): DashboardView | null {
 }
 
 function pathForView(view: DashboardView): string {
+  if (view === 'trade') return '/trade'
   if (view === 'trading-agent') return '/trading-agent'
   if (view === 'risk-management') return '/settings/risk-management'
   return '/'
@@ -438,12 +440,13 @@ function App() {
 
   useEffect(() => {
     const path = pathForView(dashboardView)
-    if (dashboardView === 'trading-agent' || dashboardView === 'risk-management') {
+    if (dashboardView === 'trade' || dashboardView === 'trading-agent' || dashboardView === 'risk-management') {
       if (window.location.pathname !== path) {
         window.history.replaceState({}, '', path)
       }
     } else if (
-      window.location.pathname === '/trading-agent'
+      window.location.pathname === '/trade'
+      || window.location.pathname === '/trading-agent'
       || window.location.pathname === '/settings/risk-management'
     ) {
       window.history.replaceState({}, '', '/')
@@ -715,7 +718,7 @@ function App() {
         overviewPromise,
         api.chart(symbol, chartInterval),
         forecastPromise,
-        api.prediction(symbol, predictionHorizon),
+        api.prediction(symbol, predictionHorizon, { refresh }),
       ])
       if (requestId !== marketRequest.current) return
       if (overviewResult.status === 'rejected') throw overviewResult.reason
@@ -841,10 +844,14 @@ function App() {
     if (!authUser || dashboardView !== 'records') return
     void loadRecords(symbol)
   }, [authUser, dashboardView, loadRecords, symbol])
+  const tradeUnlocked = Boolean(
+    authUser && (mode === 'paper' ? authUser.alpaca.paper.configured : authUser.alpaca.live.configured),
+  )
+
   useEffect(() => {
-    if (!authUser) return
+    if (!authUser || !tradeUnlocked || dashboardView !== 'trade') return
     void loadPortfolio()
-  }, [loadPortfolio, authUser])
+  }, [loadPortfolio, authUser, tradeUnlocked, dashboardView])
   useEffect(() => {
     if (!authUser) return
     void loadFavorites()
@@ -887,7 +894,7 @@ function App() {
   }, [searchTerm, authUser])
 
   useEffect(() => {
-    if (!authUser || assetType !== 'option') return
+    if (!authUser || !tradeUnlocked || dashboardView !== 'trade' || assetType !== 'option') return
     let active = true
     setChainState('loading')
     setChainError('')
@@ -907,7 +914,7 @@ function App() {
         setChainState('error')
       })
     return () => { active = false }
-  }, [assetType, symbol, mode, expiration, optionType, authUser])
+  }, [assetType, symbol, mode, expiration, optionType, authUser, tradeUnlocked, dashboardView])
 
   useEffect(() => {
     setPositionIntent((current) => {
@@ -1121,16 +1128,6 @@ function App() {
         </div>
       </header>
 
-      {!modeReady && (
-        <div className="warning-banner" role="status">
-          <AlertTriangle size={18} />
-          <span>
-            <strong>Alpaca {mode} keys required.</strong> Add your API key and secret to trade with your own account.
-          </span>
-          <button type="button" onClick={() => setSettingsOpen(true)}>Open settings</button>
-        </div>
-      )}
-
       <main>
         <section className="market-heading">
           <div>
@@ -1155,13 +1152,13 @@ function App() {
               {quote?.isStale && <span className="stale"><Clock3 size={13} /> Stale data</span>}
             </div>
           </div>
-          <button className="icon-button" aria-label="Refresh dashboard" onClick={() => { void loadMarket({ refresh: true }); void loadPortfolio(); void loadClock(); void loadSec(); void loadGovernment(); void loadMarketNews(); void refreshMarketScan() }}><RefreshCw size={18} /></button>
+          <button className="icon-button" aria-label="Refresh dashboard" onClick={() => { void loadMarket({ refresh: true }); if (tradeUnlocked && dashboardView === 'trade') void loadPortfolio(); void loadClock(); void loadSec(); void loadGovernment(); void loadMarketNews(); void refreshMarketScan(); if (dashboardView === 'records') void loadRecords(symbol) }}><RefreshCw size={18} /></button>
         </section>
 
         <div className="dashboard-tabs" role="tablist" aria-label="Dashboard views">
           <button role="tab" aria-selected={dashboardView === 'market'} className={dashboardView === 'market' ? 'active' : ''} onClick={() => setDashboardView('market')}>Market</button>
+          <button role="tab" aria-selected={dashboardView === 'trade' || dashboardView === 'trading-agent' || dashboardView === 'risk-management'} className={dashboardView === 'trade' || dashboardView === 'trading-agent' || dashboardView === 'risk-management' ? 'active' : ''} onClick={() => setDashboardView('trade')}>Trade</button>
           <button role="tab" aria-selected={dashboardView === 'favorites'} className={dashboardView === 'favorites' ? 'active' : ''} onClick={() => setDashboardView('favorites')}>Favorites</button>
-          <button role="tab" aria-selected={dashboardView === 'trading-agent'} className={dashboardView === 'trading-agent' ? 'active' : ''} onClick={() => setDashboardView('trading-agent')}>Trading Agent</button>
           <button role="tab" aria-selected={dashboardView === 'sectors'} className={dashboardView === 'sectors' ? 'active' : ''} onClick={() => setDashboardView('sectors')}>Sectors</button>
           <button role="tab" aria-selected={dashboardView === 'top'} className={dashboardView === 'top' ? 'active' : ''} onClick={() => setDashboardView('top')}>Top Accumulation</button>
           <button role="tab" aria-selected={dashboardView === 'records'} className={dashboardView === 'records' ? 'active' : ''} onClick={() => setDashboardView('records')}>SEC Records</button>
@@ -1176,7 +1173,7 @@ function App() {
           <div className="warning-banner" role="status"><AlertTriangle size={18} /><span><strong>Partial data.</strong> {marketWarning}</span></div>
         )}
 
-        <section className="dashboard-grid">
+        <section className="dashboard-grid market-board">
           <div className="main-column">
             <section className="card quote-card">
               <div className="price-block">
@@ -1316,7 +1313,7 @@ function App() {
               loading={govState === 'loading'}
               error={govState === 'error' ? govError : undefined}
               onRefresh={() => void loadGovernment()}
-              onSelectTicker={(ticker) => setSymbol(ticker)}
+              onSelectTicker={(ticker: string) => setSymbol(ticker)}
             />
 
             <MarketNewsPanel
@@ -1343,7 +1340,39 @@ function App() {
 
             <SecIntelligencePanel data={secData} loading={secState === 'loading'} error={secState === 'error' ? secError : undefined} />
           </div>
+        </section>
 
+        </>}
+
+        {(dashboardView === 'trade' || dashboardView === 'trading-agent' || dashboardView === 'risk-management') && !tradeUnlocked && (
+          <section className="card trade-locked" role="status">
+            <h2>Add your Alpaca {mode} key to trade</h2>
+            <p>Quotes and forecasts stay on Market. Orders use your own Alpaca account.</p>
+            <button type="button" onClick={() => setSettingsOpen(true)}>Open settings</button>
+          </section>
+        )}
+
+        {tradeUnlocked && (dashboardView === 'trade' || dashboardView === 'trading-agent' || dashboardView === 'risk-management') && (
+          <div className="dashboard-tabs" role="tablist" aria-label="Trade views">
+            <button role="tab" aria-selected={dashboardView === 'trade'} className={dashboardView === 'trade' ? 'active' : ''} onClick={() => setDashboardView('trade')}>Orders</button>
+            <button role="tab" aria-selected={dashboardView === 'trading-agent' || dashboardView === 'risk-management'} className={dashboardView === 'trading-agent' || dashboardView === 'risk-management' ? 'active' : ''} onClick={() => setDashboardView('trading-agent')}>Trading Agent</button>
+          </div>
+        )}
+
+        {dashboardView === 'trade' && tradeUnlocked && (
+          <section className="dashboard-grid">
+            <div className="main-column">
+              <PortfolioPanel
+                account={account}
+                positions={positions}
+                state={portfolioState}
+                error={portfolioError}
+                realizedPl={realizedPl}
+                realizedPlState={realizedPlState}
+                holdSuggestions={holdSuggestions}
+                onSelectSymbol={(ticker) => { setSymbol(ticker.toUpperCase()); setSelectedContract(null) }}
+              />
+            </div>
           <aside className="side-column">
             <section className="card account-card">
               <div className="card-heading compact"><div><span className="eyebrow">{mode} ACCOUNT</span><h2>Portfolio</h2></div><WalletCards size={20} /></div>
@@ -1387,8 +1416,7 @@ function App() {
             </section>
           </aside>
         </section>
-
-        </>}
+        )}
 
         {dashboardView === 'favorites' && (
           <FavoritesPanel
@@ -1448,30 +1476,20 @@ function App() {
           />
         )}
 
-        {dashboardView === 'trading-agent' && (
+        {dashboardView === 'trading-agent' && tradeUnlocked && (
           <TradingAgentPanel onOpenRiskSettings={() => setDashboardView('risk-management')} />
         )}
 
-        {dashboardView === 'risk-management' && (
+        {dashboardView === 'risk-management' && tradeUnlocked && (
           <RiskManagementPanel onClose={() => setDashboardView('trading-agent')} />
         )}
 
-        {dashboardView === 'market' && <>
+        {dashboardView === 'market' && (
         <MoversPanel
           onSelectSymbol={(ticker) => { setSymbol(ticker.toUpperCase()); setSelectedContract(null) }}
           onHoldSuggestions={setHoldSuggestions}
         />
-        <PortfolioPanel
-          account={account}
-          positions={positions}
-          state={portfolioState}
-          error={portfolioError}
-          realizedPl={realizedPl}
-          realizedPlState={realizedPlState}
-          holdSuggestions={holdSuggestions}
-          onSelectSymbol={(ticker) => { setSymbol(ticker.toUpperCase()); setSelectedContract(null) }}
-        />
-        </>}
+        )}
       </main>
 
       {modeConfirm && <div

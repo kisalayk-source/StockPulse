@@ -80,7 +80,7 @@ foreach ($port in @(8000, 5173)) {
 
 $backendProcess = Start-Process `
     -FilePath $python `
-    -ArgumentList @("-m", "uvicorn", "app.main:app", "--host", "127.0.0.1", "--port", "8000") `
+    -ArgumentList @("-m", "uvicorn", "app.main:app", "--host", "127.0.0.1", "--port", "8000", "--timeout-keep-alive", "75") `
     -WorkingDirectory $backend `
     -RedirectStandardOutput (Join-Path $runtimeDir "backend.stdout.log") `
     -RedirectStandardError (Join-Path $runtimeDir "backend.stderr.log") `

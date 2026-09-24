@@ -108,9 +108,6 @@ def forecast(req: ForecastRequest) -> dict[str, Any]:
         timeframe=req.timeframe,
     )
     strategy = req.strategy or str(ensemble_cfg.get("strategy") or "weighted_average")
-    # Research API uses weighted_average unless inverse_error history exists (not persisted here)
-    if strategy == "inverse_error":
-        strategy = "weighted_average"
 
     per_model, ensemble = forecast_ensemble(
         models,

@@ -8,6 +8,8 @@ from enum import Enum
 from typing import Any, Protocol
 from uuid import uuid4
 
+from app.trading_agent.option_orders import is_occ_symbol
+
 _FILLED_STATUSES = frozenset({"filled", "partially_filled"})
 
 
@@ -40,6 +42,8 @@ class OrderRequest:
     asset_type: str = "equity"
     contract_symbol: str | None = None
     position_intent: str | None = None
+    defined_risk: bool = False
+    legs: list[dict[str, Any]] | None = None
     idempotency_key: str | None = None
     mode: str = "paper"
 
@@ -194,7 +198,10 @@ class PaperBrokerAdapter:
         self._seen_keys.add(key)
 
         symbol = (order.contract_symbol or order.symbol).upper()
-        price = order.limit_price or self.prices.get(symbol) or self.prices.get(order.symbol.upper())
+        if order.legs:
+            price = order.limit_price
+        else:
+            price = order.limit_price or self.prices.get(symbol) or self.prices.get(order.symbol.upper())
         now = datetime.now(timezone.utc).isoformat()
         order_id = f"paper-{uuid4().hex[:12]}"
 
@@ -344,16 +351,45 @@ class AlpacaBrokerAdapter:
 
         now = datetime.now(timezone.utc).isoformat()
         try:
-            if order.asset_type == "option" or order.contract_symbol:
+            if order.legs:
+                for leg in order.legs:
+                    if not is_occ_symbol(str(leg.get("symbol") or "")):
+                        return OrderResult(
+                            broker_order_id="",
+                            status="rejected",
+                            submitted_at=now,
+                            error_message=f"Option order has no contract symbol: {leg.get('symbol')}",
+                        )
                 payload = SimpleNamespace(
                     mode=self.mode,
-                    contract_symbol=order.contract_symbol or order.symbol,
+                    symbol=order.symbol,
+                    side="buy",
+                    qty=order.quantity,
+                    type="limit",
+                    limit_price=order.limit_price,
+                    time_in_force=order.time_in_force,
+                    legs=order.legs,
+                )
+                raw = self.alpaca.submit_option_spread(payload)
+            elif order.asset_type == "option" or order.contract_symbol:
+                contract = order.contract_symbol or order.symbol
+                if not is_occ_symbol(contract):
+                    return OrderResult(
+                        broker_order_id="",
+                        status="rejected",
+                        submitted_at=now,
+                        error_message=f"Option order has no contract symbol: {contract}",
+                    )
+                payload = SimpleNamespace(
+                    mode=self.mode,
+                    contract_symbol=contract,
                     side=order.side,
                     qty=order.quantity,
                     type=order.order_type,
                     limit_price=order.limit_price,
                     time_in_force=order.time_in_force,
                     position_intent=order.position_intent or "buy_to_open",
+                    defined_risk=order.defined_risk,
                 )
                 raw = self.alpaca.submit_option_order(payload)
             else:

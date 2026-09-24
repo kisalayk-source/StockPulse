@@ -124,9 +124,14 @@ def classify_empty_generate(
     """Explain why strategy engines produced no candidates for a symbol."""
     signal = str(forecast.signal or "").upper()
     if forecast.signal_source == "unavailable":
-        return "unavailable", "Forecast signal unavailable"
+        detail = ""
+        raw = forecast.raw if isinstance(forecast.raw, dict) else {}
+        text = str(raw.get("reason") or "").strip()
+        if text and "path not used for direction" not in text:
+            detail = text
+        return "unavailable", detail or "Forecast signal unavailable"
     if signal not in {"BUY", "STRONG BUY", "SELL", "STRONG SELL"}:
-        return "hold", f"Signal {signal or 'HOLD'} is not actionable"
+        return "hold", f"No trade — model stance is {signal or 'HOLD'}"
     side = "buy" if "BUY" in signal else "sell"
     if side == "sell":
         held = float(held_qty or 0.0)
@@ -389,7 +394,6 @@ class OptionsStrategy:
         *,
         held_qty: float = 0.0,
     ) -> list[StrategyCandidate]:
-        _ = held_qty
         if not risk_config.get("allow_options", True):
             return []
         if forecast.signal_source == "unavailable":
@@ -401,6 +405,7 @@ class OptionsStrategy:
         max_premium = float(risk_config.get("max_premium_per_trade") or 500)
         contracts = max(1, int(max_premium // (premium * 100)))
         contracts = min(contracts, int(float(risk_config.get("max_order_quantity") or 10)))
+        cover_contracts = int(float(held_qty or 0) // 100)
 
         if "BUY" in signal and "long_call" in allowed:
             out.append(
@@ -416,9 +421,9 @@ class OptionsStrategy:
                     max_profit=None,
                     option_strategy="long_call",
                     days_to_expiration=30,
-                    implied_volatility=0.35,
-                    bid_ask_spread=0.05,
-                    delta=0.45,
+                    implied_volatility=None,
+                    bid_ask_spread=None,
+                    delta=None,
                     is_naked=False,
                     metadata={"strike": round(price * 1.05, 2), "right": "call"},
                 )
@@ -437,9 +442,9 @@ class OptionsStrategy:
                     max_profit=None,
                     option_strategy="long_put",
                     days_to_expiration=30,
-                    implied_volatility=0.35,
-                    bid_ask_spread=0.05,
-                    delta=-0.45,
+                    implied_volatility=None,
+                    bid_ask_spread=None,
+                    delta=None,
                     is_naked=False,
                     metadata={"strike": round(price * 0.95, 2), "right": "put"},
                 )
@@ -460,13 +465,83 @@ class OptionsStrategy:
                     max_profit=(width - debit) * 100 * contracts,
                     option_strategy="bull_call_spread",
                     days_to_expiration=35,
-                    implied_volatility=0.30,
-                    bid_ask_spread=0.08,
-                    delta=0.30,
+                    implied_volatility=None,
+                    bid_ask_spread=None,
+                    delta=None,
                     is_naked=False,
                     metadata={"long_strike": round(price, 2), "short_strike": round(price + width, 2)},
                 )
             )
+        if "SELL" in signal and "bear_put_spread" in allowed:
+            width = max(price * 0.05, 1.0)
+            debit = premium * 0.6
+            out.append(
+                StrategyCandidate(
+                    symbol=symbol.upper(),
+                    strategy="bear_put_spread",
+                    trading_mode="options",
+                    asset_type="option",
+                    side="buy",
+                    quantity=float(contracts),
+                    entry_price=debit,
+                    max_loss=debit * 100 * contracts,
+                    max_profit=(width - debit) * 100 * contracts,
+                    option_strategy="bear_put_spread",
+                    days_to_expiration=35,
+                    is_naked=False,
+                    metadata={"long_strike": round(price, 2), "short_strike": round(max(price - width, 0.5), 2)},
+                )
+            )
+        if "SELL" in signal and "covered_call" in allowed and cover_contracts >= 1:
+            out.append(
+                StrategyCandidate(
+                    symbol=symbol.upper(),
+                    strategy="covered_call",
+                    trading_mode="options",
+                    asset_type="option",
+                    side="sell",
+                    quantity=float(min(contracts, cover_contracts)),
+                    entry_price=premium,
+                    max_loss=None,
+                    max_profit=premium * 100 * min(contracts, cover_contracts),
+                    option_strategy="covered_call",
+                    days_to_expiration=30,
+                    is_naked=False,
+                    metadata={
+                        "strike": round(price * 1.05, 2),
+                        "right": "call",
+                        "position_intent": "sell_to_open",
+                        "defined_risk": True,
+                    },
+                )
+            )
+        if "SELL" in signal and "cash_secured_put" in allowed:
+            strike = round(price * 0.95, 2)
+            cash_contracts = int(float(capital) // max(strike * 100.0, 1.0))
+            qty = min(contracts, cash_contracts)
+            if qty >= 1:
+                out.append(
+                    StrategyCandidate(
+                        symbol=symbol.upper(),
+                        strategy="cash_secured_put",
+                        trading_mode="options",
+                        asset_type="option",
+                        side="sell",
+                        quantity=float(qty),
+                        entry_price=premium,
+                        max_loss=None,
+                        max_profit=premium * 100 * qty,
+                        option_strategy="cash_secured_put",
+                        days_to_expiration=30,
+                        is_naked=False,
+                        metadata={
+                            "strike": strike,
+                            "right": "put",
+                            "position_intent": "sell_to_open",
+                            "defined_risk": True,
+                        },
+                    )
+                )
         return out
 
 

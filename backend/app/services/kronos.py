@@ -417,8 +417,6 @@ class KronosService:
         weights = get_model_weights()
         ensemble_cfg = get_ensemble_settings()
         strategy = str(ensemble_cfg.get("strategy") or "weighted_average")
-        if strategy == "inverse_error":
-            strategy = "weighted_average"
 
         inp = ForecastInput(
             ticker=symbol.upper(),

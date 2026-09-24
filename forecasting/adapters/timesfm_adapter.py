@@ -14,7 +14,7 @@ from forecasting.core.schema import ForecastInput, ForecastResult
 
 logger = logging.getLogger("forecasting.adapters.timesfm")
 
-DEFAULT_CHECKPOINT = "google/timesfm-1.0-200m-pytorch"
+DEFAULT_CHECKPOINT = "google/timesfm-3.0-pytorch"
 
 
 class TimesFMAdapter(ForecastModel):
@@ -43,8 +43,13 @@ class TimesFMAdapter(ForecastModel):
                 "pip install -r forecasting/requirements-timesfm.txt"
             ) from exc
 
-        # API varies by timesfm version; support common entry points.
-        if hasattr(timesfm, "TimesFm"):
+        # timesfm 3.x. Older 1.x/2.x builds still expose TimesFm.
+        if hasattr(timesfm, "TimesFM3Forecaster"):
+            self._model = timesfm.TimesFM3Forecaster.from_pretrained(
+                self.checkpoint,
+                device="cpu",
+            )
+        elif hasattr(timesfm, "TimesFm"):
             hparams = getattr(timesfm, "TimesFmHparams", None)
             checkpoint_cls = getattr(timesfm, "TimesFmCheckpoint", None)
             if hparams is not None and checkpoint_cls is not None:
@@ -61,7 +66,7 @@ class TimesFMAdapter(ForecastModel):
                 if hasattr(self._model, "load_from_checkpoint"):
                     self._model.load_from_checkpoint(repo_id=self.checkpoint)
         else:
-            raise ImportError("timesfm package loaded but TimesFm class not found")
+            raise ImportError("timesfm package loaded but no TimesFM forecaster class was found")
         self._loaded = True
         logger.info("Loaded TimesFM checkpoint %s", self.checkpoint)
 
@@ -105,6 +110,12 @@ class TimesFMAdapter(ForecastModel):
 
     def _forecast(self, closes: np.ndarray, horizon: int) -> tuple[np.ndarray, Any]:
         model = self._model
+        if hasattr(model, "predict") and not hasattr(model, "forecast"):
+            out = model.predict(np.asarray(closes, dtype=float), int(horizon))
+            point = getattr(out, "forecast", None)
+            if point is None:
+                point = out
+            return np.asarray(point, dtype=float).reshape(-1)[:horizon], getattr(out, "quantiles", None)
         if hasattr(model, "forecast"):
             result = model.forecast([closes], freq=[0])
             if isinstance(result, tuple) and len(result) >= 1:

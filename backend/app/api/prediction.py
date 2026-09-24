@@ -154,12 +154,18 @@ async def _enrich_feature_inputs(
     **kwargs: Any,
 ) -> dict[str, Any]:
     """Prefetch SEC events + Finnhub metrics on the request thread when flags are on."""
-    flags = service._feature_flags() if hasattr(service, "_feature_flags") else {}
     ticker = args[0] if args else kwargs.get("ticker")
     if not ticker:
         return kwargs
 
     out = dict(kwargs)
+    if hasattr(service, "cached_feature_inputs_async"):
+        cached = await service.cached_feature_inputs_async(session, str(ticker))
+        for key, value in cached.items():
+            out.setdefault(key, value)
+        return out
+
+    flags = service._feature_flags() if hasattr(service, "_feature_flags") else {}
     if flags.get("sec") and "sec_events" not in out:
         out["sec_events"] = service.load_sec_event_dicts(session, str(ticker))
     if flags.get("fundamentals") and "fundamentals_metrics" not in out:
@@ -178,6 +184,7 @@ async def get_prediction(
     session: SessionDep,
     horizon: str = Query(default="5d", pattern=r"^(1d|5d|20d)$"),
     retrain: bool = Query(default=False),
+    refresh: bool = Query(default=False),
 ) -> dict[str, Any]:
     enforce_rate_limit(
         request,
@@ -194,6 +201,7 @@ async def get_prediction(
         symbol,
         horizon=horizon,
         retrain=retrain,
+        refresh=refresh,
     )
 
 
