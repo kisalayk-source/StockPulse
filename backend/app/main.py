@@ -10,6 +10,7 @@ from fastapi import Depends, FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.auth import router as auth_router
+from app.api.content import router as content_router
 from app.api.favorites import router as favorites_router
 from app.api.government import router as government_router
 from app.api.logs import router as logs_router
@@ -161,6 +162,11 @@ def create_app(settings: Settings | None = None, services: Services | None = Non
     )
     app.include_router(
         risk_management_router,
+        prefix=settings.api_prefix,
+        dependencies=[Depends(require_api_key), Depends(require_user)],
+    )
+    app.include_router(
+        content_router,
         prefix=settings.api_prefix,
         dependencies=[Depends(require_api_key), Depends(require_user)],
     )

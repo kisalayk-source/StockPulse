@@ -26,6 +26,7 @@ import { MoversPanel } from './MoversPanel'
 import { PortfolioPanel, type HoldSuggestion } from './PortfolioPanel'
 import { OrderReview, type ReviewOrder } from './OrderReview'
 import { SettingsModal } from './SettingsModal'
+import { DailyDigestPanel } from './DailyDigestPanel'
 import { TradingAgentPanel } from './TradingAgentPanel'
 import { RiskManagementPanel } from './RiskManagementPanel'
 import { FavoritesPanel, ResearchPanel, SecIntelligencePanel, SecRecordsPanel, SectorsPanel, TopAccumulationPanel } from './SecIntelligencePanel'
@@ -334,9 +335,10 @@ function ChopperPanel({ points, projected = false }: { points: ChopperPoint[]; p
   )
 }
 
-type DashboardView = 'market' | 'favorites' | 'sectors' | 'top' | 'research' | 'records' | 'trading-agent' | 'risk-management'
+type DashboardView = 'market' | 'digest' | 'favorites' | 'sectors' | 'top' | 'research' | 'records' | 'trading-agent' | 'risk-management'
 
 function viewFromPath(pathname: string): DashboardView | null {
+  if (pathname === '/daily-digest' || pathname.endsWith('/daily-digest')) return 'digest'
   if (pathname === '/trading-agent' || pathname.endsWith('/trading-agent')) return 'trading-agent'
   if (pathname === '/settings/risk-management' || pathname.endsWith('/settings/risk-management')) {
     return 'risk-management'
@@ -345,6 +347,7 @@ function viewFromPath(pathname: string): DashboardView | null {
 }
 
 function pathForView(view: DashboardView): string {
+  if (view === 'digest') return '/daily-digest'
   if (view === 'trading-agent') return '/trading-agent'
   if (view === 'risk-management') return '/settings/risk-management'
   return '/'
@@ -438,12 +441,13 @@ function App() {
 
   useEffect(() => {
     const path = pathForView(dashboardView)
-    if (dashboardView === 'trading-agent' || dashboardView === 'risk-management') {
+    if (dashboardView === 'digest' || dashboardView === 'trading-agent' || dashboardView === 'risk-management') {
       if (window.location.pathname !== path) {
         window.history.replaceState({}, '', path)
       }
     } else if (
-      window.location.pathname === '/trading-agent'
+      window.location.pathname === '/daily-digest'
+      || window.location.pathname === '/trading-agent'
       || window.location.pathname === '/settings/risk-management'
     ) {
       window.history.replaceState({}, '', '/')
@@ -1160,6 +1164,7 @@ function App() {
 
         <div className="dashboard-tabs" role="tablist" aria-label="Dashboard views">
           <button role="tab" aria-selected={dashboardView === 'market'} className={dashboardView === 'market' ? 'active' : ''} onClick={() => setDashboardView('market')}>Market</button>
+          <button role="tab" aria-selected={dashboardView === 'digest'} className={dashboardView === 'digest' ? 'active' : ''} onClick={() => setDashboardView('digest')}>Daily Digest</button>
           <button role="tab" aria-selected={dashboardView === 'favorites'} className={dashboardView === 'favorites' ? 'active' : ''} onClick={() => setDashboardView('favorites')}>Favorites</button>
           <button role="tab" aria-selected={dashboardView === 'trading-agent'} className={dashboardView === 'trading-agent' ? 'active' : ''} onClick={() => setDashboardView('trading-agent')}>Trading Agent</button>
           <button role="tab" aria-selected={dashboardView === 'sectors'} className={dashboardView === 'sectors' ? 'active' : ''} onClick={() => setDashboardView('sectors')}>Sectors</button>
@@ -1446,6 +1451,10 @@ function App() {
             scanProgress={scanProgress}
             onSubmit={(query) => void runResearch(query)}
           />
+        )}
+
+        {dashboardView === 'digest' && (
+          <DailyDigestPanel onSelectTicker={(ticker) => { setSymbol(ticker.toUpperCase()); setDashboardView('market') }} />
         )}
 
         {dashboardView === 'trading-agent' && (

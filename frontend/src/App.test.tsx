@@ -708,4 +708,36 @@ describe('live trading safeguard', () => {
     expect(screen.getByText('SPY260821P00500000')).toBeInTheDocument()
     expect(screen.getByRole('option', { name: '2026-08-14' })).toBeInTheDocument()
   })
+
+  it('shows daily digest stories from the digest tab', async () => {
+    const user = userEvent.setup()
+    window.history.pushState({}, '', '/')
+    vi.stubGlobal('fetch', withAuth((url) => {
+      if (url.includes('/content/daily-digest')) {
+        return jsonResponse({
+          date: '2026-09-24',
+          timezone: 'America/Los_Angeles',
+          count: 1,
+          stories: [{
+            rank: 1,
+            kind: 'contract',
+            ticker: 'LMT',
+            title: 'DOD awarded Lockheed',
+            summary: 'Lockheed received a contract.',
+            value: 2_000_000_000,
+            actor: 'Lockheed',
+            happened_on: '2026-09-24',
+            source_url: null,
+          }],
+        })
+      }
+      return Promise.reject(new Error('offline'))
+    }))
+    render(<App />)
+    await user.click(await screen.findByRole('tab', { name: 'Daily Digest' }))
+    expect(await screen.findByRole('heading', { name: 'DOD awarded Lockheed' })).toBeInTheDocument()
+    expect(screen.getByText('Lockheed received a contract.')).toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: 'LMT' }))
+    expect(await screen.findByRole('heading', { name: 'LMT' })).toBeInTheDocument()
+  })
 })

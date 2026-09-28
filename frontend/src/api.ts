@@ -720,6 +720,26 @@ export interface ResearchQueryResponse {
   disclaimer: string
 }
 
+export interface DailyDigestStory {
+  rank: number
+  kind: string
+  ticker: string | null
+  title: string
+  summary: string
+  value: number
+  amountReason: string | null
+  actor: string
+  happenedOn: string
+  sourceUrl: string | null
+}
+
+export interface DailyDigest {
+  date: string
+  timezone: string
+  count: number
+  stories: DailyDigestStory[]
+}
+
 const API_BASE = (import.meta.env.VITE_API_BASE_URL || '/api/v1').replace(/\/$/, '')
 const API_KEY = import.meta.env.VITE_API_KEY || ''
 const TOKEN_KEY = 'stockpulse_access_token'
@@ -1297,6 +1317,29 @@ function mapAccumulationResponse(payload: JsonObject): AccumulationResponse {
 
 export const api = {
   health: () => request<{ status: string }>('/health'),
+  dailyDigest: async (): Promise<DailyDigest> => {
+    const payload = object(await request<unknown>('/content/daily-digest'))
+    return {
+      date: text(payload.date),
+      timezone: text(payload.timezone),
+      count: number(payload.count) ?? 0,
+      stories: list(payload.stories).map((item) => {
+        const story = object(item)
+        return {
+          rank: number(story.rank) ?? 0,
+          kind: text(story.kind),
+          ticker: text(story.ticker) || null,
+          title: text(story.title),
+          summary: text(story.summary),
+          value: number(story.value) ?? 0,
+          amountReason: text(story.amount_reason) || null,
+          actor: text(story.actor),
+          happenedOn: text(story.happened_on),
+          sourceUrl: text(story.source_url) || null,
+        }
+      }),
+    }
+  },
   register: async (email: string, password: string): Promise<AuthResponse> => mapAuthResponse(
     await request<unknown>('/auth/register', {
       method: 'POST',
