@@ -33,8 +33,20 @@ import { FavoritesPanel, ResearchPanel, SecIntelligencePanel, SecRecordsPanel, S
 import { GovernmentPanel } from './GovernmentPanel'
 import { MarketNewsPanel } from './MarketNewsPanel'
 import { MarketTicker } from './MarketTicker'
-import { calculateChopper, calculateChopperOnForecast, type ChopperPoint } from './chopper'
+import type { ChopperPoint } from './chopper'
+import { calculateOverlays, OVERLAY_LABELS, type OverlayId } from './indicators'
+import {
+  calculateStrategy,
+  calculateStrategyOnForecast,
+  isStrategyEngine,
+  STRATEGY_ENGINE_IDS,
+  STRATEGY_LABELS,
+  STRATEGY_META,
+  type StrategyEngineId,
+} from './strategies'
 import './App.css'
+
+const CHART_OVERLAYS: OverlayId[] = ['sma', 'ema', 'bollinger', 'rsi', 'macd', 'patterns']
 
 type LoadState = 'idle' | 'loading' | 'ready' | 'error'
 
@@ -112,7 +124,7 @@ function MarketLight({ clock }: { clock: MarketClock }) {
 }
 
 type ForecastPreset = 'short' | 'long'
-type ForecastEngine = 'kronos' | 'ensemble' | 'chopper'
+type ForecastEngine = 'kronos' | 'ensemble' | StrategyEngineId
 
 const DEV_AUTH_BYPASS = import.meta.env.DEV && import.meta.env.VITE_DEV_AUTH_BYPASS === 'true'
 const DEV_AUTH_USER: AuthUser = {
@@ -309,17 +321,26 @@ function DecisionPanel({
   )
 }
 
-function ChopperPanel({ points, projected = false }: { points: ChopperPoint[]; projected?: boolean }) {
+function StrategyPanel({
+  engine,
+  points,
+  projected = false,
+}: {
+  engine: StrategyEngineId
+  points: ChopperPoint[]
+  projected?: boolean
+}) {
   const latest = points.at(-1)
   const entries = points.filter((point) => point.signal === 'entry').length
   const exits = points.filter((point) => point.signal === 'exit').length
   const actionable = latest?.regime === 'green' || latest?.regime === 'lightgreen'
+  const meta = STRATEGY_META[engine]
   return (
     <div className="decision-panel chopper-panel">
       <div className="decision-summary">
         <div><span>{projected ? 'Forecast state' : 'Current state'}</span><strong className={actionable ? 'positive' : undefined}>{latest?.regime ?? 'warming up'}</strong></div>
-        <div><span>SMA 10</span><strong>{formatCurrency(latest?.fast)}</strong></div>
-        <div><span>SMA 20</span><strong>{formatCurrency(latest?.slow)}</strong></div>
+        <div><span>{meta.fastLabel}</span><strong>{formatCurrency(latest?.fast)}</strong></div>
+        <div><span>{meta.slowLabel}</span><strong>{formatCurrency(latest?.slow)}</strong></div>
         <div><span>Signals shown</span><strong>{entries} enter / {exits} exit</strong></div>
       </div>
       <p className="decision-path">
@@ -327,9 +348,7 @@ function ChopperPanel({ points, projected = false }: { points: ChopperPoint[]; p
         {actionable ? 'Entry condition is active.' : 'No entry condition is active.'}
       </p>
       <p className="decision-note">
-        {projected
-          ? 'Projected enter and exit markers use the forecast close path plus recent candles so the averages can warm up. Markers start flat at the forecast start (they do not inherit an open historical Chopper position). SMA 10/20 appear when you hover near those averages. They never place orders.'
-          : 'Enter when the 10-bar average is above the 20-bar average and rising versus five bars ago. Exit when that condition ends. Signals use closing-bar data only and never place orders.'}
+        {projected ? meta.projectedNote : meta.note}
       </p>
     </div>
   )
@@ -352,8 +371,6 @@ function pathForView(view: DashboardView): string {
   if (view === 'risk-management') return '/settings/risk-management'
   return '/'
 }
-
-const FALLBACK_SECTORS = ['Energy', 'Technology', 'Healthcare', 'Financials', 'Industrials']
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => { window.setTimeout(resolve, ms) })
@@ -381,15 +398,29 @@ function App() {
   const [horizon, setHorizon] = useState<ForecastPreset>('short')
   const [chartInterval, setChartInterval] = useState<ChartInterval>(DEFAULT_INTERVAL.short)
   const [forecastEngine, setForecastEngine] = useState<ForecastEngine>('kronos')
-  const chopperPoints = useMemo(
-    () => forecastEngine === 'chopper' ? calculateChopper(chart?.candles || []) : undefined,
-    [chart, forecastEngine],
+  const [activeOverlays, setActiveOverlays] = useState<OverlayId[]>(['sma', 'patterns'])
+  const strategyEngine = isStrategyEngine(forecastEngine) ? forecastEngine : null
+  const strategyPoints = useMemo(
+    () => (strategyEngine && chart?.candles?.length
+      ? calculateStrategy(strategyEngine, chart.candles)
+      : undefined),
+    [chart, strategyEngine],
   )
-  const forecastChopper = useMemo(() => {
-    if (forecastEngine === 'chopper' || !forecast?.points?.length || !chart?.candles?.length) return undefined
-    const points = calculateChopperOnForecast(chart.candles, forecast.points)
+  const forecastStrategy = useMemo(() => {
+    if (strategyEngine || !forecast?.points?.length || !chart?.candles?.length) return undefined
+    const points = calculateStrategyOnForecast('chopper', chart.candles, forecast.points)
     return points.length ? points : undefined
-  }, [chart, forecast, forecastEngine])
+  }, [chart, forecast, strategyEngine])
+  const chartOverlays = useMemo(
+    () => (chart?.candles?.length ? calculateOverlays(chart.candles) : undefined),
+    [chart],
+  )
+
+  function toggleOverlay(id: OverlayId) {
+    setActiveOverlays((current) => (
+      current.includes(id) ? current.filter((item) => item !== id) : [...current, id]
+    ))
+  }
   const [marketState, setMarketState] = useState<LoadState>('idle')
   const [marketError, setMarketError] = useState('')
   const [marketWarning, setMarketWarning] = useState('')
@@ -530,22 +561,19 @@ function App() {
     setTopState('loading')
     try {
       const sectorList = await api.listSectors()
-      const names = sectorList.sectors.map((row) => row.sector).filter(Boolean)
-      const sectors = names.length ? names : FALLBACK_SECTORS
-      const rows = await Promise.all(sectors.map((sector) => api.sectorAccumulation(sector)))
-      setSectorRows(rows)
+      setSectorRows(sectorList.accumulation)
       setSectorsState('ready')
+    } catch {
+      setSectorsState('error')
+      setSectorRows([])
+    }
+    try {
       const top = await api.topAccumulation({ minScore: 0, limit: 50 })
       setTopAccumulation(top)
       setTopState('ready')
-    } catch (error) {
-      setSectorsState('error')
+    } catch {
       setTopState('error')
-      setSectorRows([])
       setTopAccumulation(null)
-      if (error instanceof Error && !scanProgress?.error) {
-        /* keep silent; panels show error state */
-      }
     }
   }, [])
 
@@ -712,7 +740,8 @@ function App() {
       })
       const forecastBars = DEFAULT_BARS[horizon]
       const predictionHorizon = chartInterval === '1Day' && horizon === 'long' ? '20d' : '5d'
-      const forecastPromise = forecastEngine === 'chopper'
+      const strategyMode = isStrategyEngine(forecastEngine)
+      const forecastPromise = strategyMode
         ? Promise.resolve(null)
         : api.forecast(symbol, horizon, forecastBars, forecastEngine, chartInterval, { refresh })
       const [overviewResult, chartResult, forecastResult, predictionResult] = await Promise.allSettled([
@@ -728,7 +757,7 @@ function App() {
       setPrediction(predictionResult.status === 'fulfilled' ? predictionResult.value : null)
       const unavailable = [
         unavailableLabel(chartResult, 'chart'),
-        forecastEngine === 'chopper' ? '' : unavailableLabel(forecastResult, 'forecast'),
+        strategyMode ? '' : unavailableLabel(forecastResult, 'forecast'),
         unavailableLabel(predictionResult, 'hybrid prediction'),
       ].filter(Boolean)
       if (unavailable.length) {
@@ -1225,13 +1254,16 @@ function App() {
                     >
                       Forecast
                     </button>
-                    <button
-                      aria-pressed={forecastEngine === 'chopper'}
-                      className={forecastEngine === 'chopper' ? 'active' : ''}
-                      onClick={() => setForecastEngine('chopper')}
-                    >
-                      Chopper
-                    </button>
+                    {STRATEGY_ENGINE_IDS.map((engine) => (
+                      <button
+                        key={engine}
+                        aria-pressed={forecastEngine === engine}
+                        className={forecastEngine === engine ? 'active' : ''}
+                        onClick={() => setForecastEngine(engine)}
+                      >
+                        {STRATEGY_LABELS[engine]}
+                      </button>
+                    ))}
                   </div>
                   <div className="segmented" aria-label="Forecast preset">
                     <button
@@ -1268,27 +1300,55 @@ function App() {
                       </button>
                     ))}
                   </div>
+                  <div className="segmented overlay-chips" aria-label="Chart overlays">
+                    {CHART_OVERLAYS.map((overlay) => (
+                      <button
+                        key={overlay}
+                        type="button"
+                        aria-pressed={activeOverlays.includes(overlay)}
+                        className={activeOverlays.includes(overlay) ? 'active' : ''}
+                        onClick={() => toggleOverlay(overlay)}
+                      >
+                        {OVERLAY_LABELS[overlay]}
+                      </button>
+                    ))}
+                  </div>
                 </div>
               </div>
               {marketState === 'loading' && !chart ? <div className="chart-loading"><LoaderCircle className="spin" /> Loading candles and forecast…</div>
-                : chart?.candles?.length ? <MarketChart candles={chart.candles} forecast={forecastEngine === 'chopper' ? [] : (forecast?.points || [])} chopper={chopperPoints} forecastChopper={forecastChopper} />
-                  : <EmptyState>No chart data available for {symbol}.</EmptyState>}
+                : chart?.candles?.length ? (
+                  <MarketChart
+                    candles={chart.candles}
+                    forecast={strategyEngine ? [] : (forecast?.points || [])}
+                    chopper={strategyPoints}
+                    forecastChopper={forecastStrategy}
+                    overlays={chartOverlays}
+                    activeOverlays={activeOverlays}
+                    strategyFastTitle={strategyEngine ? STRATEGY_META[strategyEngine].fastLabel : 'SMA 10'}
+                    strategySlowTitle={strategyEngine ? STRATEGY_META[strategyEngine].slowLabel : 'SMA 20'}
+                  />
+                ) : <EmptyState>No chart data available for {symbol}.</EmptyState>}
               <div className="chart-meta">
                 <span><i className="legend candle" /> Historical OHLC</span>
                 <span>
                   <i className="legend forecast" />{' '}
-                  {forecastEngine === 'chopper'
-                    ? 'Chopper SMA 10 / 20'
+                  {strategyEngine
+                    ? `${STRATEGY_LABELS[strategyEngine]} · ${STRATEGY_META[strategyEngine].fastLabel} / ${STRATEGY_META[strategyEngine].slowLabel}`
                     : forecastEngine === 'ensemble' || forecast?.engine === 'ensemble'
                     ? 'Ensemble forecast'
                     : 'Kronos forecast'}
-                  {forecastChopper ? ' · SMA 10 / 20 on hover' : ''}
+                  {forecastStrategy ? ' · Chopper on hover' : ''}
                 </span>
+                {activeOverlays.length > 0 && (
+                  <span>
+                    <i className="legend overlay" /> {activeOverlays.map((id) => OVERLAY_LABELS[id]).join(' · ')}
+                  </span>
+                )}
                 <span className="meta-right">
                   {intervalMetaLabel(chartInterval)} · {barUnitLabel(chartInterval, DEFAULT_BARS[horizon])} ·{' '}
                   {forecast?.regime ? `${forecast.regime.replaceAll('_', ' ')} · ` : ''}
                   {forecast?.netForecastChange != null
-                    ? `net ${formatPercent(forecast.netForecastChange, false)} after ${forecast.roundTripBps?.toFixed(1) ?? '—'} bps cost · `
+                    ? `net ${formatPercent(forecast.netForecastChange, false)} after ${forecast.roundTripBps != null ? forecast.roundTripBps.toFixed(2) : '—'} bps cost · `
                     : ''}
                   {forecast?.evaluation?.folds
                     ? `OOS ${forecast.evaluation.folds} folds hit ${formatPercent(forecast.evaluation.hitRate, false)}${forecast.evaluation.evalHorizon ? ` @ ${forecast.evaluation.evalHorizon} bars` : ''} · `
@@ -1296,8 +1356,8 @@ function App() {
                   {forecast?.modelsUsed?.length
                     ? `${forecast.modelsUsed.join(' + ')} · `
                     : ''}
-                  {forecastEngine === 'chopper'
-                    ? 'trend lookback 5 bars · closing-bar signals'
+                  {strategyEngine
+                    ? STRATEGY_META[strategyEngine].meta
                     : <>{forecast?.model || (forecastEngine === 'ensemble' ? 'ensemble' : 'Kronos')}
                       {forecast?.fallback ? ' · baseline fallback' : ''}
                       {forecast?.cached ? ' · cached' : ''}
@@ -1305,12 +1365,12 @@ function App() {
                       {' → '}{formatDateTime(forecast?.predictionEnd)} · as of {formatDateTime(forecast?.generatedAt)}</>}
                 </span>
               </div>
-              {forecastEngine === 'chopper'
-                ? <ChopperPanel points={chopperPoints || []} />
+              {strategyEngine
+                ? <StrategyPanel engine={strategyEngine} points={strategyPoints || []} />
                 : (
                   <>
                     <DecisionPanel forecast={forecast} prediction={prediction} news={news} publicSentiment={publicSentiment} interval={chartInterval} />
-                    {forecastChopper && <ChopperPanel points={forecastChopper} projected />}
+                    {forecastStrategy && <StrategyPanel engine="chopper" points={forecastStrategy} projected />}
                   </>
                 )}
               <p className="disclaimer">Chart-path forecasts and model-stance calls are probabilistic research outputs, not investment advice. They never trigger orders.</p>
@@ -1387,7 +1447,7 @@ function App() {
                 <p className="ticket-note"><Activity size={13} /> Manual orders only. Forecast data is isolated from execution.</p>
               </> : <div className="activity-list">
                 <div className="activity-section"><h3><BriefcaseBusiness size={15} /> Positions</h3>{positions.length ? positions.map((position) => <div className="activity-row" key={position.symbol}><div><strong>{position.symbol}</strong><span>{formatNumber(position.quantity)} shares</span></div><div><strong>{formatCurrency(position.marketValue)}</strong><span className={position.unrealizedPl >= 0 ? 'positive' : 'negative'}>{formatCurrency(position.unrealizedPl)}</span></div></div>) : <EmptyState>No open positions.</EmptyState>}</div>
-                <div className="activity-section"><h3><Clock3 size={15} /> Recent orders</h3>{orders.length ? orders.slice(0, 8).map((order) => <div className="activity-row" key={order.id}><div><strong>{order.symbol}</strong><span>{order.side} · {order.quantity || formatCurrency(order.notional)}</span></div><div className="activity-actions"><StatusPill status={order.status} />{(order.status === 'accepted' || order.status === 'pending') && <button type="button" className="text-button danger-text" onClick={() => { setOrderError(null); setCancelCandidate(order) }}>Cancel</button>}</div></div>) : <EmptyState>No recent orders.</EmptyState>}</div>
+                <div className="activity-section"><h3><Clock3 size={15} /> Recent orders</h3>{orders.length ? orders.slice(0, 8).map((order) => <div className="activity-row" key={order.id}><div><strong>{order.symbol}</strong><span>{order.side} · {order.quantity ? formatNumber(order.quantity) : formatCurrency(order.notional)}</span></div><div className="activity-actions"><StatusPill status={order.status} />{(order.status === 'accepted' || order.status === 'pending') && <button type="button" className="text-button danger-text" onClick={() => { setOrderError(null); setCancelCandidate(order) }}>Cancel</button>}</div></div>) : <EmptyState>No recent orders.</EmptyState>}</div>
               </div>}
             </section>
           </aside>
@@ -1417,7 +1477,15 @@ function App() {
             scanProgress={scanProgress}
             onSelectSector={(sector) => {
               setDashboardView('top')
-              void api.topAccumulation({ sector, minScore: 0, limit: 50 }).then(setTopAccumulation).catch(() => undefined)
+              setTopState('loading')
+              setTopAccumulation(null)
+              void api.topAccumulation({ sector, minScore: 0, limit: 50 }).then((payload) => {
+                setTopAccumulation(payload)
+                setTopState('ready')
+              }).catch(() => {
+                setTopAccumulation(null)
+                setTopState('error')
+              })
             }}
             onSelectTicker={(ticker) => { setSymbol(ticker); setDashboardView('market'); void loadSec() }}
           />

@@ -41,7 +41,9 @@ Ad-hoc cycle `symbols` are **not** written to `AgentConfig.universe`. See [tradi
 Every prediction must include ticker, timestamp, feature snapshot id/version,
 model version(s), training data cutoff, horizon, probability, risk score, and
 final signal. Predictions without timestamps or cutoff metadata are rejected.
-Current `feature_version` is `1.1.0` (adds the `government` feature category).
+Current `feature_version` is `1.2.0` (`1.1.0` added the `government` category;
+`1.2.0` adds technical pattern features for stance training — see
+[feature-engine.md](./feature-engine.md)).
 
 See also [mvp-roadmap.md](./mvp-roadmap.md) (plain language) and
 [stock-prediction-architecture.md](./stock-prediction-architecture.md).

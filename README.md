@@ -2,14 +2,15 @@
 
 Paper-first trading workstation for US equities and single-leg options. Forecasts, charts, news, SEC ownership intelligence, government contract analysis, portfolio, and manual order tickets in one dashboard — wired to Alpaca and powered by Kronos path forecasts plus a hybrid directional prediction engine.
 
-**Not investment advice.** Path forecasts, hybrid signals, accumulation scores, and government scores are research overlays only. Manual orders require review-before-send. The optional trading agent places paper/live orders only after you deliberately Start it and pass risk gates.
+**Not investment advice.** Path forecasts, hybrid signals, chart overlays, strategy markers, accumulation scores, and government scores are research overlays only. Manual orders require review-before-send. The optional trading agent places paper/live orders only after you deliberately Start it and pass risk gates.
 
 ## Features
 
 - **Market workspace** — symbol search, session clock, quote, fundamentals, OHLC chart
 - **Path forecasts** — Kronos (single model) or ensemble overlay; short / long horizons; path turns and decision context
-- **Hybrid prediction** — calibrated model stance (BUY/HOLD/SELL) from the `ml/` stack; see [docs/mvp-roadmap.md](./docs/mvp-roadmap.md) (plain language) and [docs/stock-prediction-architecture.md](./docs/stock-prediction-architecture.md)
-- **How forecasts work (non-tech)** — step-by-step chart path vs model stance: [docs/how-forecast-works.md](./docs/how-forecast-works.md)
+- **Chart research overlays** — toggle SMA / EMA / Bollinger / RSI / MACD / engulfing markers; strategy engines Chopper, MA Cross, BB Revert (research markers only) — [docs/chart-research.md](./docs/chart-research.md)
+- **Hybrid prediction** — calibrated model stance (BUY/HOLD/SELL) from the `ml/` stack with pattern features (`feature_version` 1.2.0); see [docs/mvp-roadmap.md](./docs/mvp-roadmap.md) (plain language) and [docs/stock-prediction-architecture.md](./docs/stock-prediction-architecture.md)
+- **How forecasts work (non-tech)** — chart path vs model stance vs overlays: [docs/how-forecast-works.md](./docs/how-forecast-works.md)
 - **MVP roadmap (non-tech)** — what MVP-1…7 and agent alignment mean in everyday terms: [docs/mvp-roadmap.md](./docs/mvp-roadmap.md)
 - **Sentiment & news** — public news sentiment plus investor/regime cues; merged news feed
 - **SEC & ownership** — EDGAR 13F / 13D / 13G / Form 4 XML ingestion, explainable **Accumulation Score (0–100)**, background market scan (blue-chip + movers), **Sectors**, **Top Accumulation**, **SEC Records** (6-month filing search with parsed entity/action columns, expandable XML details, and AI analysis), and **AI Research** queries ranked by model stance / chart path (SEC as secondary context)
@@ -113,7 +114,7 @@ Same ports: UI `5173`, API `8000`.
 
 ## Safety
 
-- Forecasts and hybrid signals never submit orders; the ticket is the only path to the broker
+- Forecasts, hybrid signals, chart overlays, and strategy markers never submit orders; the ticket is the only path to the broker
 - Every order goes through a review dialog
 - Live mode needs live Alpaca credentials, `ALLOW_LIVE_TRADING=true`, and typing **`LIVE`** when switching modes and confirming orders
 - Short selling and uncovered option writes stay off unless enabled server-side
@@ -130,7 +131,7 @@ backend/app/government/  SAM.gov + USAspending clients, mapping, scoring
 backend/configs/   sec_accumulation.yaml, government.yaml (score weights)
 forecasting/       Optional multi-model path-forecast adapters
 scripts/           Start / LAN publish helpers
-docs/              Product & development guides (mvp-roadmap, how-forecast-works, architecture)
+docs/              Product & development guides (mvp-roadmap, how-forecast-works, chart-research, architecture)
 model/             Kronos model / tokenizer implementation
 kronos_backtest/   Historical backtester (not used by the live dashboard)
 ```
@@ -146,7 +147,9 @@ kronos_backtest/   Historical backtester (not used by the live dashboard)
 | [docs/mvp-roadmap.md](./docs/mvp-roadmap.md) | Plain-language MVP-1…7 + agent alignment |
 | [docs/trading-agent.md](./docs/trading-agent.md) | Autonomous agent: ad-hoc cycles vs saved risk portfolio |
 | [docs/explanation.md](./docs/explanation.md) | Grounded template / optional LLM explanations (MVP-7) |
-| [docs/how-forecast-works.md](./docs/how-forecast-works.md) | Chart path vs model stance (non-tech) |
+| [docs/how-forecast-works.md](./docs/how-forecast-works.md) | Chart path vs model stance vs overlays (non-tech) |
+| [docs/chart-research.md](./docs/chart-research.md) | Chart overlays (SMA/EMA/BB/RSI/MACD/engulfing) and strategy engines |
+| [docs/feature-engine.md](./docs/feature-engine.md) | Stance features including patterns (`feature_version` 1.2.0) |
 | [docs/stock-prediction-architecture.md](./docs/stock-prediction-architecture.md) | Hybrid stack architecture & leakage rules |
 | [docs/logging.md](./docs/logging.md) | JSON logs + Elasticsearch/Kibana |
 | [docs/SEC_ACCUMULATION.md](./docs/SEC_ACCUMULATION.md) | SEC EDGAR ingestion, Accumulation Score, API, backtest |

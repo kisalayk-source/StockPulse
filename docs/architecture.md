@@ -14,3 +14,7 @@ Research signal packages that feed the same stack:
 
 Path-forecast and trading workstation overview remain in the root
 [README.md](../README.md) and [DEVELOPMENT.md](./DEVELOPMENT.md).
+
+Chart research overlays and strategy engines (client-side):
+[chart-research.md](./chart-research.md) and
+[how-forecast-works.md](./how-forecast-works.md).

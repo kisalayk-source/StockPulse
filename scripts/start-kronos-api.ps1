@@ -10,7 +10,8 @@ $logDir = Join-Path $backend "logs"
 $logFile = Join-Path $logDir "api.log"
 
 if (-not (Test-Path $python)) {
-    throw "Python venv not found at $python"
+    $pythonCommand = Get-Command python -ErrorAction Stop
+    $python = (& $pythonCommand.Source -c "import sys; print(sys.executable)").Trim()
 }
 
 New-Item -ItemType Directory -Force -Path $logDir | Out-Null

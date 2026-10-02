@@ -44,6 +44,16 @@ TECHNICAL_FEATURE_KEYS = (
     "return_1d",
     "return_5d",
     "return_20d",
+    "sma_cross_10_20",
+    "sma_trend_align",
+    "sma20_slope_5",
+    "higher_high_5",
+    "higher_low_5",
+    "close_location_20",
+    "body_ratio",
+    "bullish_engulfing",
+    "bearish_engulfing",
+    "gap_return",
 )
 
 SEC_FEATURE_KEYS = (

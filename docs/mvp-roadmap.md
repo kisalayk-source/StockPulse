@@ -43,13 +43,16 @@ They can disagree. That is normal — they answer different questions.
 ## MVP-1 — First model stance
 
 **What it is:** StockPulse reads recent prices and volumes, turns them into
-familiar technical clues (trends, momentum, volatility, and so on), and a first
-model estimates the chance the stock moves up over a chosen window (1, 5, or 20
-trading days). That chance becomes a **BUY**, **HOLD**, or **SELL** (including
-stronger variants when the probability is extreme).
+familiar technical clues (trends, momentum, volatility, structure, and pattern
+features such as SMA crosses / engulfing flags — `feature_version` 1.2.0), and a
+first model estimates the chance the stock moves up over a chosen window (1, 5,
+or 20 trading days). That chance becomes a **BUY**, **HOLD**, or **SELL**
+(including stronger variants when the probability is extreme).
 
 **What you get:** A decision-style signal next to the chart, separate from the
-drawn path line.
+drawn path line. Separately, the chart can show research **overlays** (SMA, EMA,
+Bollinger, RSI, MACD, engulfing) and **strategy engines** (Chopper, MA Cross,
+BB Revert) — display markers only; see [chart-research.md](./chart-research.md).
 
 **What it is not:** Not a promise of profit, and not an automatic order.
 
@@ -110,7 +113,8 @@ prediction date count. Scores are config-driven numbers, not LLM inventions.
 **What you get:** A Government Contracts panel on Market (next to SEC Intelligence),
 API routes to inspect or sync a symbol, optional on-screen alert banners when large
 awards or high scores fire, and a `government` bucket in the hybrid feature
-snapshot (`feature_version` 1.1.0) that tree models can train on when enabled.
+snapshot (added at `feature_version` 1.1.0; current schema is `1.2.0` with
+additional pattern features) that tree models can train on when enabled.
 
 **What it is not:** A promise that a contract win means the stock will rise, push
 or email notifications, or a separate trading system — it plugs into the existing
@@ -217,6 +221,7 @@ portfolio (max 50). Details: [trading-agent.md](./trading-agent.md).
 | Audience | Document |
 |---|---|
 | Everyday chart use | [how-forecast-works.md](./how-forecast-works.md) |
+| Chart overlays & strategy engines | [chart-research.md](./chart-research.md) |
 | Architecture & leakage rules | [stock-prediction-architecture.md](./stock-prediction-architecture.md) |
 | Features / models / risk / eval (technical) | [feature-engine.md](./feature-engine.md), [model-engine.md](./model-engine.md), [risk-engine.md](./risk-engine.md), [backtesting.md](./backtesting.md), [model-evaluation.md](./model-evaluation.md) |
 | Government contracts | [government.md](./government.md) |

@@ -8,7 +8,8 @@ The trading app is split into:
 
 Plain-language MVP roadmap (what each stage means for users):
 [docs/mvp-roadmap.md](./docs/mvp-roadmap.md). Chart path vs model stance:
-[docs/how-forecast-works.md](./docs/how-forecast-works.md).
+[docs/how-forecast-works.md](./docs/how-forecast-works.md). Chart overlays and
+strategy engines: [docs/chart-research.md](./docs/chart-research.md).
 
 The legacy Flask demo in `webui/` remains unchanged.
 

@@ -7,7 +7,7 @@ prediction:
   lookback_bars: 400
   min_train_rows: 80
   timeframe: 1Day
-  feature_version: "1.1.0"
+  feature_version: "1.2.0"
 
 models:
   # Directional path→P(up) adapter. Off by default (needs Kronos/Torch path stack).
@@ -100,6 +100,7 @@ evaluation:
     - volatility
     - volume
     - structure
+    - patterns
     - trend
 
 registry:

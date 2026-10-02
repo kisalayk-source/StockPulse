@@ -4,6 +4,7 @@ import {
   ColorType,
   createChart,
   createSeriesMarkers,
+  HistogramSeries,
   LineSeries,
   type ISeriesApi,
   type MouseEventParams,
@@ -13,12 +14,17 @@ import {
 } from 'lightweight-charts'
 import type { Candle, ForecastPoint } from './api'
 import type { ChopperPoint } from './chopper'
+import type { IndicatorOverlay, OverlayId } from './indicators'
 
 interface MarketChartProps {
   candles: Candle[]
   forecast: ForecastPoint[]
   chopper?: ChopperPoint[]
   forecastChopper?: ChopperPoint[]
+  overlays?: IndicatorOverlay
+  activeOverlays?: OverlayId[]
+  strategyFastTitle?: string
+  strategySlowTitle?: string
 }
 
 const toTime = (value: string | number): Time =>
@@ -35,7 +41,7 @@ const CHOPPER_COLORS = {
 
 const SMA_HOVER_PIXEL_THRESHOLD = 8
 
-function chopperMarkers(points: ChopperPoint[]): SeriesMarker<Time>[] {
+function strategyMarkers(points: ChopperPoint[]): SeriesMarker<Time>[] {
   return points.flatMap((item) => item.signal ? [{
     time: toTime(item.time),
     position: item.signal === 'entry' ? 'belowBar' as const : 'aboveBar' as const,
@@ -43,6 +49,16 @@ function chopperMarkers(points: ChopperPoint[]): SeriesMarker<Time>[] {
     color: item.signal === 'entry' ? '#42d978' : '#f2636b',
     text: item.signal === 'entry' ? 'ENTER' : 'EXIT',
   }] : [])
+}
+
+function patternMarkers(overlays: IndicatorOverlay): SeriesMarker<Time>[] {
+  return overlays.patterns.map((item) => ({
+    time: toTime(item.time),
+    position: item.kind === 'bullish_engulfing' ? 'belowBar' as const : 'aboveBar' as const,
+    shape: item.kind === 'bullish_engulfing' ? 'arrowUp' as const : 'arrowDown' as const,
+    color: item.kind === 'bullish_engulfing' ? '#6ea8fe' : '#e89b5c',
+    text: item.kind === 'bullish_engulfing' ? 'BULL ENG' : 'BEAR ENG',
+  }))
 }
 
 function nearSmaPrice(
@@ -56,8 +72,29 @@ function nearSmaPrice(
   return Math.abs(cursorY - targetY) <= SMA_HOVER_PIXEL_THRESHOLD
 }
 
-export function MarketChart({ candles, forecast, chopper, forecastChopper }: MarketChartProps) {
+function lineData(points: { time: string | number; value: number }[]) {
+  return points.map((item) => ({ time: toTime(item.time), value: item.value }))
+}
+
+export function MarketChart({
+  candles,
+  forecast,
+  chopper,
+  forecastChopper,
+  overlays,
+  activeOverlays = [],
+  strategyFastTitle = 'SMA 10',
+  strategySlowTitle = 'SMA 20',
+}: MarketChartProps) {
   const containerRef = useRef<HTMLDivElement>(null)
+  const showSma = activeOverlays.includes('sma')
+  const showEma = activeOverlays.includes('ema')
+  const showBollinger = activeOverlays.includes('bollinger')
+  const showRsi = activeOverlays.includes('rsi')
+  const showMacd = activeOverlays.includes('macd')
+  const showPatterns = activeOverlays.includes('patterns')
+  const paneCount = 1 + (showRsi ? 1 : 0) + (showMacd ? 1 : 0)
+  const chartHeight = Math.max(280, 280 + (paneCount - 1) * 90)
 
   useEffect(() => {
     const container = containerRef.current
@@ -65,7 +102,7 @@ export function MarketChart({ candles, forecast, chopper, forecastChopper }: Mar
 
     const chart = createChart(container, {
       width: container.clientWidth,
-      height: Math.max(container.clientHeight, 280),
+      height: Math.max(container.clientHeight, chartHeight),
       layout: {
         background: { type: ColorType.Solid, color: '#0c1018' },
         textColor: '#87909f',
@@ -93,15 +130,128 @@ export function MarketChart({ candles, forecast, chopper, forecastChopper }: Mar
     candleSeries.setData(candles.map((item) => ({ ...item, time: toTime(item.time) })))
 
     let onCrosshairMove: ((param: MouseEventParams<Time>) => void) | undefined
+    let nextPane = 1
 
-    const historicalChopper = Boolean(chopper?.length) && forecast.length === 0
-    if (historicalChopper && chopper) {
+    if (overlays && showSma) {
+      if (overlays.sma20.length) {
+        chart.addSeries(LineSeries, {
+          color: '#6ea8fe',
+          lineWidth: 1,
+          priceLineVisible: false,
+          lastValueVisible: false,
+          title: 'SMA 20',
+        }).setData(lineData(overlays.sma20))
+      }
+      if (overlays.sma50.length) {
+        chart.addSeries(LineSeries, {
+          color: '#f0b429',
+          lineWidth: 1,
+          priceLineVisible: false,
+          lastValueVisible: false,
+          title: 'SMA 50',
+        }).setData(lineData(overlays.sma50))
+      }
+    }
+
+    if (overlays && showEma) {
+      if (overlays.ema12.length) {
+        chart.addSeries(LineSeries, {
+          color: '#5ad1c8',
+          lineWidth: 1,
+          priceLineVisible: false,
+          lastValueVisible: false,
+          title: 'EMA 12',
+        }).setData(lineData(overlays.ema12))
+      }
+      if (overlays.ema26.length) {
+        chart.addSeries(LineSeries, {
+          color: '#c792ea',
+          lineWidth: 1,
+          priceLineVisible: false,
+          lastValueVisible: false,
+          title: 'EMA 26',
+        }).setData(lineData(overlays.ema26))
+      }
+    }
+
+    if (overlays && showBollinger) {
+      const bandOptions = {
+        lineWidth: 1 as const,
+        lineStyle: 2 as const,
+        priceLineVisible: false,
+        lastValueVisible: false,
+      }
+      if (overlays.bollingerUpper.length) {
+        chart.addSeries(LineSeries, { ...bandOptions, color: 'rgba(118, 129, 150, 0.85)', title: 'BB upper' })
+          .setData(lineData(overlays.bollingerUpper))
+      }
+      if (overlays.bollingerMiddle.length) {
+        chart.addSeries(LineSeries, { ...bandOptions, color: 'rgba(215, 221, 232, 0.55)', title: 'BB mid' })
+          .setData(lineData(overlays.bollingerMiddle))
+      }
+      if (overlays.bollingerLower.length) {
+        chart.addSeries(LineSeries, { ...bandOptions, color: 'rgba(118, 129, 150, 0.85)', title: 'BB lower' })
+          .setData(lineData(overlays.bollingerLower))
+      }
+    }
+
+    if (overlays && showRsi && overlays.rsi.length) {
+      const rsiPane = nextPane
+      nextPane += 1
+      chart.addSeries(LineSeries, {
+        color: '#e89b5c',
+        lineWidth: 2,
+        priceLineVisible: false,
+        lastValueVisible: true,
+        title: 'RSI 14',
+      }, rsiPane).setData(lineData(overlays.rsi))
+    }
+
+    if (overlays && showMacd && overlays.macd.length) {
+      const macdPane = nextPane
+      nextPane += 1
+      if (overlays.macdHistogram.length) {
+        chart.addSeries(HistogramSeries, {
+          color: 'rgba(118, 129, 150, 0.55)',
+          priceLineVisible: false,
+          lastValueVisible: false,
+          title: 'MACD hist',
+        }, macdPane).setData(lineData(overlays.macdHistogram).map((item) => ({
+          ...item,
+          color: item.value >= 0 ? 'rgba(65, 201, 154, 0.55)' : 'rgba(242, 99, 107, 0.55)',
+        })))
+      }
+      chart.addSeries(LineSeries, {
+        color: '#6ea8fe',
+        lineWidth: 2,
+        priceLineVisible: false,
+        lastValueVisible: true,
+        title: 'MACD',
+      }, macdPane).setData(lineData(overlays.macd))
+      if (overlays.macdSignal.length) {
+        chart.addSeries(LineSeries, {
+          color: '#f0b429',
+          lineWidth: 1,
+          priceLineVisible: false,
+          lastValueVisible: false,
+          title: 'MACD signal',
+        }, macdPane).setData(lineData(overlays.macdSignal))
+      }
+    }
+
+    const markers: SeriesMarker<Time>[] = []
+    if (overlays && showPatterns) {
+      markers.push(...patternMarkers(overlays))
+    }
+
+    const historicalStrategy = Boolean(chopper?.length) && forecast.length === 0
+    if (historicalStrategy && chopper) {
       chart.addSeries(LineSeries, {
         color: CHOPPER_COLORS.neutral,
         lineWidth: 2,
         priceLineVisible: false,
         lastValueVisible: false,
-        title: 'SMA 10',
+        title: strategyFastTitle,
       }).setData(chopper.map((item) => ({
         time: toTime(item.time),
         value: item.fast,
@@ -112,9 +262,9 @@ export function MarketChart({ candles, forecast, chopper, forecastChopper }: Mar
         lineWidth: 1,
         priceLineVisible: false,
         lastValueVisible: false,
-        title: 'SMA 20',
+        title: strategySlowTitle,
       }).setData(chopper.map((item) => ({ time: toTime(item.time), value: item.slow })))
-      createSeriesMarkers(candleSeries, chopperMarkers(chopper), { zOrder: 'top' })
+      markers.push(...strategyMarkers(chopper))
     } else if (forecast.length) {
       let sma10: ISeriesApi<'Line'> | undefined
       let sma20: ISeriesApi<'Line'> | undefined
@@ -129,7 +279,7 @@ export function MarketChart({ candles, forecast, chopper, forecastChopper }: Mar
           lineWidth: 1,
           priceLineVisible: false,
           lastValueVisible: false,
-          title: 'SMA 10',
+          title: strategyFastTitle,
           visible: false,
         })
         sma10.setData(forecastChopper.map((item) => ({
@@ -141,7 +291,7 @@ export function MarketChart({ candles, forecast, chopper, forecastChopper }: Mar
           lineWidth: 1,
           priceLineVisible: false,
           lastValueVisible: false,
-          title: 'SMA 20',
+          title: strategySlowTitle,
           visible: false,
         })
         sma20.setData(forecastChopper.map((item) => ({ time: toTime(item.time), value: item.slow })))
@@ -176,7 +326,7 @@ export function MarketChart({ candles, forecast, chopper, forecastChopper }: Mar
       forecastSeries.setData(forecast.map((item) => ({ time: toTime(item.time), value: item.value })))
 
       if (forecastChopper?.length) {
-        createSeriesMarkers(forecastSeries, chopperMarkers(forecastChopper), { zOrder: 'top' })
+        createSeriesMarkers(forecastSeries, strategyMarkers(forecastChopper), { zOrder: 'top' })
       }
 
       if (sma10 && sma20) {
@@ -210,12 +360,18 @@ export function MarketChart({ candles, forecast, chopper, forecastChopper }: Mar
         chart.subscribeCrosshairMove(onCrosshairMove)
       }
     }
+
+    if (markers.length) {
+      markers.sort((left, right) => Number(left.time) - Number(right.time))
+      createSeriesMarkers(candleSeries, markers, { zOrder: 'top' })
+    }
+
     chart.timeScale().fitContent()
 
     const observer = new ResizeObserver(() => {
       chart.applyOptions({
         width: container.clientWidth,
-        height: Math.max(container.clientHeight, 280),
+        height: Math.max(container.clientHeight, chartHeight),
       })
     })
     observer.observe(container)
@@ -224,10 +380,28 @@ export function MarketChart({ candles, forecast, chopper, forecastChopper }: Mar
       if (onCrosshairMove) chart.unsubscribeCrosshairMove(onCrosshairMove)
       chart.remove()
     }
-  }, [candles, forecast, chopper, forecastChopper])
+  }, [
+    candles,
+    forecast,
+    chopper,
+    forecastChopper,
+    overlays,
+    showSma,
+    showEma,
+    showBollinger,
+    showRsi,
+    showMacd,
+    showPatterns,
+    chartHeight,
+    strategyFastTitle,
+    strategySlowTitle,
+  ])
 
   const latest = candles.at(-1)
   const predicted = forecast.at(-1)
+  const overlayLabel = activeOverlays.length
+    ? ` Overlays ${activeOverlays.join(', ')}.`
+    : ''
   return (
     <>
       <div
@@ -235,13 +409,14 @@ export function MarketChart({ candles, forecast, chopper, forecastChopper }: Mar
         ref={containerRef}
         role="img"
         aria-label={chopper && !forecast.length
-          ? `Price and Chopper signals chart. Latest close ${latest?.close ?? 'unavailable'}. Current regime ${chopper.at(-1)?.regime ?? 'unavailable'}.`
-          : `Price and forecast chart. Latest close ${latest?.close ?? 'unavailable'}. Final forecast ${predicted?.value ?? 'unavailable'}${forecastChopper?.length ? `. Forecast Chopper regime ${forecastChopper.at(-1)?.regime ?? 'unavailable'}` : ''}.`}
+          ? `Price and strategy signals chart. Latest close ${latest?.close ?? 'unavailable'}. Current regime ${chopper.at(-1)?.regime ?? 'unavailable'}.${overlayLabel}`
+          : `Price and forecast chart. Latest close ${latest?.close ?? 'unavailable'}. Final forecast ${predicted?.value ?? 'unavailable'}${forecastChopper?.length ? `. Forecast strategy regime ${forecastChopper.at(-1)?.regime ?? 'unavailable'}` : ''}.${overlayLabel}`}
       />
       <p className="sr-only">
         The chart contains {candles.length} historical candles and {chopper && !forecast.length
-          ? `${chopper.length} Chopper points`
-          : `${forecast.length} forecast points${forecastChopper?.length ? ` and ${forecastChopper.length} forecast Chopper points` : ''}`}.
+          ? `${chopper.length} strategy points`
+          : `${forecast.length} forecast points${forecastChopper?.length ? ` and ${forecastChopper.length} forecast strategy points` : ''}`}
+        {activeOverlays.length ? ` with overlays ${activeOverlays.join(', ')}` : ''}.
       </p>
     </>
   )

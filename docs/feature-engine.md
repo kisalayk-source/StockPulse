@@ -13,9 +13,11 @@ Technical features from daily OHLCV:
 - Volatility: ATR, Bollinger bands/width/%B, rolling volatility
 - Volume: SMA, ratio, acceleration, OBV, price-volume correlation
 - Structure: distances from SMAs, breakouts, drawdown, rolling returns
+- Patterns: SMA cross / trend align, SMA20 slope, higher-high/higher-low,
+  close location in 20d range, body ratio, engulfing flags, gap return
 
 `build_feature_snapshot(ticker, ohlcv, as_of=...)` truncates bars to `as_of`
-before computation (`feature_version` currently `1.1.0`).
+before computation (`feature_version` currently `1.2.0`).
 
 ## MVP-3 (implemented) — SEC flow
 
@@ -63,3 +65,13 @@ the XGBoost/LightGBM train/predict matrix (`_merge_model_features` /
 snapshot but are not trained on.
 
 Indicators are **features**, never hard-coded BUY/SELL rules.
+
+## Chart UI vs stance features
+
+The Market chart can draw overlapping indicator windows (SMA, EMA, Bollinger,
+RSI, MACD, engulfing markers) in the browser for research display. That UI lives
+in `frontend/src/indicators.ts` and is documented in
+[chart-research.md](./chart-research.md). Stance **training and inference** use
+this server-side feature matrix (`feature_version` `1.2.0`), including the
+**patterns** ablation group in `ml/backtesting/ablation.py`. New pattern keys
+force a new registry key so tree models retrain on cold predict / gated retrain.

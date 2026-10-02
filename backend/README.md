@@ -149,7 +149,7 @@ All routes use the `/api/v1` prefix.
 - `POST /forecast`
 - `POST /forecast/movers`
 - `GET /forecast/movers/status`
-- `GET /stocks/{ticker}/prediction?horizon=5d` — hybrid directional signal (MVP-1…6; see [docs/mvp-roadmap.md](../docs/mvp-roadmap.md))
+- `GET /stocks/{ticker}/prediction?horizon=5d` — hybrid directional signal (MVP-1…6; `feature_version` 1.2.0 pattern features; see [docs/mvp-roadmap.md](../docs/mvp-roadmap.md), [docs/feature-engine.md](../docs/feature-engine.md))
 - `GET /stocks/{ticker}/features`
 - `GET /stocks/{ticker}/signals`
 - `GET /stocks/{ticker}/risk`

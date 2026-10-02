@@ -41,6 +41,35 @@ def test_technical_features_are_deterministic() -> None:
     assert "sma_20" in first
     assert "bollinger_percent_b" in first
     assert "volume_ratio" in first
+    assert "sma_cross_10_20" in first
+    assert "sma_trend_align" in first
+    assert "higher_high_5" in first
+    assert "close_location_20" in first
+    assert "bullish_engulfing" in first
+    assert "bearish_engulfing" in first
+    assert 0.0 <= first["sma_cross_10_20"] <= 1.0
+    assert 0.0 <= first["close_location_20"] <= 1.0
+    assert 0.0 <= first["body_ratio"] <= 1.0
+
+
+def test_pattern_features_are_point_in_time() -> None:
+    ohlcv = _synthetic_ohlcv(300)
+    cutoff = ohlcv.index[220]
+    snap = build_feature_snapshot("TEST", ohlcv, as_of=cutoff)
+    truncated = compute_technical_features(ohlcv.loc[:cutoff])
+    for key in (
+        "sma_cross_10_20",
+        "sma_trend_align",
+        "sma20_slope_5",
+        "higher_high_5",
+        "higher_low_5",
+        "close_location_20",
+        "body_ratio",
+        "bullish_engulfing",
+        "bearish_engulfing",
+        "gap_return",
+    ):
+        assert snap.technical.get(key) == truncated.get(key)
 
 
 def test_feature_snapshot_ignores_future_bars() -> None:

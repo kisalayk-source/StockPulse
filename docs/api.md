@@ -25,7 +25,10 @@ Path forecast remains `POST /forecast` and is unchanged.
 
 See [government.md](./government.md) for payload shape, config, and scoring.
 Feature snapshots may include a `government` bucket when
-`features.government` is enabled (`feature_version` `1.1.0`).
+`features.government` is enabled. Technical snapshots include pattern features
+at `feature_version` `1.2.0` (see [feature-engine.md](./feature-engine.md)).
+Chart overlays and strategy engines are client-side only
+([chart-research.md](./chart-research.md)); they are not separate API routes.
 
 Env toggles: `PREDICTION_ENABLED`, `PREDICTION_RATE_LIMIT_PER_MINUTE`,
 `GOVERNMENT_ENABLED`, `SAM_GOV_API_KEY`, `GOVERNMENT_RATE_LIMIT_PER_MINUTE`.

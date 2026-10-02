@@ -78,7 +78,7 @@ GOVERNMENT_SYNC_ON_STARTUP=false
 ```
 
 ML toggle: `features.government: true` in `ml/config/prediction.yaml`
-(`feature_version` `1.1.0`).
+(government bucket since `feature_version` `1.1.0`; current schema `1.2.0`).
 
 ## API endpoints
 

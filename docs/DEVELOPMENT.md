@@ -60,7 +60,14 @@ the chart. Hybrid directional signals live under `ml/` and
 `GET /api/v1/stocks/{ticker}/prediction` (MVP-1…6 implemented; see
 [mvp-roadmap.md](./mvp-roadmap.md) for plain language and
 [stock-prediction-architecture.md](./stock-prediction-architecture.md) for
-architecture).
+architecture). Stance technical features are at `feature_version` `1.2.0`
+(pattern features + government from `1.1.0`).
+
+**Chart research UI:** Overlay chips (SMA/EMA/Bollinger/RSI/MACD/engulfing) and
+strategy engines (Chopper, MA Cross, BB Revert) are client-side in
+`frontend/src/indicators.ts`, `frontend/src/strategies.ts`, and
+`MarketChart.tsx`. Docs: [chart-research.md](./chart-research.md),
+[how-forecast-works.md](./how-forecast-works.md).
 
 ```bash
 # from repo root, with the core-model venv
@@ -137,7 +144,8 @@ curl http://127.0.0.1:8000/api/v1/accumulation/scan/status -H "Authorization: Be
 - Code: `backend/app/government/`, `ml/features/government/`, UI `GovernmentPanel`
 - Config: `backend/configs/government.yaml`; Settings `GOVERNMENT_ENABLED`,
   `SAM_GOV_API_KEY`, `GOVERNMENT_CONFIG_PATH`, `GOVERNMENT_RATE_LIMIT_PER_MINUTE`
-- ML: `features.government` in `ml/config/prediction.yaml` (`feature_version` `1.1.0`)
+- ML: `features.government` in `ml/config/prediction.yaml` (government since
+  `feature_version` `1.1.0`; current schema `1.2.0` also includes pattern features)
 - API: `GET/POST /api/v1/stocks/{symbol}/government` (+ `/sync`)
 - Docs: [government.md](./government.md)
 

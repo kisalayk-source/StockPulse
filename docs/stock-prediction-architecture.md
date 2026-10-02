@@ -114,8 +114,15 @@ Plain-language overview for non-engineers: **[mvp-roadmap.md](./mvp-roadmap.md)*
 7. **MVP-7 (done):** LLM explanation from structured results only (template always; OpenAI optional + grounded)
 
 **Government contracts (done):** SAM.gov + USAspending → `FeatureSnapshot.government`
-(`feature_version` `1.1.0`); Market `GovernmentPanel` + API — see
+(since `feature_version` `1.1.0`); Market `GovernmentPanel` + API — see
 [government.md](./government.md).
+
+**Pattern features + chart research UI (done):** Stance technical matrix at
+`feature_version` `1.2.0` adds SMA-cross / HH-HL / engulfing / gap-style
+**features** for training. Separately, the Market chart offers client-side
+overlay chips and strategy engines (Chopper, MA Cross, BB Revert) for display —
+see [feature-engine.md](./feature-engine.md) and
+[chart-research.md](./chart-research.md).
 
 **Agent alignment (done):** hybrid owns BUY/SELL; Kronos path owns sizing/targets only — see [mvp-roadmap.md](./mvp-roadmap.md#agent-alignment-done) and the section below.
 
@@ -124,6 +131,7 @@ Plain-language overview for non-engineers: **[mvp-roadmap.md](./mvp-roadmap.md)*
 - Auto-trading from signals
 - LLM-manufactured predictions or invented metrics
 - Treating RSI / Bollinger / MACD crossovers as standalone BUY/SELL rules
+  (chart overlays and strategy markers are research display only)
 - Replacing `POST /forecast` path semantics
 - Claiming feature/model superiority without backtest evidence
 
@@ -155,6 +163,7 @@ max 50). Manual cycles may pass any valid ticker list via `POST /trading-agent/c
 - [mvp-roadmap.md](./mvp-roadmap.md) — plain-language MVP-1…7 + agent alignment + government
 - [trading-agent.md](./trading-agent.md) — agent cycles, ad-hoc symbols, API/UI
 - [how-forecast-works.md](./how-forecast-works.md) — everyday chart path vs model stance
+- [chart-research.md](./chart-research.md) — chart overlays and strategy engines
 - [DEVELOPMENT.md](./DEVELOPMENT.md) — local setup, path forecast vs prediction
 - [SEC_ACCUMULATION.md](./SEC_ACCUMULATION.md) — EDGAR pipeline
 - [government.md](./government.md) — government contract analysis

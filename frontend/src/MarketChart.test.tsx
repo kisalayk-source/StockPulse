@@ -31,11 +31,13 @@ const mocks = vi.hoisted(() => {
 vi.mock('lightweight-charts', () => ({
   CandlestickSeries: 'candlestick',
   LineSeries: 'line',
+  HistogramSeries: 'histogram',
   ColorType: { Solid: 'solid' },
   createSeriesMarkers: mocks.createSeriesMarkers,
   createChart: () => ({
     addSeries: mocks.addSeries,
     timeScale: () => ({ fitContent: mocks.fitContent }),
+    priceScale: () => ({ applyOptions: vi.fn() }),
     applyOptions: vi.fn(),
     subscribeCrosshairMove: mocks.subscribeCrosshairMove,
     unsubscribeCrosshairMove: mocks.unsubscribeCrosshairMove,
@@ -93,7 +95,7 @@ describe('MarketChart', () => {
     expect(mocks.remove).toHaveBeenCalledOnce()
   })
 
-  it('renders Chopper averages and entry/exit markers instead of a forecast', () => {
+  it('renders strategy averages and entry/exit markers instead of a forecast', () => {
     const chopper = [
       { time: 1, fast: 101, slow: 100, regime: 'green' as const, signal: 'entry' as const },
       { time: 2, fast: 99, slow: 100, regime: 'neutral' as const, signal: 'exit' as const },
@@ -116,8 +118,46 @@ describe('MarketChart', () => {
       ],
       { zOrder: 'top' },
     )
-    expect(view.getByRole('img')).toHaveAccessibleName(/chopper signals.*current regime neutral/i)
-    expect(view.getByText(/2 historical candles and 2 chopper points/i)).toBeInTheDocument()
+    expect(view.getByRole('img')).toHaveAccessibleName(/strategy signals.*current regime neutral/i)
+    expect(view.getByText(/2 historical candles and 2 strategy points/i)).toBeInTheDocument()
+  })
+
+  it('draws EMA, MACD panes, and engulfing pattern markers', () => {
+    const overlays = {
+      sma20: [{ time: 20, value: 100 }],
+      sma50: [{ time: 50, value: 98 }],
+      ema12: [{ time: 20, value: 101 }],
+      ema26: [{ time: 26, value: 99 }],
+      bollingerUpper: [{ time: 20, value: 105 }],
+      bollingerMiddle: [{ time: 20, value: 100 }],
+      bollingerLower: [{ time: 20, value: 95 }],
+      rsi: [{ time: 20, value: 55 }],
+      macd: [{ time: 26, value: 1.2 }],
+      macdSignal: [{ time: 26, value: 0.8 }],
+      macdHistogram: [{ time: 26, value: 0.4 }],
+      patterns: [
+        { time: 20, kind: 'bullish_engulfing' as const },
+        { time: 21, kind: 'bearish_engulfing' as const },
+      ],
+    }
+    render(<MarketChart
+      candles={[{ time: 20, open: 99, high: 102, low: 98, close: 101 }]}
+      forecast={[]}
+      overlays={overlays}
+      activeOverlays={['ema', 'macd', 'patterns']}
+    />)
+
+    expect(mocks.addSeries).toHaveBeenCalledWith('line', expect.objectContaining({ title: 'EMA 12' }))
+    expect(mocks.addSeries).toHaveBeenCalledWith('line', expect.objectContaining({ title: 'MACD' }), 1)
+    expect(mocks.addSeries).toHaveBeenCalledWith('histogram', expect.objectContaining({ title: 'MACD hist' }), 1)
+    expect(mocks.createSeriesMarkers).toHaveBeenCalledWith(
+      expect.anything(),
+      [
+        expect.objectContaining({ text: 'BULL ENG' }),
+        expect.objectContaining({ text: 'BEAR ENG' }),
+      ],
+      { zOrder: 'top' },
+    )
   })
 
   it('hides forecast SMA overlays until hover and stacks enter/exit markers on top', () => {

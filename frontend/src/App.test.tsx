@@ -470,8 +470,10 @@ describe('live trading safeguard', () => {
 
     await user.click(screen.getByRole('button', { name: 'Chopper' }))
     expect(await screen.findByRole('button', { name: 'Chopper', pressed: true })).toBeInTheDocument()
-    expect(await screen.findByText('Chopper SMA 10 / 20')).toBeInTheDocument()
+    expect(await screen.findByText(/Chopper · SMA 10 \/ SMA 20/i)).toBeInTheDocument()
     expect(screen.getByText(/No entry condition is active/i)).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'MA Cross' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'BB Revert' })).toBeInTheDocument()
     const forecastBodies = fetch.mock.calls
       .filter((call) => String(call[0]).includes('/forecast') && call[1]?.method === 'POST')
       .map((call) => JSON.parse(String(call[1]?.body || '{}')))

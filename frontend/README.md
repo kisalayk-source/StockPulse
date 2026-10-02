@@ -1,6 +1,6 @@
 # StockPulse Frontend
 
-Responsive React/TypeScript dashboard for personal Alpaca trading, Kronos path-forecast research, hybrid BUY/HOLD/SELL signals, SEC accumulation intelligence, and government contract analysis.
+Responsive React/TypeScript dashboard for personal Alpaca trading, Kronos path-forecast research, chart indicator overlays and strategy engines, hybrid BUY/HOLD/SELL signals, SEC accumulation intelligence, and government contract analysis.
 
 ## Setup
 
@@ -39,7 +39,7 @@ The UI is a single-page workstation with top-level tabs:
 
 | Tab | Contents |
 |-----|----------|
-| **Market** | Quote, chart, path forecasts, hybrid signal panel, news, **SEC & Ownership Intelligence** and **Government Contracts** panels for the active symbol |
+| **Market** | Quote, chart (Kronos / Forecast path, overlay chips, Chopper / MA Cross / BB Revert engines), hybrid signal panel, news, **SEC & Ownership Intelligence** and **Government Contracts** panels for the active symbol |
 | **Sectors** | Average accumulation score and % increasing/decreasing by sector |
 | **Top Accumulation** | Ranked stocks with institutional, insider, and fundamentals component scores (from market scan) |
 | **SEC Records** | Ticker search; filings from the last 6 months with filing entity, action (bought/sold/new investment), expandable parsed XML details (**+**), AI analysis card, stat chips, and EDGAR links (syncs on tab open and search) |
@@ -114,6 +114,8 @@ keyboard-dismissable dialogs, and automatically dismisses order notices.
 Potential gainers and losers appear progressively while the background Kronos universe scan
 runs, with visible scanned/total progress and automatic polling.
 
-See [docs/SEC_ACCUMULATION.md](../docs/SEC_ACCUMULATION.md) and
+See [docs/chart-research.md](../docs/chart-research.md) for chart overlays and
+strategy engines, [docs/how-forecast-works.md](../docs/how-forecast-works.md)
+for path vs stance, [docs/SEC_ACCUMULATION.md](../docs/SEC_ACCUMULATION.md) and
 [docs/government.md](../docs/government.md) for scoring methodology, and
 [docs/trading-agent.md](../docs/trading-agent.md) for the autonomous agent.

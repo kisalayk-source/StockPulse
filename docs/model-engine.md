@@ -31,5 +31,11 @@ Config: `ml/config/prediction.yaml`.
 
 Feature category toggles (`features.technical` / `sec` / `fundamentals` /
 `government`) control which snapshot buckets merge into the tree-model matrix.
-`feature_version` is currently `1.1.0` (government category added). Directional
-Kronos path→P(up) still uses path outputs, not the government feature vector.
+`feature_version` is currently `1.2.0` (government category from `1.1.0`, plus
+technical **pattern** features: SMA cross / trend align, SMA20 slope,
+higher-high/higher-low, close location, body ratio, engulfing flags, gap return).
+Directional Kronos path→P(up) still uses path outputs, not the government or
+pattern feature vectors directly.
+
+Ablation group `patterns` is listed under `evaluation.ablation_groups` in
+`prediction.yaml`. See [feature-engine.md](./feature-engine.md).

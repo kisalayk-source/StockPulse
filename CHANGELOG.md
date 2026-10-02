@@ -8,6 +8,9 @@ Notable changes to this project are documented here. The format follows
 
 ### Added
 
+- **Chart research overlays** — Market chart toggles for SMA 20/50, EMA 12/26, Bollinger, RSI 14, MACD (pane + histogram), and engulfing pattern arrows (`frontend/src/indicators.ts`, `MarketChart.tsx`). Docs: [docs/chart-research.md](./docs/chart-research.md).
+- **Strategy engines beyond Chopper** — **MA Cross** (EMA 12/26) and **BB Revert** (Bollinger mean-revert) alongside Chopper; shared `frontend/src/strategies.ts`, strategy summary panel, research markers only.
+- **Stance pattern features (`feature_version` 1.2.0)** — SMA cross / trend align, SMA20 slope, higher-high/higher-low, close location, body ratio, engulfing flags, gap return in `ml/features/technical/price_structure.py`; ablation group `patterns`; registry keys bump so models retrain on the new matrix. Docs: [docs/feature-engine.md](./docs/feature-engine.md).
 - **Government contract analysis** — SAM.gov + USAspending ingest, scoring, Market `GovernmentPanel`, prediction feature bucket (`feature_version` 1.1.0), and docs ([docs/government.md](./docs/government.md)).
 - **Trading agent day-trades session list** — day-trades report includes `available_dates`, keeps empty selected days, and shows buys later closed as `exited` / “Closed later”.
 - **Trading agent ad-hoc cycles** — type any ticker(s) and run a forecast cycle without adding them to the saved risk portfolio (max 50). `POST /trading-agent/cycle` validates optional `symbols` via `normalize_universe` (empty/invalid → 422). Docs: [docs/trading-agent.md](./docs/trading-agent.md).
