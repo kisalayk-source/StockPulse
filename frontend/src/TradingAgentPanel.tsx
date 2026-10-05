@@ -25,6 +25,7 @@ import {
   type UniverseScanRow,
 } from './api'
 import { formatCurrency, formatDateTime, formatPercent } from './format'
+import { optionExpirationFromSymbol } from './occ'
 
 function statusLabel(status: string): string {
   switch (status) {
@@ -133,9 +134,23 @@ function csvCell(value: string | number | null | undefined): string {
 }
 
 function downloadDayTradesCsv(report: DayTradesReport) {
-  const header = ['time', 'symbol', 'side', 'qty', 'entry', 'exit_or_mark', 'pnl', 'result', 'status']
+  const header = [
+    'time',
+    'placed_at',
+    'expiration',
+    'symbol',
+    'side',
+    'qty',
+    'entry',
+    'exit_or_mark',
+    'pnl',
+    'result',
+    'status',
+  ]
   const rows = report.trades.map((row) => [
     csvCell(row.filledAt),
+    csvCell(row.placedAt),
+    csvCell(row.expiration),
     csvCell(row.symbol),
     csvCell(row.side),
     csvCell(row.quantity),
@@ -841,11 +856,13 @@ export function TradingAgentPanel({
                   <th>Invested</th>
                   <th>Mark</th>
                   <th>Unrealized</th>
+                  <th>Placed</th>
+                  <th>Expires</th>
                 </tr>
               </thead>
               <tbody>
                 {positions.length === 0 ? (
-                  <tr><td colSpan={6}>No open agent positions</td></tr>
+                  <tr><td colSpan={8}>No open agent positions</td></tr>
                 ) : positions.map((row) => (
                   <tr key={row.id}>
                     <td>{row.symbol}</td>
@@ -854,6 +871,8 @@ export function TradingAgentPanel({
                     <td>{formatCurrency(row.quantity * row.averageEntryPrice)}</td>
                     <td>{formatCurrency(row.currentPrice)}</td>
                     <td className={row.unrealizedPnl < 0 ? 'negative' : 'positive'}>{formatCurrency(row.unrealizedPnl)}</td>
+                    <td>{row.openedAt ? formatDateTime(row.openedAt) : '—'}</td>
+                    <td>{row.expiration || optionExpirationFromSymbol(row.symbol) || '—'}</td>
                   </tr>
                 ))}
               </tbody>
@@ -878,12 +897,14 @@ export function TradingAgentPanel({
                   <th>Qty</th>
                   <th>Fill</th>
                   <th>Status</th>
+                  <th>Placed</th>
+                  <th>Expires</th>
                   <th>When</th>
                 </tr>
               </thead>
               <tbody>
                 {orders.length === 0 ? (
-                  <tr><td colSpan={6}>No agent orders yet</td></tr>
+                  <tr><td colSpan={8}>No agent orders yet</td></tr>
                 ) : orders.map((row) => (
                   <tr key={row.id}>
                     <td>{row.symbol}</td>
@@ -891,7 +912,9 @@ export function TradingAgentPanel({
                     <td>{row.filledQuantity || row.requestedQuantity}</td>
                     <td>{formatCurrency(row.averageFillPrice)}</td>
                     <td><span className={`status ${row.status}`}>{row.status}</span></td>
-                    <td>{formatDateTime(row.filledAt || row.submittedAt)}</td>
+                    <td>{(row.submittedAt || row.filledAt) ? formatDateTime(row.submittedAt || row.filledAt) : '—'}</td>
+                    <td>{optionExpirationFromSymbol(row.symbol) || '—'}</td>
+                    <td>{(row.filledAt || row.submittedAt) ? formatDateTime(row.filledAt || row.submittedAt) : '—'}</td>
                   </tr>
                 ))}
               </tbody>
@@ -948,6 +971,8 @@ export function TradingAgentPanel({
               <thead>
                 <tr>
                   <th>Time</th>
+                  <th>Placed</th>
+                  <th>Expires</th>
                   <th>Symbol</th>
                   <th>Side</th>
                   <th>Qty</th>
@@ -959,10 +984,10 @@ export function TradingAgentPanel({
               </thead>
               <tbody>
                 {!dayTrades ? (
-                  <tr><td colSpan={8}>No report generated yet</td></tr>
+                  <tr><td colSpan={10}>No report generated yet</td></tr>
                 ) : dayTrades.trades.length === 0 ? (
                   <tr>
-                    <td colSpan={8}>
+                    <td colSpan={10}>
                       No agent trades on {dayTrades.date}
                       {dayTrades.availableDates.length > 0 ? (
                         <>
@@ -1006,7 +1031,9 @@ export function TradingAgentPanel({
                   </tr>
                 ) : dayTrades.trades.map((row) => (
                   <tr key={`${row.status}-${row.id}`}>
-                    <td>{formatDateTime(row.filledAt)}</td>
+                    <td>{row.filledAt ? formatDateTime(row.filledAt) : '—'}</td>
+                    <td>{row.placedAt ? formatDateTime(row.placedAt) : '—'}</td>
+                    <td>{row.expiration || optionExpirationFromSymbol(row.symbol) || '—'}</td>
                     <td>{row.symbol}</td>
                     <td>{row.side}</td>
                     <td>{row.quantity}</td>

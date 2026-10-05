@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+from collections import deque
 from datetime import date, datetime, time, timedelta, timezone
 from time import sleep
 from typing import Any, Callable, TypeVar
@@ -12,7 +13,7 @@ from zoneinfo import ZoneInfo
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session
 
-from app.services.providers import ProviderUnavailable
+from app.services.providers import ProviderUnavailable, option_expiration_from_symbol
 from app.trading_agent.broker import (
     AlpacaBrokerAdapter,
     BrokerAdapter,
@@ -1298,6 +1299,19 @@ class TradingAgentService:
             return "Loss"
         return "Breakeven"
 
+    @staticmethod
+    def _option_expiration_iso(symbol: str) -> str | None:
+        expires = option_expiration_from_symbol(symbol)
+        return expires.isoformat() if expires else None
+
+    @staticmethod
+    def _iso_dt(value: Any) -> str | None:
+        if value is None:
+            return None
+        if hasattr(value, "isoformat"):
+            return value.isoformat()
+        return str(value)
+
     def day_trades(
         self,
         session: Session,
@@ -1337,6 +1351,8 @@ class TradingAgentService:
             )
 
         books: dict[tuple[str, str], dict[str, float]] = {}
+        # FIFO lot qty + filled_at only (avg-cost books still drive entry/P/L).
+        place_lots: dict[tuple[str, str], deque[dict[str, Any]]] = {}
         day_buys: list[dict[str, Any]] = []
         trades: list[dict[str, Any]] = []
 
@@ -1356,10 +1372,13 @@ class TradingAgentService:
                 continue
             multiplier = self._asset_multiplier(asset_type)
             book = books.setdefault((symbol, asset_type), {"qty": 0.0, "avg": 0.0})
+            lots = place_lots.setdefault((symbol, asset_type), deque())
+            expiration = self._option_expiration_iso(symbol)
             if side == "buy":
                 total = book["qty"] + qty
                 book["avg"] = (book["avg"] * book["qty"] + price * qty) / total if total else price
                 book["qty"] = total
+                lots.append({"qty": qty, "filled_at": filled_at})
                 if fill_day == trading_date:
                     day_buys.append(
                         {
@@ -1370,6 +1389,7 @@ class TradingAgentService:
                             "entry_price": price,
                             "filled_at": filled_at,
                             "strategy": candidate.strategy,
+                            "expiration": expiration,
                         }
                     )
                 continue
@@ -1384,6 +1404,17 @@ class TradingAgentService:
             if book["qty"] <= 1e-9:
                 book["qty"] = 0.0
                 book["avg"] = 0.0
+            placed_at: datetime | None = None
+            remaining_sell = sell_qty
+            while remaining_sell > 1e-9 and lots:
+                lot = lots[0]
+                take = min(float(lot["qty"]), remaining_sell)
+                if placed_at is None:
+                    placed_at = lot["filled_at"]
+                lot["qty"] = float(lot["qty"]) - take
+                remaining_sell -= take
+                if float(lot["qty"]) <= 1e-9:
+                    lots.popleft()
             if fill_day != trading_date:
                 continue
             trades.append(
@@ -1400,6 +1431,8 @@ class TradingAgentService:
                     "result": self._pnl_result(realized, open_lot=False),
                     "strategy": candidate.strategy,
                     "filled_at": filled_at.isoformat(),
+                    "placed_at": self._iso_dt(placed_at),
+                    "expiration": expiration,
                 }
             )
 
@@ -1435,7 +1468,9 @@ class TradingAgentService:
                     "pnl": unreal,
                     "result": self._pnl_result(unreal, open_lot=True),
                     "strategy": buy.get("strategy"),
-                    "filled_at": filled_at.isoformat() if hasattr(filled_at, "isoformat") else str(filled_at),
+                    "filled_at": self._iso_dt(filled_at),
+                    "placed_at": self._iso_dt(filled_at),
+                    "expiration": buy.get("expiration"),
                 }
             )
 
@@ -1460,7 +1495,9 @@ class TradingAgentService:
                     "pnl": 0.0,
                     "result": "Closed later",
                     "strategy": buy.get("strategy"),
-                    "filled_at": filled_at.isoformat() if hasattr(filled_at, "isoformat") else str(filled_at),
+                    "filled_at": self._iso_dt(filled_at),
+                    "placed_at": self._iso_dt(filled_at),
+                    "expiration": buy.get("expiration"),
                 }
             )
 
@@ -1514,6 +1551,8 @@ class TradingAgentService:
                 "current_price": r.current_price,
                 "unrealized_pnl": r.unrealized_pnl,
                 "realized_pnl": r.realized_pnl,
+                "opened_at": self._iso_dt(r.opened_at),
+                "expiration": self._option_expiration_iso(str(r.symbol or "")),
             }
             for r in rows
         ]

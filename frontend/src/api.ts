@@ -396,6 +396,10 @@ export interface DayTradeRow {
   result: string
   strategy?: string | null
   filledAt?: string | null
+  /** Buy fill time (contract placement); for closed sells, FIFO matched buy fill. */
+  placedAt?: string | null
+  /** OCC expiration `YYYY-MM-DD` when symbol is an option contract. */
+  expiration?: string | null
 }
 
 export interface DayTradesSummary {
@@ -428,6 +432,8 @@ export interface AgentPositionRow {
   currentPrice: number
   unrealizedPnl: number
   realizedPnl: number
+  openedAt?: string | null
+  expiration?: string | null
 }
 
 export interface AgentEventRow {
@@ -980,6 +986,8 @@ function mapDayTrade(raw: unknown): DayTradeRow {
     result: text(payload.result),
     strategy: text(payload.strategy) || null,
     filledAt: text(payload.filled_at) || null,
+    placedAt: text(payload.placed_at) || null,
+    expiration: text(payload.expiration) || null,
   }
 }
 
@@ -1015,6 +1023,8 @@ function mapAgentPosition(raw: unknown): AgentPositionRow {
     currentPrice: number(payload.current_price) ?? 0,
     unrealizedPnl: number(payload.unrealized_pnl) ?? 0,
     realizedPnl: number(payload.realized_pnl) ?? 0,
+    openedAt: text(payload.opened_at) || null,
+    expiration: text(payload.expiration) || null,
   }
 }
 

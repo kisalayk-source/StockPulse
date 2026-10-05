@@ -9,7 +9,11 @@ from app.db import reset_db_state
 from app.dependencies import Services
 from app.main import create_app
 from app.schemas import EquityOrderRequest, OptionOrderRequest
-from app.services.providers import AlpacaService, option_underlying_symbol
+from app.services.providers import (
+    AlpacaService,
+    option_expiration_from_symbol,
+    option_underlying_symbol,
+)
 from app.services.research import round_trip_cost
 from app.services.risk import check_order_risk, spread_bps
 
@@ -159,6 +163,13 @@ def test_equity_sell_cannot_exceed_long_position_by_default() -> None:
             snapshot={"symbol": "AAPL"},
             settings=config,
         )
+
+
+def test_option_expiration_from_symbol_parses_occ_yymmdd() -> None:
+    assert option_expiration_from_symbol("AAPL260821C00200000").isoformat() == "2026-08-21"
+    assert option_expiration_from_symbol("NVDA") is None
+    assert option_expiration_from_symbol("") is None
+    assert option_expiration_from_symbol("AAPL991332C00200000") is None
 
 
 def test_option_intent_is_explicit_and_underlying_has_occ_fallback() -> None:

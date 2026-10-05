@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import re
 from collections import defaultdict, deque
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from enum import Enum
 from typing import Any
 
@@ -203,7 +203,7 @@ LOCAL_SYMBOL_CATALOG: tuple[dict[str, Any], ...] = (
     {"symbol": "HII", "name": "Huntington Ingalls Industries", "exchange": "NYSE", "tradable": True},
     {"symbol": "LHX", "name": "L3Harris Technologies", "exchange": "NYSE", "tradable": True},
 )
-_OCC_OPTION_SYMBOL = re.compile(r"^([A-Z]{1,6})\d{6}[CP]\d{8}$")
+_OCC_OPTION_SYMBOL = re.compile(r"^([A-Z]{1,6})(\d{6})[CP]\d{8}$")
 
 
 def option_underlying_symbol(contract: Any, contract_symbol: str) -> str | None:
@@ -224,6 +224,21 @@ def option_underlying_symbol(contract: Any, contract_symbol: str) -> str | None:
             return str(nested_symbol).upper()
     match = _OCC_OPTION_SYMBOL.fullmatch(contract_symbol.upper())
     return match.group(1) if match else None
+
+
+def option_expiration_from_symbol(symbol: str) -> date | None:
+    """Parse OCC contract expiration (YYMMDD after root) into a calendar date."""
+    match = _OCC_OPTION_SYMBOL.fullmatch(str(symbol or "").upper())
+    if not match:
+        return None
+    yymmdd = match.group(2)
+    try:
+        year = 2000 + int(yymmdd[0:2])
+        month = int(yymmdd[2:4])
+        day = int(yymmdd[4:6])
+        return date(year, month, day)
+    except ValueError:
+        return None
 
 
 def rank_search_results(query: str, items: list[dict[str, Any]]) -> list[dict[str, Any]]:

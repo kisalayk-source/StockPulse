@@ -1769,9 +1769,55 @@ def test_day_trades_reports_same_day_win():
         assert len(sells) == 1
         assert sells[0]["result"] == "Profit"
         assert sells[0]["pnl"] == pytest.approx(50.0)
+        assert sells[0]["placed_at"] == when.isoformat()
+        assert sells[0]["expiration"] is None
         assert data["summary"]["wins"] == 1
         assert data["summary"]["losses"] == 0
         assert data["summary"]["net_realized_pnl"] == pytest.approx(50.0)
+
+
+def test_day_trades_option_includes_expiration_and_placed_at():
+    client, agent, _paper_brokers, _alpaca = make_agent_client()
+    with client:
+        headers = register_headers(client)
+        session = _db_session()
+        me = client.get("/api/v1/auth/me", headers=headers).json()
+        config = agent.get_or_create_config(session, me["id"])
+        when = datetime(2026, 9, 10, 17, 0, tzinfo=timezone.utc)
+        occ = "AAPL260821C00200000"
+        _seed_filled_order(
+            session,
+            config=config,
+            symbol=occ,
+            side="buy",
+            quantity=1,
+            price=2.5,
+            filled_at=when,
+            strategy="long_call",
+            asset_type="option",
+        )
+        _seed_filled_order(
+            session,
+            config=config,
+            symbol=occ,
+            side="sell",
+            quantity=1,
+            price=3.0,
+            filled_at=when + timedelta(hours=2),
+            strategy="intraday_exit",
+            asset_type="option",
+        )
+        session.commit()
+        session.close()
+        resp = client.get("/api/v1/trading-agent/day-trades?date=2026-09-10", headers=headers)
+        assert resp.status_code == 200, resp.text
+        data = resp.json()
+        sells = [row for row in data["trades"] if row["side"] == "sell"]
+        assert len(sells) == 1
+        assert sells[0]["symbol"] == occ
+        assert sells[0]["expiration"] == "2026-08-21"
+        assert sells[0]["placed_at"] == when.isoformat()
+        assert sells[0]["filled_at"] == (when + timedelta(hours=2)).isoformat()
 
 
 def test_day_trades_reports_same_day_loss():

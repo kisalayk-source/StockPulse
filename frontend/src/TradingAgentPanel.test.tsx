@@ -313,17 +313,19 @@ describe('TradingAgentPanel', () => {
       trades: [
         {
           id: 11,
-          symbol: 'NVDA',
-          assetType: 'equity',
+          symbol: 'AAPL260821C00200000',
+          assetType: 'option',
           side: 'sell',
           status: 'closed',
-          quantity: 5,
-          entryPrice: 100,
-          exitPrice: 110,
+          quantity: 1,
+          entryPrice: 2.5,
+          exitPrice: 3,
           pnl: 50,
           result: 'Profit',
           strategy: 'intraday_exit',
           filledAt: '2026-09-10T18:00:00Z',
+          placedAt: '2026-09-10T16:00:00Z',
+          expiration: '2026-08-21',
         },
       ],
       summary: {
@@ -343,6 +345,10 @@ describe('TradingAgentPanel', () => {
     await waitFor(() => expect(api.getTradingAgentDayTrades).toHaveBeenCalledWith('2026-09-10'))
     expect(await screen.findByTestId('daily-trades-summary')).toHaveTextContent('1 wins')
     expect(screen.getByText('Profit')).toBeInTheDocument()
+    const daily = screen.getByTestId('daily-trades')
+    expect(daily).toHaveTextContent('2026-08-21')
+    expect(daily).toHaveTextContent('Placed')
+    expect(daily).toHaveTextContent('Expires')
     expect(screen.getByRole('button', { name: /Download CSV/i })).toBeEnabled()
   })
 
